@@ -88,9 +88,23 @@ export class PlatformSessions {
         return { action: 'deny' };
       });
       view.webContents.on('did-start-loading', () => { if (managed) managed.loading = true; });
+      view.webContents.on('console-message', (_event, level, message) => {
+        if (level >= 2) console.error(`[${platform}] renderer: ${message}`);
+      });
+      view.webContents.on('render-process-gone', (_event, details) => {
+        console.error(`[${platform}] renderer process gone: ${details.reason}`);
+        if (managed && this.activePlatform === platform && !managed.view.webContents.isDestroyed()) {
+          setTimeout(() => {
+            if (!managed || managed.view.webContents.isDestroyed()) return;
+            void this.loadUrl(managed, managed.view.webContents.getURL() || PLATFORM_URLS[platform]);
+          }, 800);
+        }
+      });
+      view.webContents.on('dom-ready', () => this.restoreActiveView(platform));
       view.webContents.on('did-stop-loading', () => {
         if (managed) {
           managed.loading = false;
+          this.restoreActiveView(platform);
           void managed.partition.flushStorageData();
           void snapshotPlatformCookies(managed.partition, managed.platform).catch(() => undefined);
         }
@@ -126,6 +140,7 @@ export class PlatformSessions {
     this.window.contentView.addChildView(managed.view);
     managed.lastUsedAt = Date.now();
     managed.view.webContents.setBackgroundThrottling(false);
+    managed.view.setVisible(true);
     managed.view.setBounds(this.viewBounds());
     this.activePlatform = platform;
   }
@@ -150,13 +165,34 @@ export class PlatformSessions {
             : platform === 'sohu'
               ? await fillSohuDraft(managed.view.webContents, title, html)
               : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath);
+    if (platform === 'sohu') {
+      const settingsScreenshotPath = await this.captureEvidence(platform, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const screenshotPath = await this.captureEvidence(platform, 'fill-content');
+      return { ...result, screenshotPath, settingsScreenshotPath };
+    }
+    if (platform === 'toutiao') {
+      const settingsScreenshotPath = await this.captureEvidence(platform, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+        const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')].filter(visible).find((element) => normalize(element.textContent) === '单图');
+        let root = single instanceof HTMLElement ? single.parentElement : null;
+        for (let depth = 0; root && depth < 12; depth += 1) { const text = normalize(root.textContent); if (text.includes('展示封面') && text.includes('无封面')) break; root = root.parentElement; }
+        if (!(root instanceof HTMLElement)) return false; root.scrollIntoView({ block: 'center', inline: 'nearest' }); return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const screenshotPath = await this.captureEvidence(platform, 'fill-cover');
+      return { ...result, screenshotPath, settingsScreenshotPath };
+    }
     const screenshotPath = await this.captureEvidence(platform, 'fill');
     return { ...result, screenshotPath };
   }
 
-  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[] }> {
+  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
     const managed = this.views.get(platform);
-    if (!managed) return { ...this.platformStatus(platform), textStart: '', controls: [], editables: [], buttons: [], dialogs: [] };
+    if (!managed) return { ...this.platformStatus(platform), textStart: '', controls: [], editables: [], buttons: [], dialogs: [], storage: [] };
     const details = await managed.view.webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
       const visible = (element) => element instanceof HTMLElement && (() => {
@@ -209,10 +245,15 @@ export class PlatformSessions {
           .map((element) => ({
             text: normalize(element.textContent).slice(0, 80),
             className: String(element.className || '').slice(0, 180),
+            ariaLabel: element.getAttribute('aria-label'),
+            title: element.getAttribute('title'),
+            dataAttrs: [...element.attributes].filter((attribute) => attribute.name.startsWith('data-')).slice(0, 8).map((attribute) => [attribute.name, attribute.value]),
+            outerHTML: element.outerHTML.slice(0, 1200),
             disabled: element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true',
           })),
         dialogs: [...document.querySelectorAll('[role="dialog"],[class*="message"],[class*="Message"],[class*="modal"],[class*="Modal"]')]
           .filter(visible).slice(0, 20).map((element) => ({ text: normalize(element.textContent).slice(0, 300), className: String(element.className || '').slice(0, 200), outerHTML: element.outerHTML.slice(0, 2000) })),
+        storage: Object.keys(localStorage).slice(0, 100).map((key) => ({ key, length: String(localStorage.getItem(key) || '').length, valueStart: String(localStorage.getItem(key) || '').slice(0, 300) })),
       };
     })()`);
     return { ...this.platformStatus(platform), ...details };
@@ -257,6 +298,10 @@ export class PlatformSessions {
     if (!candidate) return;
     const managed = this.views.get(candidate);
     if (!managed) return;
+    if (this.activePlatform === candidate) {
+      this.window.contentView.removeChildView(managed.view);
+      this.activePlatform = null;
+    }
     managed.view.webContents.close({ waitForBeforeUnload: false });
     this.views.delete(candidate);
   }
@@ -271,7 +316,16 @@ export class PlatformSessions {
       if (!/ERR_ABORTED \(-3\)/.test(message)) throw error;
     } finally {
       managed.loading = managed.view.webContents.isLoading();
+      this.restoreActiveView(managed.platform);
     }
+  }
+
+  private restoreActiveView(platform: Platform): void {
+    if (this.activePlatform !== platform) return;
+    const managed = this.views.get(platform);
+    if (!managed || managed.view.webContents.isDestroyed()) return;
+    managed.view.setVisible(true);
+    managed.view.setBounds(this.viewBounds());
   }
 
   private viewBounds(): { x: number; y: number; width: number; height: number } {

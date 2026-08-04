@@ -9,6 +9,7 @@ export interface SohuDraftFillResult {
   bodyTextLength: number;
   summaryClicked: boolean;
   summaryGenerated: boolean;
+  summaryUnavailable: boolean;
   aiContentFound: boolean;
   aiContentSelected: boolean;
   publishButtonDetected: boolean;
@@ -17,6 +18,15 @@ export interface SohuDraftFillResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+async function clickPoint(webContents: WebContents, point: { x: number; y: number }): Promise<void> {
+  const x = Math.round(point.x);
+  const y = Math.round(point.y);
+  webContents.sendInputEvent({ type: 'mouseMove', x, y });
+  await delay(120);
+  webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+  webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
 }
 
 function contentScript(title: string, html: string, write: boolean): string {
@@ -67,7 +77,38 @@ export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120
 }
 
 async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; title: string; bodyTextLength: number }> {
-  await webContents.executeJavaScript(contentScript(title, html, true));
+  await webContents.executeJavaScript(`(async () => {
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const normalize = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+    const titleElement = [...document.querySelectorAll('input[placeholder*="标题"],textarea[placeholder*="标题"]')].filter(visible)[0];
+    const bodyElement = [...document.querySelectorAll('.ql-editor[contenteditable="true"],[contenteditable="true"][data-placeholder*="正文"]')].filter(visible)
+      .sort((left, right) => right.getBoundingClientRect().height - left.getBoundingClientRect().height)[0];
+    if (!(titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement) || !(bodyElement instanceof HTMLElement)) return false;
+    titleElement.scrollIntoView({ block: 'center', inline: 'nearest' }); titleElement.focus({ preventScroll: true }); await pause(80);
+    const prototype = titleElement instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(titleElement, ${JSON.stringify(title)});
+    titleElement.dispatchEvent(new Event('input', { bubbles: true })); titleElement.dispatchEvent(new Event('change', { bubbles: true })); titleElement.dispatchEvent(new Event('blur', { bubbles: true }));
+    await pause(240);
+    bodyElement.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const articleRoot = bodyElement.closest('.article-container') || bodyElement.closest('.container-section')?.parentElement;
+    const articleComponent = articleRoot?.__vue__;
+    if (typeof articleComponent?.setEditorContent === 'function') {
+      articleComponent.setEditorContent(${JSON.stringify(html)});
+      articleComponent.content = ${JSON.stringify(html)};
+      if (articleComponent.writtenContent && typeof articleComponent.writtenContent === 'object') {
+        articleComponent.writtenContent.content = ${JSON.stringify(html)};
+      }
+    } else {
+      const editorComponent = bodyElement.parentElement?.parentElement?.__vue__;
+      if (typeof editorComponent?.setHTML !== 'function') return false;
+      editorComponent.setHTML(${JSON.stringify(html)});
+    }
+    await pause(800);
+    if (typeof articleComponent?.autoSaveContent === 'function') articleComponent.autoSaveContent();
+    bodyElement.dispatchEvent(new Event('blur', { bubbles: true })); return true;
+  })()`);
+  await delay(1_200);
   let result = await webContents.executeJavaScript(contentScript(title, html, false));
   for (let attempt = 0; attempt < 8 && (!result.titleFilled || !result.bodyFilled); attempt += 1) {
     await delay(500 + attempt * 150);
@@ -76,70 +117,10 @@ async function fillContent(webContents: WebContents, title: string, html: string
   return result;
 }
 
-async function applyOptionalSettings(webContents: WebContents): Promise<{ summaryClicked: boolean; summaryGenerated: boolean; aiContentFound: boolean; aiContentSelected: boolean }> {
-  const summary = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-    const button = [...document.querySelectorAll('button,[role="button"],a,span')].filter(visible).find((element) => normalize(element.textContent) === '生成摘要');
-    const summaryField = [...document.querySelectorAll('textarea,input,[contenteditable="true"],[role="textbox"]')].filter(visible).find((element) => {
-      const owner = element.closest('div,section,form'); const meta = normalize([element.getAttribute('placeholder'), element.getAttribute('aria-label'), owner?.textContent].join(' ')); return meta.includes('摘要');
-    });
-    if (summaryField instanceof HTMLInputElement || summaryField instanceof HTMLTextAreaElement) {
-      const prototype = summaryField instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(summaryField, '');
-      summaryField.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' })); summaryField.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (summaryField instanceof HTMLElement) {
-      summaryField.textContent = ''; summaryField.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
-    }
-    const target = button?.closest('button,[role="button"],a') || button;
-    if (!(target instanceof HTMLElement)) return null; target.scrollIntoView({ block: 'center' }); const rect = target.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-  })()`);
-  let summaryClicked = false;
-  if (summary) {
-    webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(summary.x), y: Math.round(summary.y), button: 'left', clickCount: 1 });
-    webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(summary.x), y: Math.round(summary.y), button: 'left', clickCount: 1 });
-    summaryClicked = true;
-    await delay(500);
-    const overwriteConfirm = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-      const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-      const dialog = [...document.querySelectorAll('[role="dialog"],.el-message-box,.mt-message-box')].filter(visible)
-        .find((element) => normalize(element.textContent).includes('是否覆盖当前摘要内容'));
-      if (!(dialog instanceof HTMLElement)) return null;
-      const button = [...dialog.querySelectorAll('button,[role="button"]')].filter(visible).find((element) => normalize(element.textContent) === '确定');
-      if (!(button instanceof HTMLElement)) return null; const rect = button.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    })()`);
-    if (overwriteConfirm) {
-      webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(overwriteConfirm.x), y: Math.round(overwriteConfirm.y), button: 'left', clickCount: 1 });
-      webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(overwriteConfirm.x), y: Math.round(overwriteConfirm.y), button: 'left', clickCount: 1 });
-    }
-  }
-  let summaryGenerated = false;
-  for (let attempt = 0; summaryClicked && attempt < 20; attempt += 1) {
-    await delay(500);
-    summaryGenerated = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-      const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-      return [...document.querySelectorAll('textarea,input,[contenteditable="true"],[role="textbox"]')].filter(visible).some((element) => {
-        const owner = element.closest('div,section,form'); const meta = normalize([element.getAttribute('placeholder'), element.getAttribute('aria-label'), owner?.textContent].join(' '));
-        const value = normalize(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : element.textContent); return meta.includes('摘要') && value.length > 0;
-      });
-    })()`);
-    if (summaryGenerated) break;
-  }
-  const summaryNotice = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-    const dialog = [...document.querySelectorAll('[role="dialog"],.el-message-box,.mt-message-box,[class*="message-box"],[class*="MessageBox"]')].filter(visible)
-      .find((element) => /暂无可生成摘要|是否覆盖当前摘要内容/.test(normalize(element.textContent)));
-    if (!(dialog instanceof HTMLElement)) return null;
-    const button = [...dialog.querySelectorAll('button,[role="button"]')].filter(visible).find((element) => normalize(element.textContent) === '确定');
-    if (!(button instanceof HTMLElement)) return null; button.click(); return { clicked: true };
-  })()`);
-  if (summaryNotice) {
-    await delay(500);
-  }
+async function applyOptionalSettings(webContents: WebContents): Promise<{ summaryClicked: boolean; summaryGenerated: boolean; summaryUnavailable: boolean; aiContentFound: boolean; aiContentSelected: boolean }> {
+  const summaryClicked = false;
+  const summaryGenerated = false;
+  const summaryUnavailable = false;
   const ai = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
@@ -150,9 +131,16 @@ async function applyOptionalSettings(webContents: WebContents): Promise<{ summar
     root.scrollIntoView({ block: 'center' }); const rect = root.getBoundingClientRect(); return { found: true, selected, point: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } };
   })()`);
   if (ai.found && !ai.selected && ai.point) {
-    webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(ai.point.x), y: Math.round(ai.point.y), button: 'left', clickCount: 1 });
-    webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(ai.point.x), y: Math.round(ai.point.y), button: 'left', clickCount: 1 });
-    await delay(700);
+    await delay(350);
+    const currentAiPoint = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+      const text = [...document.querySelectorAll('label,[role="radio"],span,div')].filter(visible).find((element) => normalize(element.textContent) === '包含AI创作内容');
+      const root = text?.closest('label,[role="radio"],.ant-radio-wrapper,.radio-item') || text?.parentElement;
+      if (!(root instanceof HTMLElement)) return null; const rect = root.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    if (currentAiPoint) await clickPoint(webContents, currentAiPoint);
+    await delay(900);
   }
   const aiContentSelected = ai.found ? await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -160,14 +148,23 @@ async function applyOptionalSettings(webContents: WebContents): Promise<{ summar
     const root = text?.closest('label,[role="radio"],.ant-radio-wrapper,.radio-item') || text?.parentElement; const input = root?.querySelector('input[type="radio"]');
     return Boolean((input instanceof HTMLInputElement && input.checked) || root?.getAttribute('aria-checked') === 'true' || /checked|selected|active/.test(String(root?.className || '')));
   })()`) : false;
-  return { summaryClicked, summaryGenerated, aiContentFound: ai.found, aiContentSelected };
+  return { summaryClicked, summaryGenerated, summaryUnavailable, aiContentFound: ai.found, aiContentSelected };
 }
 
 export async function fillSohuDraft(webContents: WebContents, title: string, html: string): Promise<SohuDraftFillResult> {
   await ensureSohuEditor(webContents);
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`SOHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
+  await delay(1_000);
+  const beforeSettings = await webContents.executeJavaScript(contentScript(title, html, false));
+  if (!beforeSettings.titleFilled || !beforeSettings.bodyFilled) {
+    throw new Error(`SOHU_CONTENT_NOT_STABLE_BEFORE_SETTINGS: title=${beforeSettings.titleFilled}, body=${beforeSettings.bodyFilled}`);
+  }
   const optional = await applyOptionalSettings(webContents);
+  const stableContent = await webContents.executeJavaScript(contentScript(title, html, false));
+  if (!stableContent.titleFilled || !stableContent.bodyFilled) {
+    throw new Error(`SOHU_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}`);
+  }
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim(); const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     const publishButtonDetected = [...document.querySelectorAll('li.publish-report-btn,li[report-attr],button,[role="button"]')].filter(visible).some((element) => { const text = normalize(element.textContent); return text === '发布' && !text.includes('定时发布') && !element.hasAttribute('disabled'); });
@@ -175,5 +172,5 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
     return { publishButtonDetected, url: location.href };
   })()`);
   await delay(500);
-  return { ...content, ...optional, ...finalState };
+  return { ...content, ...stableContent, ...optional, ...finalState };
 }

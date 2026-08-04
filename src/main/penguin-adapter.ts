@@ -26,7 +26,7 @@ function normalizeTags(tags: string[]): string[] {
   const seen = new Set<string>();
   for (const raw of tags) {
     for (const part of String(raw || '').split(/[\s,，;；、|]+/)) {
-      const tag = part.replace(/^#+/, '').trim();
+      const tag = part.replace(/^[#＃]+|[#＃]+$/g, '').trim();
       const key = tag.toLocaleLowerCase();
       if (!tag || Array.from(tag).length > 8 || seen.has(key)) continue;
       seen.add(key);

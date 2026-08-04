@@ -27,7 +27,7 @@ async function ensureEditor(webContents: WebContents): Promise<void> {
   while (Date.now() < deadline) {
     const state = await webContents.executeJavaScript(`(() => {
       const visible = ${visibleScript()};
-      const text = String(document.body?.innerText || '');
+      const text = String(document.body ? document.body.innerText : '');
       const fields = [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')].filter(visible);
       return { ready: fields.length >= 2, login: /登录|扫码|验证码|安全验证|账号异常/.test(text) && fields.length < 2 };
     })()`);
@@ -39,71 +39,171 @@ async function ensureEditor(webContents: WebContents): Promise<void> {
 }
 
 async function fillText(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean }> {
-  const state = await webContents.executeJavaScript(`(() => {
-    const visible = ${visibleScript()};
-    const normalize = (v) => String(v || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
-    const meta = (e) => normalize([e.getAttribute('placeholder'),e.getAttribute('aria-label'),e.getAttribute('data-placeholder'),e.className].join(' '));
-    const fields = [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')].filter(visible);
-    const titleEl = fields.map(e => ({e, score: (meta(e).includes('标题') ? 500 : 0) + (e.tagName === 'INPUT' ? 100 : 0)})).sort((a,b)=>b.score-a.score)[0]?.e;
-    const bodyEl = fields.filter(e=>e!==titleEl).map(e=>({e, score:(meta(e).includes('正文')||meta(e).includes('内容')?500:0)+(e.getBoundingClientRect().height>160?120:0)+(e.getAttribute('contenteditable')==='true'?80:0)})).sort((a,b)=>b.score-a.score)[0]?.e;
-    const requestedTitle = ${JSON.stringify(title)}; const requestedHtml = ${JSON.stringify(html)};
-    const setValue = (e,v) => { const p=e instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(p,'value')?.set?.call(e,v); e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertReplacementText',data:v})); e.dispatchEvent(new Event('change',{bubbles:true})); };
-    if (titleEl instanceof HTMLInputElement || titleEl instanceof HTMLTextAreaElement) setValue(titleEl, requestedTitle); else if (titleEl instanceof HTMLElement) { titleEl.focus(); titleEl.replaceChildren(document.createTextNode(requestedTitle)); titleEl.dispatchEvent(new InputEvent('input',{bubbles:true})); }
-    if (bodyEl instanceof HTMLInputElement || bodyEl instanceof HTMLTextAreaElement) setValue(bodyEl, requestedHtml.replace(/<[^>]+>/g,' '));
-    else if (bodyEl instanceof HTMLElement) { bodyEl.focus(); const range=document.createRange(); range.selectNodeContents(bodyEl); const sel=getSelection(); sel?.removeAllRanges(); sel?.addRange(range); document.execCommand('insertHTML',false,requestedHtml); bodyEl.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertFromPaste'})); }
-    const actualTitle = normalize(titleEl instanceof HTMLInputElement || titleEl instanceof HTMLTextAreaElement ? titleEl.value : titleEl?.textContent);
-    const actualBody = normalize(bodyEl instanceof HTMLInputElement || bodyEl instanceof HTMLTextAreaElement ? bodyEl.value : bodyEl?.innerText || bodyEl?.textContent);
-    return { titleFilled: actualTitle === normalize(requestedTitle), bodyFilled: actualBody.length >= Math.min(20, normalize(requestedHtml.replace(/<[^>]+>/g,' ')).length) };
-  })()`);
+  const bodyText = await webContents.executeJavaScript(`(() => { const parser=document.createElement('div'); parser.innerHTML=${JSON.stringify(html)}; return String(parser.innerText||parser.textContent||'').replace(/\\u00a0/g,' ').trim(); })()`);
+  const replaceFocusedText = async (selector: string, value: string): Promise<boolean> => {
+    const focused = await webContents.executeJavaScript(`(() => { const element=document.querySelector(${JSON.stringify(selector)}); if(!(element instanceof HTMLElement))return false; element.scrollIntoView({block:'center',inline:'nearest'}); element.focus({preventScroll:true}); return true; })()`);
+    if (!focused) return false;
+    const modifiers: Array<'meta' | 'control'> = [process.platform === 'darwin' ? 'meta' : 'control'];
+    webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers });
+    webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers });
+    await delay(120);
+    webContents.insertText(value);
+    await delay(700);
+    return true;
+  };
+  if (!await replaceFocusedText('textarea.netease-textarea,textarea[placeholder*="标题"]', title)) return { titleFilled: false, bodyFilled: false };
+  if (!await replaceFocusedText('.public-DraftEditor-content[contenteditable="true"]', bodyText)) return { titleFilled: false, bodyFilled: false };
   await delay(1200);
-  return state;
+  return await webContents.executeJavaScript(`(() => {
+    const normalize=(v)=>String(v||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+    const parser=document.createElement('div'); parser.innerHTML=${JSON.stringify(html)}; const expected=normalize(parser.innerText||parser.textContent||'');
+    const titleEl=document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
+    const bodyEl=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+    const actualTitle=titleEl instanceof HTMLTextAreaElement?normalize(titleEl.value):''; const actualBody=bodyEl instanceof HTMLElement?normalize(bodyEl.innerText||bodyEl.textContent):'';
+    const edge=Math.min(24,expected.length); return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&actualBody.includes(expected.slice(0,edge))&&actualBody.includes(expected.slice(-edge))};
+  })()`);
 }
 
 async function setFileInput(webContents: WebContents, filePath: string): Promise<boolean> {
   const debuggerApi = webContents.debugger; const attached = !debuggerApi.isAttached(); if (attached) debuggerApi.attach('1.3');
   try {
-    const doc = await debuggerApi.sendCommand('DOM.getDocument', { depth: -1, pierce: true }) as { root: { nodeId: number } };
-    const inputs = await debuggerApi.sendCommand('DOM.querySelectorAll', { nodeId: doc.root.nodeId, selector: 'input[type=file]' }) as { nodeIds: number[] };
+    // Querying the entire DOM tree can stall Chromium's compositor on large editor pages.
+    const doc = await debuggerApi.sendCommand('DOM.getDocument', { depth: 0, pierce: true }) as { root: { nodeId: number } };
+    const inputs = await debuggerApi.sendCommand('DOM.querySelectorAll', {
+      nodeId: doc.root.nodeId,
+      selector: '.ne-dialog input[type=file],[role=dialog] input[type=file],[class*=modal] input[type=file],input[type=file]',
+    }) as { nodeIds: number[] };
     if (!inputs.nodeIds?.length) return false;
-    await debuggerApi.sendCommand('DOM.setFileInputFiles', { files: [filePath], nodeId: inputs.nodeIds[0] });
+    await debuggerApi.sendCommand('DOM.setFileInputFiles', { files: [filePath], nodeId: inputs.nodeIds.at(-1) });
     return true;
   } finally { if (attached && debuggerApi.isAttached()) debuggerApi.detach(); }
 }
 
+async function clickDomSelector(webContents: WebContents, selector: string): Promise<boolean> {
+  const scrolled = await webContents.executeJavaScript(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!(element instanceof HTMLElement)) return false;
+    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return true;
+  })()`);
+  if (!scrolled) return false;
+  await delay(350);
+  const point = await webContents.executeJavaScript(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!(element instanceof HTMLElement)) return null;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || style.display === 'none' || style.visibility === 'hidden') return null;
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  if (!point) return false;
+  const x = Math.round(point.x);
+  const y = Math.round(point.y);
+  webContents.sendInputEvent({ type: 'mouseMove', x, y });
+  await delay(120);
+  webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+  webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  return true;
+}
+
+async function clickVisibleText(webContents: WebContents, selectors: string, text: string): Promise<boolean> {
+  const findScript = `(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const element = [...document.querySelectorAll(${JSON.stringify(selectors)})].filter((candidate) => {
+      if (!(candidate instanceof HTMLElement) || normalize(candidate.textContent) !== ${JSON.stringify(text)}) return false;
+      const rect = candidate.getBoundingClientRect(); const style = getComputedStyle(candidate);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    }).sort((left, right) => {
+      const a = left.getBoundingClientRect(); const b = right.getBoundingClientRect();
+      return (a.width * a.height) - (b.width * b.height);
+    })[0];
+    if (!(element instanceof HTMLElement)) return null;
+    const rect = element.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`;
+  const initial = await webContents.executeJavaScript(findScript);
+  if (!initial) return false;
+  await webContents.executeJavaScript(`(() => { const normalize=(value)=>String(value||'').replace(/\\s+/g,' ').trim(); const element=[...document.querySelectorAll(${JSON.stringify(selectors)})].filter(candidate=>candidate instanceof HTMLElement&&normalize(candidate.textContent)===${JSON.stringify(text)}).sort((left,right)=>{const a=left.getBoundingClientRect();const b=right.getBoundingClientRect();return(a.width*a.height)-(b.width*b.height);})[0]; if(!(element instanceof HTMLElement))return false; element.scrollIntoView({block:'center',inline:'nearest'}); return true; })()`);
+  await delay(350);
+  const point = await webContents.executeJavaScript(findScript);
+  if (!point) return false;
+  const x = Math.round(point.x);
+  const y = Math.round(point.y);
+  webContents.sendInputEvent({ type: 'mouseMove', x, y });
+  await delay(120);
+  webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+  webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  return true;
+}
+
 async function insertBodyImage(webContents: WebContents, filePath: string): Promise<boolean> {
   if (!(await access(filePath).then(() => true).catch(() => false))) throw new Error(`COVER_NOT_FOUND: 找不到封面文件 ${filePath}`);
-  let applied = await setFileInput(webContents, filePath);
-  if (!applied) {
-    const point = await webContents.executeJavaScript(`(() => { const visible=${visibleScript()}; const e=[...document.querySelectorAll('button,[role="button"],span,div')].filter(visible).find(e=>/图片|插图|上传图片/.test(String(e.textContent||e.getAttribute('aria-label')||''))); if(!e)return null; e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`);
-    if (point) { webContents.sendInputEvent({ type:'mouseDown', x:Math.round(point.x), y:Math.round(point.y), button:'left', clickCount:1 }); webContents.sendInputEvent({ type:'mouseUp', x:Math.round(point.x), y:Math.round(point.y), button:'left', clickCount:1 }); await delay(800); applied = await setFileInput(webContents, filePath); }
-  }
+  const step = async <T>(code: string, action: () => Promise<T>): Promise<T> => {
+    try { return await action(); } catch (error) { throw new Error(`${code}: ${error instanceof Error ? error.message : String(error)}`); }
+  };
+  const point = await step('NETEASE_IMAGE_TOOL_LOOKUP_FAILED', () => webContents.executeJavaScript(`(() => { const visible=${visibleScript()}; const e=[...document.querySelectorAll('button.rich-editor-panel-item')].find(e=>visible(e)&&e.querySelector('img[src*="icon_image"]')); if(!e)return null; e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`));
+  if (!point) return false;
+  webContents.sendInputEvent({ type:'mouseDown', x:Math.round(point.x), y:Math.round(point.y), button:'left', clickCount:1 });
+  webContents.sendInputEvent({ type:'mouseUp', x:Math.round(point.x), y:Math.round(point.y), button:'left', clickCount:1 });
+  await delay(900);
+  const applied = await step('NETEASE_IMAGE_FILE_SET_FAILED', () => setFileInput(webContents, filePath));
   if (!applied) return false;
-  for (let i=0;i<24;i+=1) { await delay(700); const found = await webContents.executeJavaScript(`(() => { const imgs=[...document.querySelectorAll('img')].filter(i=>{const r=i.getBoundingClientRect(); const s=getComputedStyle(i); return r.width>20&&r.height>20&&s.display!=='none'&&s.visibility!=='hidden;}); return imgs.some(i=>i.closest('[contenteditable="true"],[role="textbox"],.ql-editor,.ProseMirror')); })()`); if (found) return true; }
+  for (let i = 0; i < 30; i += 1) {
+    const ready = await step('NETEASE_IMAGE_CONFIRM_READY_FAILED', () => webContents.executeJavaScript(`(() => {
+      const button = document.querySelector('.ne-modal-footer button:last-child');
+      const text = String(button ? button.textContent : '').replace(/\\s+/g, '');
+      return button instanceof HTMLButtonElement && !button.disabled && text.startsWith('确定(') && text !== '确定(0)';
+    })()`));
+    if (ready) break;
+    await delay(400);
+  }
+  if (!await step('NETEASE_IMAGE_CONFIRM_CLICK_FAILED', () => clickDomSelector(webContents, '.ne-modal-footer button:last-child'))) return false;
+  for (let i=0;i<24;i+=1) { await delay(700); const found = await step('NETEASE_IMAGE_VERIFY_FAILED', () => webContents.executeJavaScript(`(() => { const imgs=[...document.querySelectorAll('.public-DraftEditor-content img')]; return imgs.some(i=>{const r=i.getBoundingClientRect(); return r.width>20&&r.height>20;}); })()`)); if (found) return true; }
   return false;
 }
 
 async function applyOptions(webContents: WebContents): Promise<{ autoCoverSelected:boolean; aiDeclarationFound:boolean; aiDeclarationSelected:boolean }> {
-  const result = await webContents.executeJavaScript(`(() => {
-    const visible=${visibleScript()}; const norm=(v)=>String(v||'').replace(/\\s+/g,' ').trim();
-    const auto=[...document.querySelectorAll('label,[role="radio"],button,span,div')].filter(visible).find(e=>norm(e.textContent)==='自动');
-    let autoSelected=false; if(auto){ const root=auto.closest('label,[role="radio"],button')||auto; const input=root.querySelector?.('input'); autoSelected=(input instanceof HTMLInputElement&&input.checked)||root.getAttribute?.('aria-checked')==='true'||/checked|selected|active/.test(String(root.className||'')); if(!autoSelected) root.click(); }
-    const declaration=[...document.querySelectorAll('label,span,div')].filter(visible).find(e=>/^声明[:：]?$/.test(norm(e.textContent)));
-    const aiText='内容由AI生成'; let aiFound=false, aiSelected=false;
-    if(declaration){ aiFound=true; let row=declaration.parentElement; for(let i=0;row&&i<6;i++,row=row.parentElement){ if(/声明/.test(norm(row.textContent))) { const t=[...row.querySelectorAll('button,[role="button"],input,span,div')].find(e=>visible(e)&&(/选择声明内容|内容由AI生成/.test(norm(e.textContent))||/声明/.test(String(e.getAttribute?.('aria-label')||'')))); if(t){ t.click(); break; } } } }
-    return {autoSelected,aiFound};
-  })()`);
-  await delay(700);
-  const aiState = await webContents.executeJavaScript(`(() => { const visible=${visibleScript()}; const norm=(v)=>String(v||'').replace(/\\s+/g,' ').trim(); const e=[...document.querySelectorAll('label,span,div,button,[role="option"]')].filter(visible).find(e=>norm(e.textContent)==='内容由AI生成'); if(e) e.click(); const selected=[...document.querySelectorAll('label,span,div')].filter(visible).some(e=>norm(e.textContent)==='内容由AI生成'&&/selected|checked|active/.test(String(e.className||''))); return {found:Boolean(e),selected}; })()`);
-  return {autoCoverSelected:Boolean(result.autoSelected),aiDeclarationFound:Boolean(result.aiFound||aiState.found),aiDeclarationSelected:Boolean(aiState.selected)};
+  let autoCoverSelected = await webContents.executeJavaScript(`(() => { const input=document.querySelector('input[type="radio"][value="auto"]'); return input instanceof HTMLInputElement&&input.checked; })()`);
+  if (!autoCoverSelected) {
+    await clickDomSelector(webContents, 'input[type="radio"][value="auto"]');
+    for (let i = 0; i < 15 && !autoCoverSelected; i += 1) {
+      await delay(300);
+      autoCoverSelected = await webContents.executeJavaScript(`(() => { const input=document.querySelector('input[type="radio"][value="auto"]'); return input instanceof HTMLInputElement&&input.checked; })()`);
+    }
+  }
+
+  let declaration = await webContents.executeJavaScript(`(() => { const button=document.querySelector('button.custom-switcher'); if(!(button instanceof HTMLElement))return {found:false,enabled:false}; const enabled=button.getAttribute('value')==='true'||/active|checked|open/.test(String(button.className||'')); return {found:true,enabled}; })()`);
+  if (declaration.found && !declaration.enabled) {
+    await clickDomSelector(webContents, 'button.custom-switcher');
+    for (let i = 0; i < 15 && !declaration.enabled; i += 1) {
+      await delay(300);
+      declaration = await webContents.executeJavaScript(`(() => { const button=document.querySelector('button.custom-switcher'); if(!(button instanceof HTMLElement))return {found:false,enabled:false}; return {found:true,enabled:button.getAttribute('value')==='true'||/active|checked|open/.test(String(button.className||''))}; })()`);
+    }
+  }
+  const dropdown = declaration.enabled && await clickVisibleText(webContents, 'button,[role="button"],div,span', '选择声明内容');
+  if (dropdown) await delay(500);
+  const optionClicked = dropdown && await clickVisibleText(webContents, '[role="option"],li,button,div,span', '内容由AI生成');
+  if (optionClicked) await delay(700);
+  const aiDeclarationSelected = await webContents.executeJavaScript(`(() => { const norm=(v)=>String(v||'').replace(/\\s+/g,' ').trim(); const toggle=document.querySelector('button.custom-switcher'); if(!(toggle instanceof HTMLElement))return false; return (toggle.getAttribute('value')==='true'||/active|checked|open/.test(String(toggle.className||'')))&&[...document.querySelectorAll('body *')].some(e=>norm(e.textContent)==='内容由AI生成'); })()`);
+  return { autoCoverSelected, aiDeclarationFound: Boolean(declaration.found), aiDeclarationSelected };
 }
 
 export async function fillNeteaseDraft(webContents: WebContents, title: string, html: string, coverPath: string): Promise<NeteaseDraftFillResult> {
-  await ensureEditor(webContents);
-  const content = await fillText(webContents, title, html);
+  const runStage = async <T>(code: string, action: () => Promise<T>): Promise<T> => {
+    try {
+      return await action();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${code}: ${message}`);
+    }
+  };
+  await runStage('NETEASE_EDITOR_FAILED', () => ensureEditor(webContents));
+  const content = await runStage('NETEASE_TEXT_FILL_FAILED', () => fillText(webContents, title, html));
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`NETEASE_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
-  const bodyImageInserted = await insertBodyImage(webContents, coverPath);
-  const options = await applyOptions(webContents);
-  const publishButtonDetected = await webContents.executeJavaScript(`(() => { const visible=${visibleScript()}; const n=(v)=>String(v||'').replace(/\\s+/g,' ').trim(); return [...document.querySelectorAll('button,[role="button"],a')].filter(visible).some(e=>n(e.textContent)==='发布'&&!e.hasAttribute('disabled')); })()`);
+  const bodyImageInserted = await runStage('NETEASE_IMAGE_FLOW_FAILED', () => insertBodyImage(webContents, coverPath));
+  if (!bodyImageInserted) throw new Error('NETEASE_BODY_IMAGE_FAILED: 正文图片上传或确认未完成');
+  const options = await runStage('NETEASE_OPTIONS_FAILED', () => applyOptions(webContents));
+  const publishButtonDetected = await runStage('NETEASE_PUBLISH_BUTTON_CHECK_FAILED', () => webContents.executeJavaScript(`(() => { const button=document.querySelector('button.primary_button'); return button instanceof HTMLButtonElement&&!button.disabled&&!button.hasAttribute('disabled'); })()`));
   await delay(500);
   return { ...content, bodyImageInserted, ...options, publishButtonDetected, url: webContents.getURL() };
 }
