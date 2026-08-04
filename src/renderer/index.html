@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GEO Publisher</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <strong>GEO Publisher</strong>
+      <span id="connection">桌面端已启动</span>
+    </header>
+    <aside>
+      <p class="section-title">发布平台</p>
+      <button data-platform="baijia">百家号</button>
+      <button data-platform="toutiao">头条号</button>
+      <button data-platform="zhihu">知乎</button>
+      <button data-platform="penguin">企鹅号</button>
+      <button data-platform="sohu">搜狐号</button>
+      <button data-platform="netease">网易号</button>
+      <div class="help">首次使用请逐个平台登录。登录状态会保存在本机，不会因应用重启丢失。</div>
+    </aside>
+    <main id="empty">
+      <h1>请选择一个平台</h1>
+      <p>平台将在右侧内置浏览器中打开。CLI 可以在不依赖浏览器扩展的情况下控制同一会话。</p>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>

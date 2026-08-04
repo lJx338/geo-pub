@@ -1,0 +1,14 @@
+:root { font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; color: #172033; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f6f8; }
+header { position: fixed; inset: 0 0 auto 0; height: 56px; display: flex; align-items: center; gap: 18px; padding: 0 20px; background: #fff; border-bottom: 1px solid #e6e8ee; z-index: 2; }
+header strong { font-size: 17px; }
+#connection { color: #16845b; font-size: 13px; }
+aside { position: fixed; inset: 56px auto 0 0; width: 220px; padding: 18px 14px; background: #fff; border-right: 1px solid #e6e8ee; }
+.section-title { margin: 0 8px 12px; color: #7a8498; font-size: 12px; }
+button { width: 100%; margin: 3px 0; padding: 11px 12px; border: 0; border-radius: 8px; background: transparent; color: #273047; text-align: left; cursor: pointer; font-size: 14px; }
+button:hover, button.active { background: #edf3ff; color: #175cd3; }
+.help { margin-top: 24px; padding: 12px; border-radius: 8px; background: #f5f6f8; color: #667085; font-size: 12px; line-height: 1.65; }
+main { margin: 56px 0 0 220px; height: calc(100vh - 56px); display: grid; place-content: center; padding: 60px; color: #667085; text-align: center; }
+main h1 { margin: 0 0 8px; color: #344054; font-size: 22px; }
+main p { max-width: 560px; line-height: 1.7; }

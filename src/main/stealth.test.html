@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Electron 反检测测试页面</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .test-section {
+      background: white;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .test-item {
+      padding: 10px;
+      margin: 5px 0;
+      border-left: 4px solid #ddd;
+      padding-left: 15px;
+    }
+    .pass {
+      border-left-color: #4caf50;
+      background: #f1f8f4;
+    }
+    .fail {
+      border-left-color: #f44336;
+      background: #fef1f0;
+    }
+    .warning {
+      border-left-color: #ff9800;
+      background: #fff8f0;
+    }
+    h1 { color: #333; }
+    h2 { color: #666; margin-top: 0; }
+    code {
+      background: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: "Monaco", "Menlo", monospace;
+      font-size: 13px;
+    }
+    .status { font-weight: bold; }
+    .pass .status { color: #4caf50; }
+    .fail .status { color: #f44336; }
+    .warning .status { color: #ff9800; }
+  </style>
+</head>
+<body>
+  <h1>🔍 Electron 反检测测试</h1>
+  <p>这个页面会检测常见的Electron特征，帮助你验证反检测是否生效。</p>
+
+  <div class="test-section">
+    <h2>核心检测项</h2>
+    <div id="core-tests"></div>
+  </div>
+
+  <div class="test-section">
+    <h2>Navigator 属性</h2>
+    <div id="navigator-tests"></div>
+  </div>
+
+  <div class="test-section">
+    <h2>浏览器特征</h2>
+    <div id="browser-tests"></div>
+  </div>
+
+  <div class="test-section">
+    <h2>高级检测</h2>
+    <div id="advanced-tests"></div>
+  </div>
+
+  <script>
+    function addTest(containerId, name, condition, value) {
+      const container = document.getElementById(containerId);
+      const div = document.createElement('div');
+      div.className = 'test-item ' + (condition ? 'pass' : 'fail');
+      div.innerHTML = `
+        <span class="status">${condition ? '✓ 通过' : '✗ 失败'}</span>
+        <strong>${name}</strong>
+        ${value ? `<br><code>${value}</code>` : ''}
+      `;
+      container.appendChild(div);
+      return condition;
+    }
+
+    function addWarning(containerId, name, value) {
+      const container = document.getElementById(containerId);
+      const div = document.createElement('div');
+      div.className = 'test-item warning';
+      div.innerHTML = `
+        <span class="status">⚠ 警告</span>
+        <strong>${name}</strong>
+        ${value ? `<br><code>${value}</code>` : ''}
+      `;
+      container.appendChild(div);
+    }
+
+    // 核心检测
+    addTest('core-tests', 'User-Agent 不包含 "Electron"',
+      !navigator.userAgent.includes('Electron'),
+      navigator.userAgent);
+
+    addTest('core-tests', 'navigator.webdriver 为 false',
+      navigator.webdriver === false || navigator.webdriver === undefined);
+
+    addTest('core-tests', 'window.process 不存在',
+      typeof window.process === 'undefined');
+
+    addTest('core-tests', 'window.require 不存在',
+      typeof window.require === 'undefined');
+
+    addTest('core-tests', 'window.module 不存在',
+      typeof window.module === 'undefined');
+
+    // Navigator 属性
+    addTest('navigator-tests', 'window.chrome 存在',
+      typeof window.chrome !== 'undefined',
+      typeof window.chrome);
+
+    addTest('navigator-tests', 'navigator.plugins 长度 > 0',
+      navigator.plugins.length > 0,
+      `长度: ${navigator.plugins.length}`);
+
+    addTest('navigator-tests', 'navigator.languages 已设置',
+      navigator.languages && navigator.languages.length > 0,
+      navigator.languages ? navigator.languages.join(', ') : '');
+
+    addTest('navigator-tests', 'navigator.hardwareConcurrency 合理',
+      navigator.hardwareConcurrency && navigator.hardwareConcurrency >= 2,
+      `${navigator.hardwareConcurrency} 核心`);
+
+    // 浏览器特征
+    addTest('browser-tests', 'window.outerWidth 已设置',
+      window.outerWidth > 0,
+      `${window.outerWidth}px`);
+
+    addTest('browser-tests', 'window.outerHeight 已设置',
+      window.outerHeight > 0,
+      `${window.outerHeight}px`);
+
+    addTest('browser-tests', 'navigator.platform 已设置',
+      typeof navigator.platform === 'string' && navigator.platform.length > 0,
+      navigator.platform);
+
+    addTest('browser-tests', 'navigator.deviceMemory 已设置',
+      typeof navigator.deviceMemory === 'number',
+      navigator.deviceMemory ? `${navigator.deviceMemory}GB` : 'undefined');
+
+    // 高级检测
+    addTest('advanced-tests', 'navigator.connection 存在',
+      typeof navigator.connection !== 'undefined');
+
+    addTest('advanced-tests', 'Permissions API 正常工作',
+      typeof navigator.permissions !== 'undefined' &&
+      typeof navigator.permissions.query === 'function');
+
+    // 检查是否有 _getElectronVersion 等泄露
+    addTest('advanced-tests', 'window._getElectronVersion 不存在',
+      typeof window._getElectronVersion === 'undefined');
+
+    // 检查错误堆栈是否包含 electron
+    try {
+      throw new Error('test');
+    } catch (e) {
+      const hasElectron = e.stack && e.stack.toLowerCase().includes('electron');
+      addTest('advanced-tests', 'Error.stack 不包含 "electron"',
+        !hasElectron,
+        hasElectron ? '检测到 electron 字样' : '干净');
+    }
+
+    // 检查 appVersion
+    addTest('advanced-tests', 'navigator.appVersion 不包含 "Electron"',
+      !navigator.appVersion.includes('Electron'),
+      navigator.appVersion);
+
+    // 统计结果
+    setTimeout(() => {
+      const allTests = document.querySelectorAll('.test-item');
+      const passed = document.querySelectorAll('.pass').length;
+      const failed = document.querySelectorAll('.fail').length;
+      const total = allTests.length;
+
+      const summary = document.createElement('div');
+      summary.className = 'test-section';
+      summary.style.background = passed === total ? '#e8f5e9' : (failed > 3 ? '#ffebee' : '#fff8e1');
+      summary.innerHTML = `
+        <h2>测试总结</h2>
+        <p style="font-size: 18px; margin: 0;">
+          <strong>通过: ${passed}/${total}</strong>
+          ${failed > 0 ? `<span style="color: #f44336;">(失败: ${failed})</span>` : '✓ 全部通过！'}
+        </p>
+        <p style="margin-top: 10px; color: #666;">
+          ${passed === total
+            ? '🎉 恭喜！所有反检测测试都通过了，你的Electron应用看起来像一个普通的Chrome浏览器。'
+            : failed > 5
+              ? '❌ 反检测效果较差，建议检查配置是否正确应用。'
+              : '⚠️  大部分测试通过，但仍有一些特征可能暴露Electron身份。'}
+        </p>
+      `;
+      document.body.appendChild(summary);
+    }, 100);
+  </script>
+</body>
+</html>
