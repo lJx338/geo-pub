@@ -21,7 +21,7 @@ function delay(ms: number): Promise<void> {
 }
 
 export async function ensureZhihuEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
-  if (!webContents.getURL().startsWith('https://zhuanlan.zhihu.com/write')) {
+  if (!/^https:\/\/zhuanlan\.zhihu\.com\/(?:write|p\/\d+\/edit)(?:[/?#]|$)/.test(webContents.getURL())) {
     await webContents.loadURL(PUBLISH_URL);
   }
   const deadline = Date.now() + timeoutMs;
@@ -35,17 +35,33 @@ export async function ensureZhihuEditor(webContents: WebContents, timeoutMs = 12
           && style.visibility !== 'hidden' && Number(style.opacity) !== 0;
       })();
       const text = String(document.body?.innerText || '');
+      const blockingDialog = [...document.querySelectorAll('[role="dialog"],.Modal-wrapper,.Modal-content')]
+        .filter(visible).find((element) => /草稿加载中|草稿正在加载|正在加载草稿/.test(String(element.textContent || '')));
+      const confirm = blockingDialog ? [...blockingDialog.querySelectorAll('button,[role="button"]')]
+        .filter(visible).find((element) => String(element.textContent || '').replace(/\s+/g, '') === '确定') : null;
+      if (confirm instanceof HTMLElement) {
+        const rect = confirm.getBoundingClientRect();
+        return { ready: false, loginBlocked: false, dismiss: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } };
+      }
       const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
       const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
       return {
         ready: title instanceof HTMLTextAreaElement && !title.disabled && !title.readOnly
           && visible(title) && body instanceof HTMLElement && body.isContentEditable && visible(body),
         loginBlocked: /登录知乎|请先登录|扫码登录|验证码|安全验证|验证身份|账号异常/.test(text),
+        dismiss: null,
       };
     })()`);
     if (state.loginBlocked) throw new Error('ZHIHU_LOGIN_REQUIRED: 请在桌面端完成知乎登录或验证');
+    if (state.dismiss) {
+      webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(state.dismiss.x), y: Math.round(state.dismiss.y), button: 'left', clickCount: 1 });
+      webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(state.dismiss.x), y: Math.round(state.dismiss.y), button: 'left', clickCount: 1 });
+      readyStreak = 0;
+      await delay(1000);
+      continue;
+    }
     readyStreak = state.ready ? readyStreak + 1 : 0;
-    if (readyStreak >= 2) return;
+    if (readyStreak >= 5) return;
     await delay(700);
   }
   throw new Error('ZHIHU_EDITOR_NOT_READY: 知乎编辑器 120 秒内未就绪');
@@ -133,8 +149,9 @@ async function openPublishSettings(webContents: WebContents): Promise<boolean> {
         const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
       })();
-      const pageText = normalize(document.body?.innerText);
-      if (pageText.includes('创作声明')) return { opened: true, target: null };
+      const declarationVisible = [...document.querySelectorAll('body *')]
+        .filter(visible).some((element) => normalize(element.textContent) === '创作声明');
+      if (declarationVisible) return { opened: true, target: null };
       const button = [...document.querySelectorAll('button,[role="button"]')]
         .filter(visible).find((element) => normalize(element.textContent) === '发布设置');
       if (!(button instanceof HTMLElement)) return { opened: false, target: null };
