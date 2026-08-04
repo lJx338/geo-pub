@@ -27,3 +27,23 @@ jobs:
       - run: npm run build
       - run: cd cli && go test ./...
       - run: npm run build:cli
+
+  windows-install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - run: npm ci
+      - run: npm run build
+      - shell: bash
+        run: npm run build:cli
+      - run: npx electron-builder --win --x64 --publish never --config.directories.output=release/win-smoke
+      - shell: pwsh
+        run: ./tests/windows-install-smoke.ps1 -ReleaseDirectory release/win-smoke

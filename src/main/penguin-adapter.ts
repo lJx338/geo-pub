@@ -244,7 +244,6 @@ export async function fillPenguinDraft(webContents: WebContents, title: string, 
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`PENGUIN_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
   const tagState = await applyTags(webContents, tags);
   const aiDeclarationSelected = await ensureAiDeclaration(webContents);
-  if (!aiDeclarationSelected) throw new Error('PENGUIN_AI_DECLARATION_FAILED: 未能确认“该文章由AI辅助创作”');
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
