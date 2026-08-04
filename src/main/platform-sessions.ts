@@ -5,6 +5,7 @@ import type { DesktopStatus, Platform, PlatformStatus } from '../shared/protocol
 import { PLATFORMS } from '../shared/protocol.js';
 import { fillBaijiaDraft } from './baijia-adapter.js';
 import { fillPenguinDraft } from './penguin-adapter.js';
+import { fillSohuDraft } from './sohu-adapter.js';
 import { evidenceDirectory } from './runtime-paths.js';
 import { setupStealthInjection, setupStealthSession } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
@@ -15,7 +16,7 @@ const PLATFORM_URLS: Record<Platform, string> = {
   toutiao: 'https://mp.toutiao.com/profile_v4/graphic/publish',
   zhihu: 'https://zhuanlan.zhihu.com/write',
   penguin: 'https://om.qq.com/main/creation/article',
-  sohu: 'https://mp.sohu.com/',
+  sohu: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1',
   netease: 'https://mp.163.com/',
 };
 
@@ -118,7 +119,7 @@ export class PlatformSessions {
     this.views.get(this.activePlatform)?.view.setBounds(this.viewBounds());
   }
 
-  async fillDraft(platform: 'baijia' | 'toutiao' | 'zhihu' | 'penguin', title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+  async fillDraft(platform: 'baijia' | 'toutiao' | 'zhihu' | 'penguin' | 'sohu', title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
     await this.open(platform);
     const managed = this.views.get(platform);
     if (!managed) throw new Error(`${platform} 浏览器创建失败`);
@@ -128,14 +129,16 @@ export class PlatformSessions {
         ? await fillToutiaoDraft(managed.view.webContents, title, html, coverPath)
         : platform === 'zhihu'
           ? await fillZhihuDraft(managed.view.webContents, title, html)
-          : await fillPenguinDraft(managed.view.webContents, title, html, tags);
+          : platform === 'penguin'
+            ? await fillPenguinDraft(managed.view.webContents, title, html, tags)
+            : await fillSohuDraft(managed.view.webContents, title, html);
     const screenshotPath = await this.captureEvidence(platform, 'fill');
     return { ...result, screenshotPath };
   }
 
-  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[] }> {
+  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[] }> {
     const managed = this.views.get(platform);
-    if (!managed) return { ...this.platformStatus(platform), textStart: '', controls: [], editables: [], buttons: [] };
+    if (!managed) return { ...this.platformStatus(platform), textStart: '', controls: [], editables: [], buttons: [], dialogs: [] };
     const details = await managed.view.webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
       const visible = (element) => element instanceof HTMLElement && (() => {
@@ -190,6 +193,8 @@ export class PlatformSessions {
             className: String(element.className || '').slice(0, 180),
             disabled: element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true',
           })),
+        dialogs: [...document.querySelectorAll('[role="dialog"],[class*="message"],[class*="Message"],[class*="modal"],[class*="Modal"]')]
+          .filter(visible).slice(0, 20).map((element) => ({ text: normalize(element.textContent).slice(0, 300), className: String(element.className || '').slice(0, 200), outerHTML: element.outerHTML.slice(0, 2000) })),
       };
     })()`);
     return { ...this.platformStatus(platform), ...details };

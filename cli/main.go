@@ -234,8 +234,8 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 }
 
 func validateFill(input fillInput) error {
-	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" {
-		return usageError("当前 alpha 版 fill 仅支持 platform=toutiao、platform=baijia、platform=zhihu 或 platform=penguin")
+	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" {
+		return usageError("当前 alpha 版 fill 仅支持 platform=toutiao、platform=baijia、platform=zhihu、platform=penguin 或 platform=sohu")
 	}
 	if len([]rune(strings.TrimSpace(input.Title))) < 2 || len([]rune(input.Title)) > 64 {
 		return usageError("title 必须为 2-64 个字符")
@@ -246,10 +246,10 @@ func validateFill(input fillInput) error {
 	if strings.TrimSpace(input.HTML) == "" {
 		return usageError("html 必填")
 	}
-	if input.Platform != "zhihu" && input.Platform != "penguin" && !filepath.IsAbs(input.CoverPath) {
+	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && !filepath.IsAbs(input.CoverPath) {
 		return usageError("coverPath 必须是绝对路径")
 	}
-	if input.Platform != "zhihu" && input.Platform != "penguin" {
+	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" {
 		info, err := os.Stat(input.CoverPath)
 		if err != nil || info.IsDir() {
 			return &cliError{code: "COVER_NOT_FOUND", message: "找不到封面文件：" + input.CoverPath, suggestion: "传入当前电脑上的封面绝对路径"}

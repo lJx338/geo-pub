@@ -17,7 +17,7 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
   requestBase.extend({ action: z.literal('platform.inspect'), platform: platformSchema }),
   requestBase.extend({
     action: z.literal('draft.fill'),
-    platform: z.enum(['baijia', 'toutiao', 'zhihu', 'penguin']),
+    platform: z.enum(['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu']),
     title: z.string().trim().min(2).max(64),
     html: z.string().min(1),
     coverPath: z.string(),
@@ -25,7 +25,7 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
   }).refine((request) => request.platform !== 'toutiao' || request.title.length <= 30, {
     path: ['title'],
     message: '头条号标题不能超过 30 个字符',
-  }).refine((request) => ['zhihu', 'penguin'].includes(request.platform) || request.coverPath.trim().length > 0, {
+  }).refine((request) => ['zhihu', 'penguin', 'sohu'].includes(request.platform) || request.coverPath.trim().length > 0, {
     path: ['coverPath'],
     message: '百家号和头条号必须提供封面路径',
   }),
