@@ -234,8 +234,8 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 }
 
 func validateFill(input fillInput) error {
-	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" {
-		return usageError("当前 alpha 版 fill 仅支持 platform=toutiao、platform=baijia、platform=zhihu、platform=penguin 或 platform=sohu")
+	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && input.Platform != "netease" {
+		return usageError("当前 alpha 版 fill 支持 platform=toutiao、baijia、zhihu、penguin、sohu 或 netease")
 	}
 	if len([]rune(strings.TrimSpace(input.Title))) < 2 || len([]rune(input.Title)) > 64 {
 		return usageError("title 必须为 2-64 个字符")

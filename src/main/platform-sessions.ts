@@ -10,6 +10,7 @@ import { evidenceDirectory } from './runtime-paths.js';
 import { setupStealthInjection, setupStealthSession } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
+import { fillNeteaseDraft } from './netease-adapter.js';
 
 const PLATFORM_URLS: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -17,7 +18,7 @@ const PLATFORM_URLS: Record<Platform, string> = {
   zhihu: 'https://zhuanlan.zhihu.com/write',
   penguin: 'https://om.qq.com/main/creation/article',
   sohu: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1',
-  netease: 'https://mp.163.com/',
+  netease: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
 };
 
 interface ManagedView {
@@ -119,7 +120,7 @@ export class PlatformSessions {
     this.views.get(this.activePlatform)?.view.setBounds(this.viewBounds());
   }
 
-  async fillDraft(platform: 'baijia' | 'toutiao' | 'zhihu' | 'penguin' | 'sohu', title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+  async fillDraft(platform: 'baijia' | 'toutiao' | 'zhihu' | 'penguin' | 'sohu' | 'netease', title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
     await this.open(platform);
     const managed = this.views.get(platform);
     if (!managed) throw new Error(`${platform} 浏览器创建失败`);
@@ -131,7 +132,9 @@ export class PlatformSessions {
           ? await fillZhihuDraft(managed.view.webContents, title, html)
           : platform === 'penguin'
             ? await fillPenguinDraft(managed.view.webContents, title, html, tags)
-            : await fillSohuDraft(managed.view.webContents, title, html);
+            : platform === 'sohu'
+              ? await fillSohuDraft(managed.view.webContents, title, html)
+              : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath);
     const screenshotPath = await this.captureEvidence(platform, 'fill');
     return { ...result, screenshotPath };
   }

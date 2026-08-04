@@ -17,7 +17,7 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
   requestBase.extend({ action: z.literal('platform.inspect'), platform: platformSchema }),
   requestBase.extend({
     action: z.literal('draft.fill'),
-    platform: z.enum(['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu']),
+    platform: z.enum(['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease']),
     title: z.string().trim().min(2).max(64),
     html: z.string().min(1),
     coverPath: z.string(),
