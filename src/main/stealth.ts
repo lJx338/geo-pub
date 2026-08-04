@@ -22,8 +22,7 @@ export function getStealthUserAgent(): string {
 export function setupStealthSession(sessionInstance: Electron.Session): void {
   if (configuredSessions.has(sessionInstance)) return;
   configuredSessions.add(sessionInstance);
-  // 设置伪装的User-Agent
-  sessionInstance.setUserAgent(getStealthUserAgent());
+  setupStealthUserAgent(sessionInstance);
 
   // 移除 Permissions-Policy 中可能暴露Electron的header
   sessionInstance.webRequest.onHeadersReceived((details, callback) => {
@@ -33,6 +32,11 @@ export function setupStealthSession(sessionInstance: Electron.Session): void {
     delete headers['X-Frame-Options'];
     callback({ responseHeaders: headers });
   });
+}
+
+/** 仅移除 Electron UA 标识，不修改页面 JS 指纹。网易号登录会话使用此模式。 */
+export function setupStealthUserAgent(sessionInstance: Electron.Session): void {
+  sessionInstance.setUserAgent(getStealthUserAgent());
 }
 
 /**

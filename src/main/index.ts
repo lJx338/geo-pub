@@ -66,7 +66,14 @@ async function runDesktop(): Promise<void> {
   ipcMain.handle('geo:status', () => ({ ...sessions.status(), cliPath }));
   ipcMain.handle('geo:open-platform', (_event, platform: Platform) => sessions.open(platform));
   await window.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
-  app.once('before-quit', () => { void controlServer.stop(); });
+  let quitting = false;
+  app.on('before-quit', (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    quitting = true;
+    void Promise.all([sessions.flushStorage(), controlServer.stop()])
+      .finally(() => app.quit());
+  });
 }
 
 runDesktop().catch((error) => {

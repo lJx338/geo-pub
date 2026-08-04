@@ -7,10 +7,11 @@ import { fillBaijiaDraft } from './baijia-adapter.js';
 import { fillPenguinDraft } from './penguin-adapter.js';
 import { fillSohuDraft } from './sohu-adapter.js';
 import { evidenceDirectory } from './runtime-paths.js';
-import { setupStealthInjection, setupStealthSession } from './stealth.js';
+import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
 import { fillNeteaseDraft } from './netease-adapter.js';
+import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
 
 const PLATFORM_URLS: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -24,6 +25,7 @@ const PLATFORM_URLS: Record<Platform, string> = {
 interface ManagedView {
   platform: Platform;
   view: WebContentsView;
+  partition: Electron.Session;
   loading: boolean;
   lastUsedAt: number;
 }
@@ -72,9 +74,12 @@ export class PlatformSessions {
 
       // 为该平台的session配置反检测
       const platformSession = session.fromPartition(`persist:geo-publisher-${platform}`);
-      setupStealthSession(platformSession);
+      // 网易号对浏览器指纹和登录会话绑定更严格，不注入 JS 指纹伪装，避免登录后被服务端判定会话异常。
+      if (platform !== 'netease') setupStealthSession(platformSession);
+      else setupStealthUserAgent(platformSession);
+      await restorePlatformCookies(platformSession, platform);
 
-      managed = { platform, view, loading: false, lastUsedAt: Date.now() };
+      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now() };
       this.views.set(platform, managed);
       view.webContents.setWindowOpenHandler(({ url }) => {
         if (managed && !managed.loading && url !== managed.view.webContents.getURL()) {
@@ -83,10 +88,20 @@ export class PlatformSessions {
         return { action: 'deny' };
       });
       view.webContents.on('did-start-loading', () => { if (managed) managed.loading = true; });
-      view.webContents.on('did-stop-loading', () => { if (managed) managed.loading = false; });
+      view.webContents.on('did-stop-loading', () => {
+        if (managed) {
+          managed.loading = false;
+          void managed.partition.flushStorageData();
+          void snapshotPlatformCookies(managed.partition, managed.platform).catch(() => undefined);
+        }
+      });
+      platformSession.cookies.on('changed', () => {
+        void platformSession.flushStorageData();
+        void snapshotPlatformCookies(platformSession, platform).catch(() => undefined);
+      });
 
       // 设置反检测脚本注入（多时机注入确保生效）
-      setupStealthInjection(view.webContents);
+      if (platform !== 'netease') setupStealthInjection(view.webContents);
 
       this.attach(platform);
       this.window.show();
@@ -211,6 +226,13 @@ export class PlatformSessions {
       activePlatform: this.activePlatform,
       platforms: PLATFORMS.map((platform) => this.platformStatus(platform)),
     };
+  }
+
+  async flushStorage(): Promise<void> {
+    await Promise.all([...this.views.values()].flatMap(({ platform, partition }) => [
+      partition.flushStorageData(),
+      snapshotPlatformCookies(partition, platform),
+    ]));
   }
 
   private platformStatus(platform: Platform): PlatformStatus {
