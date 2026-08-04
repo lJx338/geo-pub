@@ -306,7 +306,10 @@ func startDesktop() error {
 	case "darwin":
 		command = exec.Command("open", "-a", "GEO Publisher")
 	case "windows":
-		path := filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "GEO Publisher", "GEO Publisher.exe")
+		path := windowsDesktopExecutable()
+		if path == "" {
+			return &cliError{code: "DESKTOP_START_FAILED", message: "找不到 GEO Publisher.exe", suggestion: "请手动打开一次 GEO Publisher，随后 CLI 会从 discovery.json 记住实际安装位置"}
+		}
 		command = exec.Command(path)
 	default:
 		command = exec.Command("geo-publisher-desktop")
@@ -315,6 +318,49 @@ func startDesktop() error {
 		return &cliError{code: "DESKTOP_START_FAILED", message: err.Error(), suggestion: "确认 GEO Publisher 桌面端已安装"}
 	}
 	return nil
+}
+
+func desktopPathFromDiscovery(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var record struct {
+		AppPath string `json:"appPath"`
+	}
+	if json.Unmarshal(data, &record) != nil || record.AppPath == "" {
+		return ""
+	}
+	if info, err := os.Stat(record.AppPath); err == nil && !info.IsDir() {
+		return record.AppPath
+	}
+	return ""
+}
+
+func windowsDesktopExecutable() string {
+	if path := desktopPathFromDiscovery(discoveryPath()); path != "" {
+		return path
+	}
+	local := os.Getenv("LOCALAPPDATA")
+	for _, directory := range []string{"GEO Publisher", "geo-publisher-desktop"} {
+		candidate := filepath.Join(local, "Programs", directory, "GEO Publisher.exe")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	programs := filepath.Join(local, "Programs")
+	found := ""
+	_ = filepath.Walk(programs, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(info.Name(), "GEO Publisher.exe") {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 func doctor() json.RawMessage {

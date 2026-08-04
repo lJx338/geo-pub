@@ -61,6 +61,21 @@ func TestInstructionsAndSchemaAreAvailableOffline(t *testing.T) {
 	}
 }
 
+func TestDesktopPathFromDiscovery(t *testing.T) {
+	directory := t.TempDir()
+	appPath := filepath.Join(directory, "GEO Publisher.exe")
+	if err := os.WriteFile(appPath, []byte("exe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery := filepath.Join(directory, "discovery.json")
+	if err := os.WriteFile(discovery, []byte(`{"appPath":"`+strings.ReplaceAll(appPath, `\`, `\\`)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := desktopPathFromDiscovery(discovery); got != appPath {
+		t.Fatalf("unexpected desktop path: %q", got)
+	}
+}
+
 func TestValidateDoesNotContactDesktop(t *testing.T) {
 	directory := t.TempDir()
 	cover := filepath.Join(directory, "cover.jpg")

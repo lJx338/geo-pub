@@ -12,20 +12,21 @@ if (-not $installer) {
   throw "Windows installer was not found in $ReleaseDirectory"
 }
 
-$installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\GEO Publisher'
 $dataDirectory = Join-Path $env:LOCALAPPDATA 'GEO Publisher Desktop'
 $discoveryPath = Join-Path $dataDirectory 'discovery.json'
-$skillPath = Join-Path $installDirectory 'resources\integrations\workbuddy\geo-publisher\SKILL.md'
-$appPath = Join-Path $installDirectory 'GEO Publisher.exe'
 
 try {
   $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
   if ($install.ExitCode -ne 0) {
     throw "Installer exited with code $($install.ExitCode)"
   }
-  if (-not (Test-Path $appPath)) {
-    throw "Installed application was not found at $appPath"
+  $appPath = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs') -Filter 'GEO Publisher.exe' -File -Recurse |
+    Select-Object -First 1 -ExpandProperty FullName
+  if (-not $appPath) {
+    throw 'Installed GEO Publisher.exe was not found below LOCALAPPDATA\Programs'
   }
+  $installDirectory = Split-Path -Parent $appPath
+  $skillPath = Join-Path $installDirectory 'resources\integrations\workbuddy\geo-publisher\SKILL.md'
   if (-not (Test-Path $skillPath)) {
     throw "Bundled WorkBuddy Skill was not found at $skillPath"
   }
@@ -54,6 +55,9 @@ try {
   if ($discovery.platform -ne 'win32' -or $discovery.arch -ne 'x64') {
     throw "Unexpected discovery platform: $($discovery.platform)/$($discovery.arch)"
   }
+  if ($discovery.appPath -ne $appPath) {
+    throw "Discovery appPath does not match the installed executable"
+  }
 
   $version = & $discovery.cliPath version | ConvertFrom-Json
   if (-not $version.ok -or $version.version -ne $discovery.appVersion) {
@@ -74,12 +78,16 @@ try {
 
   Write-Host "Windows install smoke passed: app=$($discovery.appVersion), cli=$($version.version)"
 } finally {
-  Get-Process | Where-Object {
-    try { $_.Path -and $_.Path.StartsWith($installDirectory, [System.StringComparison]::OrdinalIgnoreCase) } catch { $false }
-  } | Stop-Process -Force -ErrorAction SilentlyContinue
+  if ($installDirectory) {
+    Get-Process | Where-Object {
+      try { $_.Path -and $_.Path.StartsWith($installDirectory, [System.StringComparison]::OrdinalIgnoreCase) } catch { $false }
+    } | Stop-Process -Force -ErrorAction SilentlyContinue
+  }
 
-  $uninstaller = Join-Path $installDirectory 'Uninstall GEO Publisher.exe'
-  if (Test-Path $uninstaller) {
-    Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait | Out-Null
+  if ($installDirectory) {
+    $uninstaller = Join-Path $installDirectory 'Uninstall GEO Publisher.exe'
+    if (Test-Path $uninstaller) {
+      Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait | Out-Null
+    }
   }
 }

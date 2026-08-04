@@ -5,6 +5,7 @@ import { controlEndpoint, discoveryFilePath } from './runtime-paths.js';
 export interface DiscoveryRecord {
   schemaVersion: 1;
   appVersion: string;
+  appPath: string;
   cliPath: string | null;
   controlEndpoint: string;
   platform: NodeJS.Platform;
@@ -18,6 +19,7 @@ export function createDiscoveryRecord(appVersion: string, cliPath: string | null
   return {
     schemaVersion: 1,
     appVersion,
+    appPath: process.execPath,
     cliPath,
     controlEndpoint: controlEndpoint(),
     platform: process.platform,
