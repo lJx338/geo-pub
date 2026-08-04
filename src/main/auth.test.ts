@@ -8,7 +8,10 @@ describe('runtime paths', () => {
   });
 
   it('keeps desktop data separate from the extension publisher', () => {
-    expect(dataDirectory()).toContain('GEO Publisher Desktop');
-    expect(dataDirectory()).not.toContain('.geo-chrome-publisher');
+    const directory = dataDirectory();
+    const expectedName = process.platform === 'linux' ? 'geo-publisher' : 'GEO Publisher Desktop';
+
+    expect(directory).toContain(expectedName);
+    expect(directory).not.toContain('.geo-chrome-publisher');
   });
 });
