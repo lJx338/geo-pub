@@ -11,6 +11,7 @@ import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } fro
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
 import { fillNeteaseDraft } from './netease-adapter.js';
+import { publishFilledDraft } from './publish-adapter.js';
 import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
 
 const PLATFORM_URLS: Record<Platform, string> = {
@@ -56,6 +57,7 @@ export class PlatformSessions {
     let managed = this.views.get(platform);
     if (!managed) {
       this.evictIdleView(platform);
+      const useMinimalBrowserEnvironment = platform === 'toutiao' || platform === 'netease';
       const view = new WebContentsView({
         webPreferences: {
           partition: `persist:geo-publisher-${platform}`,
@@ -68,14 +70,14 @@ export class PlatformSessions {
           allowRunningInsecureContent: false,
           enableWebSQL: false,
           // 使用专门的反检测 preload 脚本
-          preload: join(__dirname, '..', 'stealth-preload.cjs'),
+          preload: useMinimalBrowserEnvironment ? undefined : join(__dirname, '..', 'stealth-preload.cjs'),
         },
       });
 
       // 为该平台的session配置反检测
       const platformSession = session.fromPartition(`persist:geo-publisher-${platform}`);
-      // 网易号对浏览器指纹和登录会话绑定更严格，不注入 JS 指纹伪装，避免登录后被服务端判定会话异常。
-      if (platform !== 'netease') setupStealthSession(platformSession);
+      // 头条与网易的编辑器会被 JS 指纹改写干扰，只保留 UA 中移除 Electron 标识。
+      if (!useMinimalBrowserEnvironment) setupStealthSession(platformSession);
       else setupStealthUserAgent(platformSession);
       await restorePlatformCookies(platformSession, platform);
 
@@ -115,7 +117,7 @@ export class PlatformSessions {
       });
 
       // 设置反检测脚本注入（多时机注入确保生效）
-      if (platform !== 'netease') setupStealthInjection(view.webContents);
+      if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
 
       this.attach(platform);
       this.window.show();
@@ -188,6 +190,15 @@ export class PlatformSessions {
     }
     const screenshotPath = await this.captureEvidence(platform, 'fill');
     return { ...result, screenshotPath };
+  }
+
+  async publishDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+    const fill = await this.fillDraft(platform, title, html, coverPath, tags);
+    const managed = this.views.get(platform);
+    if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
+    const result = await publishFilledDraft(managed.view.webContents, platform, title);
+    const screenshotPath = await this.captureEvidence(platform, `publish-${result.status}`);
+    return { fill, ...result, screenshotPath };
   }
 
   async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {

@@ -32,14 +32,15 @@ var platforms = map[string]bool{
 }
 
 type controlRequest struct {
-	ID        string   `json:"id"`
-	Token     string   `json:"token"`
-	Action    string   `json:"action"`
-	Platform  string   `json:"platform,omitempty"`
-	Title     string   `json:"title,omitempty"`
-	HTML      string   `json:"html,omitempty"`
-	CoverPath string   `json:"coverPath"`
-	Tags      []string `json:"tags"`
+	ID             string   `json:"id"`
+	Token          string   `json:"token"`
+	Action         string   `json:"action"`
+	Platform       string   `json:"platform,omitempty"`
+	Title          string   `json:"title,omitempty"`
+	HTML           string   `json:"html,omitempty"`
+	CoverPath      string   `json:"coverPath"`
+	Tags           []string `json:"tags"`
+	ConfirmPublish bool     `json:"confirmPublish,omitempty"`
 }
 
 type controlResponse struct {
@@ -54,11 +55,12 @@ type controlResponse struct {
 }
 
 type fillInput struct {
-	Platform  string   `json:"platform"`
-	Title     string   `json:"title"`
-	HTML      string   `json:"html"`
-	CoverPath string   `json:"coverPath"`
-	Tags      []string `json:"tags"`
+	Platform       string   `json:"platform"`
+	Title          string   `json:"title"`
+	HTML           string   `json:"html"`
+	CoverPath      string   `json:"coverPath"`
+	Tags           []string `json:"tags"`
+	ConfirmPublish bool     `json:"confirmPublish,omitempty"`
 }
 
 type cliOutput struct {
@@ -126,7 +128,7 @@ func run(args []string) (string, json.RawMessage, error) {
 			action = "platform.inspect"
 		}
 		return call(command, controlRequest{Action: action, Platform: args[0]}, defaultTimeout)
-	case "fill":
+	case "fill", "publish":
 		input, err := readFillInput(args, os.Stdin)
 		if err != nil {
 			return command, nil, err
@@ -134,14 +136,21 @@ func run(args []string) (string, json.RawMessage, error) {
 		if err := validateFill(input); err != nil {
 			return command, nil, err
 		}
+		if command == "publish" && !input.ConfirmPublish {
+			return command, nil, usageError("真实发布必须在 JSON 中显式设置 confirmPublish=true")
+		}
+		action := "draft.fill"
+		if command == "publish" {
+			action = "draft.publish"
+		}
 		return call(command, controlRequest{
-			Action: "draft.fill", Platform: input.Platform, Title: input.Title,
-			HTML: input.HTML, CoverPath: input.CoverPath, Tags: input.Tags,
+			Action: action, Platform: input.Platform, Title: input.Title,
+			HTML: input.HTML, CoverPath: input.CoverPath, Tags: input.Tags, ConfirmPublish: input.ConfirmPublish,
 		}, publishTimeout)
 	case "doctor":
 		return command, doctor(), nil
 	default:
-		return command, nil, usageError("命令：start | status | show | open <platform> | login <platform> | inspect <platform> | fill [--input file.json] | doctor | version")
+		return command, nil, usageError("命令：start | status | show | open <platform> | login <platform> | inspect <platform> | fill [--input file.json] | publish [--input file.json] | doctor | version")
 	}
 }
 
@@ -206,7 +215,7 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	flags.SetOutput(io.Discard)
 	inputPath := flags.String("input", "", "JSON request file")
 	if err := flags.Parse(args); err != nil {
-		return fillInput{}, usageError("fill 仅支持 --input <file.json>；不传时从 stdin 读取 JSON")
+		return fillInput{}, usageError("fill/publish 仅支持 --input <file.json>；不传时从 stdin 读取 JSON")
 	}
 	var data []byte
 	var err error
@@ -228,7 +237,7 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 platform、title、html、coverPath、tags（可选）"}
+		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 platform、title、html、coverPath、tags（可选）、confirmPublish（publish 必须为 true）"}
 	}
 	if input.Tags == nil {
 		input.Tags = []string{}

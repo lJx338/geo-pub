@@ -17,4 +17,10 @@ describe('control protocol', () => {
       id: '1', token: 'x'.repeat(32), action: 'draft.fill', platform: 'toutiao', title: 'a'.repeat(31), html: '<p>x</p>', coverPath: '/tmp/cover.jpg',
     }).success).toBe(false);
   });
+
+  it('requires an explicit confirmation for real publishing', () => {
+    const base = { id: '1', token: 'x'.repeat(32), action: 'draft.publish', platform: 'sohu', title: '正常文章标题', html: '<p>正文</p>', coverPath: '' };
+    expect(controlRequestSchema.safeParse(base).success).toBe(false);
+    expect(controlRequestSchema.safeParse({ ...base, confirmPublish: true }).success).toBe(true);
+  });
 });

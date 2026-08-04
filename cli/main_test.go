@@ -39,6 +39,16 @@ func TestReadFillInputRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestReadPublishConfirmation(t *testing.T) {
+	input, err := readFillInput(nil, strings.NewReader(`{"platform":"sohu","title":"正常文章标题","html":"<p>正文</p>","coverPath":"","confirmPublish":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !input.ConfirmPublish {
+		t.Fatal("expected explicit publish confirmation")
+	}
+}
+
 func TestValidateZhihuDoesNotRequireCover(t *testing.T) {
 	err := validateFill(fillInput{Platform: "zhihu", Title: "知乎标题", HTML: "<p>正文</p>"})
 	if err != nil {

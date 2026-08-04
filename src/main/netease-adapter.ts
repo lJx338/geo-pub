@@ -22,7 +22,19 @@ function visibleScript(): string {
 }
 
 async function ensureEditor(webContents: WebContents): Promise<void> {
-  if (!webContents.getURL().includes('article-publish')) await webContents.loadURL(PUBLISH_URL);
+  // Recreate the Draft.js editor for every job. Reusing the previous mounted instance after an
+  // image upload can leave stale React selection state and make the next overwrite crash the page.
+  if (webContents.getURL().includes('article-publish')) {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => { cleanup(); reject(new Error('NETEASE_RELOAD_TIMEOUT: 网易号发布页重新加载超时')); }, 90_000);
+      const cleanup = () => { clearTimeout(timeout); webContents.removeListener('did-stop-loading', done); };
+      const done = () => { cleanup(); resolve(); };
+      webContents.once('did-stop-loading', done);
+      webContents.reload();
+    });
+  } else {
+    await webContents.loadURL(PUBLISH_URL);
+  }
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     const state = await webContents.executeJavaScript(`(() => {
@@ -40,27 +52,73 @@ async function ensureEditor(webContents: WebContents): Promise<void> {
 
 async function fillText(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean }> {
   const bodyText = await webContents.executeJavaScript(`(() => { const parser=document.createElement('div'); parser.innerHTML=${JSON.stringify(html)}; return String(parser.innerText||parser.textContent||'').replace(/\\u00a0/g,' ').trim(); })()`);
-  const replaceFocusedText = async (selector: string, value: string): Promise<boolean> => {
-    const focused = await webContents.executeJavaScript(`(() => { const element=document.querySelector(${JSON.stringify(selector)}); if(!(element instanceof HTMLElement))return false; element.scrollIntoView({block:'center',inline:'nearest'}); element.focus({preventScroll:true}); return true; })()`);
-    if (!focused) return false;
-    const modifiers: Array<'meta' | 'control'> = [process.platform === 'darwin' ? 'meta' : 'control'];
-    webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers });
-    webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers });
-    await delay(120);
-    webContents.insertText(value);
-    await delay(700);
-    return true;
+  const setTitle = async (): Promise<boolean> => {
+    return await webContents.executeJavaScript(`(() => {
+      const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      const element=document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
+      if (!(element instanceof HTMLTextAreaElement)) return false;
+      element.scrollIntoView({block:'center',inline:'nearest'});
+      const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')?.set;
+      if (setter) setter.call(element, ${JSON.stringify(title)}); else element.value=${JSON.stringify(title)};
+      element.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:${JSON.stringify(title)}}));
+      element.dispatchEvent(new Event('change',{bubbles:true}));
+      element.dispatchEvent(new Event('blur',{bubbles:true}));
+      return normalize(element.value)===normalize(${JSON.stringify(title)});
+    })()`);
   };
-  if (!await replaceFocusedText('textarea.netease-textarea,textarea[placeholder*="标题"]', title)) return { titleFilled: false, bodyFilled: false };
-  if (!await replaceFocusedText('.public-DraftEditor-content[contenteditable="true"]', bodyText)) return { titleFilled: false, bodyFilled: false };
+  const setBody = async (): Promise<boolean> => {
+    const point = await webContents.executeJavaScript(`(() => {
+      const element=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+      if (!(element instanceof HTMLElement)) return null;
+      element.scrollIntoView({block:'center',inline:'nearest'});
+      const rect=element.getBoundingClientRect();
+      return {x:rect.left+Math.min(80,rect.width/2),y:rect.top+Math.min(28,rect.height/2)};
+    })()`);
+    if (!point) return false;
+    webContents.sendInputEvent({type:'mouseMove',x:Math.round(point.x),y:Math.round(point.y)});
+    await delay(100);
+    webContents.sendInputEvent({type:'mouseDown',x:Math.round(point.x),y:Math.round(point.y),button:'left',clickCount:1});
+    webContents.sendInputEvent({type:'mouseUp',x:Math.round(point.x),y:Math.round(point.y),button:'left',clickCount:1});
+    await delay(300);
+    const modifiers: Array<'meta' | 'control'> = [process.platform === 'darwin' ? 'meta' : 'control'];
+    webContents.sendInputEvent({type:'keyDown',keyCode:'A',modifiers});
+    webContents.sendInputEvent({type:'keyUp',keyCode:'A',modifiers});
+    await delay(180);
+    const selectedAll = await webContents.executeJavaScript(`(() => {
+      const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      const element=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+      if (!(element instanceof HTMLElement)) return false;
+      const selection=window.getSelection();
+      return Boolean(selection)&&normalize(selection.toString())===normalize(element.innerText||element.textContent);
+    })()`);
+    if (!selectedAll) return false;
+    webContents.insertText(bodyText);
+    await delay(900);
+    return await webContents.executeJavaScript(`(() => { const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim(); const element=document.querySelector('.public-DraftEditor-content[contenteditable="true"]'); return element instanceof HTMLElement&&normalize(element.innerText||element.textContent)===normalize(${JSON.stringify(bodyText)}); })()`);
+  };
+  if (!await setTitle()) return { titleFilled: false, bodyFilled: false };
+  await delay(700);
+  if (!await setBody()) return { titleFilled: false, bodyFilled: false };
   await delay(1200);
+  // 网易号的受控标题会在正文触发自动保存时偶发回写旧值。正文完成后重新核验，
+  // 最多补写两次；每次都以页面真实 value 为准，避免把成功误判为失败。
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const currentTitleMatches = await webContents.executeJavaScript(`(() => {
+      const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      const element=document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
+      return element instanceof HTMLTextAreaElement&&normalize(element.value)===normalize(${JSON.stringify(title)});
+    })()`);
+    if (currentTitleMatches) break;
+    await setTitle();
+    await delay(900);
+  }
   return await webContents.executeJavaScript(`(() => {
     const normalize=(v)=>String(v||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
     const parser=document.createElement('div'); parser.innerHTML=${JSON.stringify(html)}; const expected=normalize(parser.innerText||parser.textContent||'');
     const titleEl=document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
     const bodyEl=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
     const actualTitle=titleEl instanceof HTMLTextAreaElement?normalize(titleEl.value):''; const actualBody=bodyEl instanceof HTMLElement?normalize(bodyEl.innerText||bodyEl.textContent):'';
-    const edge=Math.min(24,expected.length); return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&actualBody.includes(expected.slice(0,edge))&&actualBody.includes(expected.slice(-edge))};
+    return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&actualBody===expected};
   })()`);
 }
 

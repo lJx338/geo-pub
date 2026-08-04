@@ -14,6 +14,7 @@ export interface DraftFillResult {
   coverUploaded: boolean;
   noAdsSelected: boolean | null;
   aiDeclarationSelected: boolean;
+  draftSaveState: 'saved' | 'saving' | 'failed' | 'unknown';
   previewButtonDetected: boolean;
   url: string;
 }
@@ -440,6 +441,12 @@ export async function fillToutiaoDraft(
   await delay(1200);
   const finalNoAdsSelected = await ensureNoAds(webContents);
   const finalAiDeclarationSelected = await ensureAiDeclaration(webContents);
+  let draftSaveState: DraftFillResult['draftSaveState'] = 'unknown';
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    draftSaveState = await webContents.executeJavaScript(`(() => { const text=String(document.body?.innerText||'').replace(/\\s+/g,' '); if(/保存失败/.test(text))return 'failed'; if(/(?:草稿)?已保存|保存成功/.test(text))return 'saved'; if(/保存中|正在保存/.test(text))return 'saving'; return 'unknown'; })()`);
+    if (draftSaveState === 'saved' || draftSaveState === 'failed') break;
+    await delay(500);
+  }
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     return {
@@ -461,6 +468,7 @@ export async function fillToutiaoDraft(
     coverUploaded,
     noAdsSelected: finalNoAdsSelected ?? noAdsSelected,
     aiDeclarationSelected: finalAiDeclarationSelected || aiDeclarationSelected,
+    draftSaveState,
     previewButtonDetected: finalState.previewButtonDetected,
     url: finalState.url,
   } as DraftFillResult;
