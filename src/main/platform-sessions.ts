@@ -4,6 +4,7 @@ import { BrowserWindow, session, WebContentsView } from 'electron';
 import type { DesktopStatus, Platform, PlatformStatus } from '../shared/protocol.js';
 import { PLATFORMS } from '../shared/protocol.js';
 import { fillBaijiaDraft } from './baijia-adapter.js';
+import { fillPenguinDraft } from './penguin-adapter.js';
 import { evidenceDirectory } from './runtime-paths.js';
 import { setupStealthInjection, setupStealthSession } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
@@ -13,7 +14,7 @@ const PLATFORM_URLS: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
   toutiao: 'https://mp.toutiao.com/profile_v4/graphic/publish',
   zhihu: 'https://zhuanlan.zhihu.com/write',
-  penguin: 'https://om.qq.com/',
+  penguin: 'https://om.qq.com/main/creation/article',
   sohu: 'https://mp.sohu.com/',
   netease: 'https://mp.163.com/',
 };
@@ -117,7 +118,7 @@ export class PlatformSessions {
     this.views.get(this.activePlatform)?.view.setBounds(this.viewBounds());
   }
 
-  async fillDraft(platform: 'baijia' | 'toutiao' | 'zhihu', title: string, html: string, coverPath: string): Promise<unknown> {
+  async fillDraft(platform: 'baijia' | 'toutiao' | 'zhihu' | 'penguin', title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
     await this.open(platform);
     const managed = this.views.get(platform);
     if (!managed) throw new Error(`${platform} 浏览器创建失败`);
@@ -125,7 +126,9 @@ export class PlatformSessions {
       ? await fillBaijiaDraft(managed.view.webContents, title, html, coverPath)
       : platform === 'toutiao'
         ? await fillToutiaoDraft(managed.view.webContents, title, html, coverPath)
-        : await fillZhihuDraft(managed.view.webContents, title, html);
+        : platform === 'zhihu'
+          ? await fillZhihuDraft(managed.view.webContents, title, html)
+          : await fillPenguinDraft(managed.view.webContents, title, html, tags);
     const screenshotPath = await this.captureEvidence(platform, 'fill');
     return { ...result, screenshotPath };
   }
@@ -175,6 +178,8 @@ export class PlatformSessions {
               height: Math.round(rect.height),
               text: normalize(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
                 ? element.value : element.textContent).slice(0, 100),
+              outerHTML: element.outerHTML.slice(0, 1000),
+              parentOuterHTML: element.parentElement?.parentElement?.parentElement?.outerHTML?.slice(0, 3000) || '',
             };
           }),
         buttons: [...document.querySelectorAll('button,[role="button"]')]

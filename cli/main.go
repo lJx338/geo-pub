@@ -32,13 +32,14 @@ var platforms = map[string]bool{
 }
 
 type controlRequest struct {
-	ID        string `json:"id"`
-	Token     string `json:"token"`
-	Action    string `json:"action"`
-	Platform  string `json:"platform,omitempty"`
-	Title     string `json:"title,omitempty"`
-	HTML      string `json:"html,omitempty"`
-	CoverPath string `json:"coverPath"`
+	ID        string   `json:"id"`
+	Token     string   `json:"token"`
+	Action    string   `json:"action"`
+	Platform  string   `json:"platform,omitempty"`
+	Title     string   `json:"title,omitempty"`
+	HTML      string   `json:"html,omitempty"`
+	CoverPath string   `json:"coverPath"`
+	Tags      []string `json:"tags"`
 }
 
 type controlResponse struct {
@@ -53,10 +54,11 @@ type controlResponse struct {
 }
 
 type fillInput struct {
-	Platform  string `json:"platform"`
-	Title     string `json:"title"`
-	HTML      string `json:"html"`
-	CoverPath string `json:"coverPath"`
+	Platform  string   `json:"platform"`
+	Title     string   `json:"title"`
+	HTML      string   `json:"html"`
+	CoverPath string   `json:"coverPath"`
+	Tags      []string `json:"tags"`
 }
 
 type cliOutput struct {
@@ -134,7 +136,7 @@ func run(args []string) (string, json.RawMessage, error) {
 		}
 		return call(command, controlRequest{
 			Action: "draft.fill", Platform: input.Platform, Title: input.Title,
-			HTML: input.HTML, CoverPath: input.CoverPath,
+			HTML: input.HTML, CoverPath: input.CoverPath, Tags: input.Tags,
 		}, publishTimeout)
 	case "doctor":
 		return command, doctor(), nil
@@ -232,8 +234,8 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 }
 
 func validateFill(input fillInput) error {
-	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" {
-		return usageError("当前 alpha 版 fill 仅支持 platform=toutiao、platform=baijia 或 platform=zhihu")
+	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" {
+		return usageError("当前 alpha 版 fill 仅支持 platform=toutiao、platform=baijia、platform=zhihu 或 platform=penguin")
 	}
 	if len([]rune(strings.TrimSpace(input.Title))) < 2 || len([]rune(input.Title)) > 64 {
 		return usageError("title 必须为 2-64 个字符")
@@ -244,10 +246,10 @@ func validateFill(input fillInput) error {
 	if strings.TrimSpace(input.HTML) == "" {
 		return usageError("html 必填")
 	}
-	if input.Platform != "zhihu" && !filepath.IsAbs(input.CoverPath) {
+	if input.Platform != "zhihu" && input.Platform != "penguin" && !filepath.IsAbs(input.CoverPath) {
 		return usageError("coverPath 必须是绝对路径")
 	}
-	if input.Platform != "zhihu" {
+	if input.Platform != "zhihu" && input.Platform != "penguin" {
 		info, err := os.Stat(input.CoverPath)
 		if err != nil || info.IsDir() {
 			return &cliError{code: "COVER_NOT_FOUND", message: "找不到封面文件：" + input.CoverPath, suggestion: "传入当前电脑上的封面绝对路径"}

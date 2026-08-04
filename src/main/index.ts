@@ -55,7 +55,7 @@ async function runDesktop(): Promise<void> {
     if (request.action === 'platform.open') return await sessions.open(request.platform);
     if (request.action === 'platform.inspect') return await sessions.inspect(request.platform);
     if (request.action === 'draft.fill') {
-      return await sessions.fillDraft(request.platform, request.title, request.html, request.coverPath);
+      return await sessions.fillDraft(request.platform, request.title, request.html, request.coverPath, request.tags);
     }
     throw new Error('不支持的控制命令');
   };
