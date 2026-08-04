@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app } from 'electron';
-import { dataDirectory } from './runtime-paths.js';
+import { cliExecutablePath } from './runtime-paths.js';
 
 function bundledCliName(): string | null {
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'geo-publisher-darwin-arm64';
@@ -11,32 +11,29 @@ function bundledCliName(): string | null {
 }
 
 export async function installBundledCli(version: string): Promise<string | null> {
-  if (!app.isPackaged) return null;
   const sourceName = bundledCliName();
   if (!sourceName) return null;
 
-  const source = join(process.resourcesPath, 'cli', sourceName);
+  const source = app.isPackaged
+    ? join(process.resourcesPath, 'cli', sourceName)
+    : join(app.getAppPath(), 'dist', 'cli', sourceName);
   await stat(source);
-  const directory = join(dataDirectory(), 'bin');
-  const destination = join(directory, process.platform === 'win32' ? 'geo-publisher.exe' : 'geo-publisher');
+  const destination = cliExecutablePath(process.platform === 'win32' ? version : undefined);
+  const directory = join(destination, '..');
   const temporary = `${destination}.new`;
   await mkdir(directory, { recursive: true });
+  if (process.platform === 'win32') {
+    try {
+      await stat(destination);
+      return destination;
+    } catch {
+      // A new app version installs beside a running old CLI, avoiding Windows file locks.
+    }
+  }
   await rm(temporary, { force: true });
   await copyFile(source, temporary);
   if (process.platform !== 'win32') await chmod(temporary, 0o755);
-  if (process.platform === 'win32') {
-    const previous = `${destination}.old`;
-    await rm(previous, { force: true });
-    try {
-      await rename(destination, previous);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    await rename(temporary, destination);
-    await rm(previous, { force: true }).catch(() => undefined);
-  } else {
-    await rename(temporary, destination);
-  }
+  await rename(temporary, destination);
   await writeFile(join(directory, 'version.json'), JSON.stringify({ version, installedAt: new Date().toISOString() }, null, 2));
   return destination;
 }

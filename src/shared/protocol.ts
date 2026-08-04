@@ -70,6 +70,26 @@ export interface DesktopStatus {
   cliPath?: string | null;
   pid: number;
   ready: boolean;
+  busy: boolean;
   activePlatform: Platform | null;
   platforms: PlatformStatus[];
+}
+
+export type UpdatePhase = 'disabled' | 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'downloaded' | 'error';
+
+export interface UpdateStatus {
+  phase: UpdatePhase;
+  currentVersion: string;
+  availableVersion: string | null;
+  progress: number | null;
+  message: string;
+  checkedAt: string | null;
+  canRestart: boolean;
+}
+
+export interface WorkBuddyIntegrationStatus {
+  available: boolean;
+  prepared: boolean;
+  skillPath: string | null;
+  promptPath: string | null;
 }

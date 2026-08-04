@@ -49,6 +49,33 @@ func TestReadPublishConfirmation(t *testing.T) {
 	}
 }
 
+func TestInstructionsAndSchemaAreAvailableOffline(t *testing.T) {
+	for _, command := range []string{"instructions", "schema", "discover"} {
+		name, output, err := run([]string{command, "--json"})
+		if err != nil {
+			t.Fatalf("%s failed: %v", command, err)
+		}
+		if name != command || len(output) == 0 {
+			t.Fatalf("unexpected %s output: %s", command, output)
+		}
+	}
+}
+
+func TestValidateDoesNotContactDesktop(t *testing.T) {
+	directory := t.TempDir()
+	cover := filepath.Join(directory, "cover.jpg")
+	if err := os.WriteFile(cover, []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","title":"正常标题","html":"<p>正文</p>","coverPath":"`+cover+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFill(input); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateZhihuDoesNotRequireCover(t *testing.T) {
 	err := validateFill(fillInput{Platform: "zhihu", Title: "知乎标题", HTML: "<p>正文</p>"})
 	if err != nil {

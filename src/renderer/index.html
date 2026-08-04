@@ -10,20 +10,30 @@
     <header>
       <strong>GEO Publisher</strong>
       <span id="connection">桌面端已启动</span>
+      <span id="version" class="header-meta"></span>
     </header>
     <aside>
       <p class="section-title">发布平台</p>
-      <button data-platform="baijia">百家号</button>
-      <button data-platform="toutiao">头条号</button>
-      <button data-platform="zhihu">知乎</button>
-      <button data-platform="penguin">企鹅号</button>
-      <button data-platform="sohu">搜狐号</button>
-      <button data-platform="netease">网易号</button>
-      <div class="help">首次使用请逐个平台登录。登录状态会保存在本机，不会因应用重启丢失。</div>
+      <button data-platform="baijia"><span>百家号</span><span class="platform-state">打开</span></button>
+      <button data-platform="toutiao"><span>头条号</span><span class="platform-state">打开</span></button>
+      <button data-platform="zhihu"><span>知乎</span><span class="platform-state">打开</span></button>
+      <button data-platform="penguin"><span>企鹅号</span><span class="platform-state">打开</span></button>
+      <button data-platform="sohu"><span>搜狐号</span><span class="platform-state">打开</span></button>
+      <button data-platform="netease"><span>网易号</span><span class="platform-state">打开</span></button>
+
+      <p class="section-title integration-title">连接</p>
+      <button id="connect-workbuddy" class="command-button"><span>连接 WorkBuddy</span><span id="workbuddy-state">未连接</span></button>
+      <button id="check-update" class="command-button"><span>检查更新</span><span id="update-state">等待检查</span></button>
+      <button id="install-update" class="primary-command" hidden>重启并安装更新</button>
     </aside>
     <main id="empty">
-      <h1>请选择一个平台</h1>
-      <p>平台将在右侧内置浏览器中打开。CLI 可以在不依赖浏览器扩展的情况下控制同一会话。</p>
+      <div class="setup">
+        <h1>发布准备</h1>
+        <div class="setup-row"><span class="step-number">1</span><div><strong>登录发布平台</strong><p>从左侧逐个平台打开并登录。</p></div></div>
+        <div class="setup-row"><span class="step-number">2</span><div><strong>连接 WorkBuddy</strong><p>点击后前往 WorkBuddy 粘贴已复制的连接指令。</p></div></div>
+        <div class="setup-row"><span class="step-number">3</span><div><strong>开始发布</strong><p>直接在 WorkBuddy 中说明文章和目标平台。</p></div></div>
+        <p id="action-message" class="action-message">桌面端已就绪</p>
+      </div>
     </main>
     <script src="renderer.js"></script>
   </body>

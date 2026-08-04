@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	version         = "0.1.0-alpha.1"
 	defaultTimeout  = 15 * time.Second
 	publishTimeout  = 4 * time.Minute
 	maxResponseSize = 5 * 1024 * 1024
 )
+
+var version = "0.1.0-beta.1"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
@@ -109,6 +110,14 @@ func run(args []string) (string, json.RawMessage, error) {
 	switch command {
 	case "version", "--version", "-v":
 		return "version", mustJSON(map[string]string{"version": version}), nil
+	case "discover":
+		return command, readDiscovery(), nil
+	case "instructions":
+		return command, instructions(), nil
+	case "schema":
+		return command, commandSchema(), nil
+	case "platforms":
+		return command, platformOverview(), nil
 	case "start":
 		if err := startDesktop(); err != nil {
 			return command, nil, err
@@ -128,13 +137,20 @@ func run(args []string) (string, json.RawMessage, error) {
 			action = "platform.inspect"
 		}
 		return call(command, controlRequest{Action: action, Platform: args[0]}, defaultTimeout)
-	case "fill", "publish":
+	case "validate", "fill", "publish":
 		input, err := readFillInput(args, os.Stdin)
 		if err != nil {
 			return command, nil, err
 		}
 		if err := validateFill(input); err != nil {
 			return command, nil, err
+		}
+		if command == "validate" {
+			return command, mustJSON(map[string]any{
+				"valid": true, "platform": input.Platform, "title": input.Title,
+				"titleLength": len([]rune(input.Title)), "htmlLength": len(input.HTML),
+				"coverRequired": input.Platform == "baijia" || input.Platform == "toutiao" || input.Platform == "netease",
+			}), nil
 		}
 		if command == "publish" && !input.ConfirmPublish {
 			return command, nil, usageError("真实发布必须在 JSON 中显式设置 confirmPublish=true")
@@ -150,7 +166,7 @@ func run(args []string) (string, json.RawMessage, error) {
 	case "doctor":
 		return command, doctor(), nil
 	default:
-		return command, nil, usageError("命令：start | status | show | open <platform> | login <platform> | inspect <platform> | fill [--input file.json] | publish [--input file.json] | doctor | version")
+		return command, nil, usageError("命令：discover | doctor | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
 	}
 }
 
@@ -215,7 +231,7 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	flags.SetOutput(io.Discard)
 	inputPath := flags.String("input", "", "JSON request file")
 	if err := flags.Parse(args); err != nil {
-		return fillInput{}, usageError("fill/publish 仅支持 --input <file.json>；不传时从 stdin 读取 JSON")
+		return fillInput{}, usageError("validate/fill/publish 仅支持 --input <file.json>；不传时从 stdin 读取 JSON")
 	}
 	var data []byte
 	var err error
@@ -309,6 +325,17 @@ func doctor() json.RawMessage {
 		"dataDirectory":   dataDirectory(),
 		"controlEndpoint": controlEndpoint(),
 		"tokenFile":       tokenPath(),
+		"discoveryFile":   discoveryPath(),
+	}
+	var discovery map[string]any
+	if data, err := os.ReadFile(discoveryPath()); err == nil && json.Unmarshal(data, &discovery) == nil {
+		result["discoveryReadable"] = true
+		result["discovery"] = discovery
+		if appVersion, ok := discovery["appVersion"].(string); ok {
+			result["versionMatch"] = appVersion == version
+		}
+	} else {
+		result["discoveryReadable"] = false
 	}
 	if _, err := os.Stat(tokenPath()); err == nil {
 		result["tokenFileReadable"] = true
@@ -321,6 +348,71 @@ func doctor() json.RawMessage {
 		result["desktop"] = json.RawMessage(response)
 	} else {
 		result["desktopConnected"] = false
+		result["desktopError"] = err.Error()
+	}
+	return mustJSON(result)
+}
+
+func readDiscovery() json.RawMessage {
+	data, err := os.ReadFile(discoveryPath())
+	if err != nil {
+		return mustJSON(map[string]any{"found": false, "path": discoveryPath(), "error": err.Error()})
+	}
+	var record any
+	if err := json.Unmarshal(data, &record); err != nil {
+		return mustJSON(map[string]any{"found": false, "path": discoveryPath(), "error": err.Error()})
+	}
+	return mustJSON(map[string]any{"found": true, "path": discoveryPath(), "record": record})
+}
+
+func instructions() json.RawMessage {
+	return mustJSON(map[string]any{
+		"version": version,
+		"workflow": []string{
+			"Run doctor and start the desktop when it is not connected",
+			"Run validate with the exact article JSON",
+			"Use fill for preview or any request that says not to publish",
+			"Use publish only after explicit user authorization and confirmPublish=true",
+			"Process platforms serially and preserve every structured result",
+			"Never republish automatically when status=result_uncertain; reconcile first",
+		},
+		"platformOrder": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
+		"platformNames": map[string]string{
+			"百家号": "baijia", "头条号": "toutiao", "知乎": "zhihu",
+			"企鹅号": "penguin", "搜狐号": "sohu", "网易号": "netease",
+		},
+	})
+}
+
+func commandSchema() json.RawMessage {
+	return mustJSON(map[string]any{
+		"commands": map[string]any{
+			"doctor":   map[string]any{"input": nil, "sideEffect": false},
+			"validate": map[string]any{"input": "article", "sideEffect": false},
+			"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},
+			"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},
+		},
+		"article": map[string]any{
+			"platform":       []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
+			"title":          "string, 2-64 characters; Toutiao maximum 30",
+			"html":           "non-empty HTML string",
+			"coverPath":      "absolute local path; required for baijia, toutiao, netease",
+			"tags":           "optional array, maximum 20",
+			"confirmPublish": "must be true for publish",
+		},
+	})
+}
+
+func platformOverview() json.RawMessage {
+	names := map[string]string{
+		"baijia": "百家号", "toutiao": "头条号", "zhihu": "知乎",
+		"penguin": "企鹅号", "sohu": "搜狐号", "netease": "网易号",
+	}
+	result := map[string]any{"supported": names, "desktopConnected": false}
+	if response, err := send(controlRequest{Action: "status"}, 2*time.Second); err == nil {
+		result["desktopConnected"] = true
+		result["desktop"] = json.RawMessage(response)
+	} else {
 		result["desktopError"] = err.Error()
 	}
 	return mustJSON(result)
@@ -360,7 +452,8 @@ func dataDirectory() string {
 	}
 }
 
-func tokenPath() string { return filepath.Join(dataDirectory(), "control-token.json") }
+func tokenPath() string     { return filepath.Join(dataDirectory(), "control-token.json") }
+func discoveryPath() string { return filepath.Join(dataDirectory(), "discovery.json") }
 
 func controlEndpoint() string {
 	home, _ := os.UserHomeDir()

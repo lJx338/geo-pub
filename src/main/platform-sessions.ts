@@ -50,6 +50,8 @@ export function pickEvictionCandidate(
 export class PlatformSessions {
   private readonly views = new Map<Platform, ManagedView>();
   private activePlatform: Platform | null = null;
+  private operationTail: Promise<void> = Promise.resolve();
+  private pendingOperations = 0;
 
   constructor(private readonly window: BrowserWindow, private readonly version: string) {}
 
@@ -152,7 +154,11 @@ export class PlatformSessions {
     this.views.get(this.activePlatform)?.view.setBounds(this.viewBounds());
   }
 
-  async fillDraft(platform: 'baijia' | 'toutiao' | 'zhihu' | 'penguin' | 'sohu' | 'netease', title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+  async fillDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+    return await this.runExclusive(() => this.fillDraftInternal(platform, title, html, coverPath, tags));
+  }
+
+  private async fillDraftInternal(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
     await this.open(platform);
     const managed = this.views.get(platform);
     if (!managed) throw new Error(`${platform} 浏览器创建失败`);
@@ -193,12 +199,14 @@ export class PlatformSessions {
   }
 
   async publishDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
-    const fill = await this.fillDraft(platform, title, html, coverPath, tags);
-    const managed = this.views.get(platform);
-    if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
-    const result = await publishFilledDraft(managed.view.webContents, platform, title);
-    const screenshotPath = await this.captureEvidence(platform, `publish-${result.status}`);
-    return { fill, ...result, screenshotPath };
+    return await this.runExclusive(async () => {
+      const fill = await this.fillDraftInternal(platform, title, html, coverPath, tags);
+      const managed = this.views.get(platform);
+      if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
+      const result = await publishFilledDraft(managed.view.webContents, platform, title);
+      const screenshotPath = await this.captureEvidence(platform, `publish-${result.status}`);
+      return { fill, ...result, screenshotPath };
+    });
   }
 
   async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
@@ -275,9 +283,14 @@ export class PlatformSessions {
       version: this.version,
       pid: process.pid,
       ready: true,
+      busy: this.isBusy(),
       activePlatform: this.activePlatform,
       platforms: PLATFORMS.map((platform) => this.platformStatus(platform)),
     };
+  }
+
+  isBusy(): boolean {
+    return this.pendingOperations > 0;
   }
 
   async flushStorage(): Promise<void> {
@@ -353,5 +366,19 @@ export class PlatformSessions {
     const image = await managed.view.webContents.capturePage();
     await writeFile(path, image.toPNG());
     return path;
+  }
+
+  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    this.pendingOperations += 1;
+    const previous = this.operationTail;
+    let release: () => void = () => {};
+    this.operationTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      this.pendingOperations -= 1;
+      release();
+    }
   }
 }

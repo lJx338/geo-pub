@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-beta.1",
   "private": true,
   "description": "GEO Publisher desktop application with a built-in persistent browser",
   "author": "Lingxi",
@@ -9,13 +9,17 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:cli": "sh scripts/build-cli.sh",
-    "dev": "npm run build && electron .",
+    "dev": "npm run build && npm run build:cli && electron .",
     "test": "vitest run",
+    "test:e2e": "npm run build && npm run build:cli && node tests/electron-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package:mac": "npm run build && npm run build:cli && electron-builder --mac",
-    "package:win": "npm run build && npm run build:cli && electron-builder --win"
+    "package:win": "npm run build && npm run build:cli && electron-builder --win",
+    "version:set": "node scripts/set-version.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run build:cli"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -23,6 +27,7 @@
     "electron": "43.1.1",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.25.12",
+    "playwright": "^1.62.1",
     "typescript": "^6.0.3",
     "vitest": "^4.0.16"
   },
@@ -30,23 +35,58 @@
     "appId": "com.lingxi.geo-publisher",
     "productName": "GEO Publisher",
     "asar": true,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "dist/**/*",
       "package.json"
     ],
     "extraResources": [
       {
-        "from": "dist/cli",
-        "to": "cli",
-        "filter": ["**/*"]
+        "from": "integrations",
+        "to": "integrations",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://lingxi-1303034624.cos.ap-guangzhou.myqcloud.com/geo-publisher/releases/stable"
       }
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg", "zip"]
+      "extraResources": [
+        {
+          "from": "dist/cli",
+          "to": "cli",
+          "filter": [
+            "geo-publisher-darwin-*"
+          ]
+        }
+      ],
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "win": {
-      "target": ["nsis"]
+      "extraResources": [
+        {
+          "from": "dist/cli",
+          "to": "cli",
+          "filter": [
+            "geo-publisher-windows-amd64.exe"
+          ]
+        }
+      ],
+      "target": [
+        "nsis"
+      ]
     },
     "nsis": {
       "oneClick": true,

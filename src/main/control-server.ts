@@ -8,6 +8,10 @@ const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
 
 export type ControlHandler = (request: ControlRequest) => Promise<unknown>;
 
+export function errorCodeForMessage(message: string): string {
+  return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] || 'CONTROL_REQUEST_FAILED';
+}
+
 export class ControlServer {
   private server: Server | null = null;
 
@@ -61,10 +65,11 @@ export class ControlServer {
       const data = await this.handler(parsed);
       this.reply(socket, { id, ok: true, data });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       this.reply(socket, {
         id,
         ok: false,
-        error: { code: 'CONTROL_REQUEST_FAILED', message: error instanceof Error ? error.message : String(error) },
+        error: { code: errorCodeForMessage(message), message },
       });
     }
   }

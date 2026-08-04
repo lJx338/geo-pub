@@ -5,9 +5,12 @@ import type { ControlRequest, Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
 import { installBundledCli } from './cli-installer.js';
 import { ControlServer } from './control-server.js';
+import { createDiscoveryRecord, writeDiscoveryRecord } from './discovery.js';
 import { PlatformSessions } from './platform-sessions.js';
 import { dataDirectory } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
+import { UpdateManager } from './update-manager.js';
+import { prepareWorkBuddyIntegration, workBuddyIntegrationStatus } from './workbuddy-integration.js';
 
 app.setName('GEO Publisher');
 app.setPath('userData', dataDirectory());
@@ -43,6 +46,9 @@ async function runDesktop(): Promise<void> {
     },
   });
   const sessions = new PlatformSessions(window, packageJson.version);
+  const updateManager = new UpdateManager(packageJson.version, () => sessions.isBusy(), (status) => {
+    if (!window.isDestroyed()) window.webContents.send('geo:update-status-changed', status);
+  });
   window.on('resize', () => sessions.resize());
   app.on('second-instance', () => { window.show(); });
 
@@ -65,16 +71,28 @@ async function runDesktop(): Promise<void> {
 
   const controlServer = new ControlServer(await loadOrCreateControlToken(), route);
   await controlServer.start();
+  await writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPath, true));
 
   ipcMain.handle('geo:status', () => ({ ...sessions.status(), cliPath }));
   ipcMain.handle('geo:open-platform', (_event, platform: Platform) => sessions.open(platform));
+  ipcMain.handle('geo:workbuddy-status', () => workBuddyIntegrationStatus());
+  ipcMain.handle('geo:workbuddy-connect', () => prepareWorkBuddyIntegration(true, cliPath));
+  ipcMain.handle('geo:update-status', () => updateManager.getStatus());
+  ipcMain.handle('geo:update-check', () => updateManager.check());
+  ipcMain.handle('geo:update-install', () => updateManager.install());
   await window.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
+  updateManager.start();
   let quitting = false;
   app.on('before-quit', (event) => {
     if (quitting) return;
     event.preventDefault();
     quitting = true;
-    void Promise.all([sessions.flushStorage(), controlServer.stop()])
+    updateManager.stop();
+    void Promise.all([
+      sessions.flushStorage(),
+      controlServer.stop(),
+      writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPath, false)),
+    ])
       .finally(() => app.quit());
   });
 }

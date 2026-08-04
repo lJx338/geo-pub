@@ -20,6 +20,23 @@ export function evidenceDirectory(): string {
   return join(dataDirectory(), 'evidence');
 }
 
+export function discoveryFilePath(): string {
+  return join(dataDirectory(), 'discovery.json');
+}
+
+export function cliDirectory(): string {
+  return join(dataDirectory(), 'bin');
+}
+
+export function cliExecutablePath(version?: string): string {
+  if (process.platform === 'win32' && version) return join(cliDirectory(), 'versions', version, 'geo-publisher.exe');
+  return join(cliDirectory(), process.platform === 'win32' ? 'geo-publisher.exe' : 'geo-publisher');
+}
+
+export function integrationsDirectory(): string {
+  return join(dataDirectory(), 'integrations');
+}
+
 export function controlEndpoint(): string {
   const userKey = createHash('sha256').update(homedir()).digest('hex').slice(0, 12);
   if (process.platform === 'win32') return `\\\\.\\pipe\\geo-publisher-${userKey}`;
