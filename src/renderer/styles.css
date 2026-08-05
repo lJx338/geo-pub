@@ -3,6 +3,7 @@
 [hidden] { display: none !important; }
 body { margin: 0; background: #f5f6f8; }
 header { position: fixed; inset: 0 0 auto 0; height: 56px; display: flex; align-items: center; gap: 18px; padding: 0 20px; background: #fff; border-bottom: 1px solid #e6e8ee; z-index: 2; }
+.brand-logo { width: 32px; height: 32px; margin-right: -8px; border-radius: 6px; object-fit: cover; }
 header strong { font-size: 17px; }
 #connection { color: #16845b; font-size: 13px; }
 .header-meta { margin-left: auto; color: #7a8498; font-size: 12px; }

@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "private": true,
   "description": "GEO Publisher desktop application with a built-in persistent browser",
   "author": "Lingxi",
@@ -15,7 +15,7 @@
     "test:e2e": "npm run build && npm run build:cli && node tests/electron-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package:mac": "npm run build && npm run build:cli && electron-builder --mac",
-    "package:win": "npm run build && npm run build:cli && electron-builder --win",
+    "package:win": "npm run build && npm run build:cli && electron-builder --win --x64",
     "version:set": "node scripts/set-version.mjs",
     "verify": "npm run typecheck && npm test && npm run build && npm run build:cli"
   },
@@ -76,6 +76,7 @@
       ]
     },
     "win": {
+      "icon": "build/icon.png",
       "extraResources": [
         {
           "from": "dist/cli",
@@ -90,10 +91,18 @@
       ]
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "displayLanguageSelector": false,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "shortcutName": "GEO Publisher",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
     }
   }
 }

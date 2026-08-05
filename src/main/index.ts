@@ -36,6 +36,7 @@ async function runDesktop(): Promise<void> {
     minWidth: 920,
     minHeight: 640,
     title: 'GEO Publisher',
+    icon: join(__dirname, '..', 'renderer', 'logo.png'),
     backgroundColor: '#f5f6f8',
     webPreferences: {
       preload: join(__dirname, '..', 'preload.cjs'),

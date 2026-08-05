@@ -38,3 +38,4 @@ await Promise.all([
 ]);
 
 await cp('src/renderer', 'dist/renderer', { recursive: true });
+await cp('build/icon.png', 'dist/renderer/logo.png');

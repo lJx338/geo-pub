@@ -14,18 +14,17 @@ if (-not $installer) {
 
 $dataDirectory = Join-Path $env:LOCALAPPDATA 'GEO Publisher Desktop'
 $discoveryPath = Join-Path $dataDirectory 'discovery.json'
+$installDirectory = Join-Path $env:RUNNER_TEMP 'geo-publisher-custom-install'
+$appPath = Join-Path $installDirectory 'GEO Publisher.exe'
 
 try {
-  $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+  $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDirectory") -Wait -PassThru
   if ($install.ExitCode -ne 0) {
     throw "Installer exited with code $($install.ExitCode)"
   }
-  $appPath = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs') -Filter 'GEO Publisher.exe' -File -Recurse |
-    Select-Object -First 1 -ExpandProperty FullName
-  if (-not $appPath) {
-    throw 'Installed GEO Publisher.exe was not found below LOCALAPPDATA\Programs'
+  if (-not (Test-Path $appPath)) {
+    throw "Installer did not honor the custom installation directory: $appPath"
   }
-  $installDirectory = Split-Path -Parent $appPath
   $skillPath = Join-Path $installDirectory 'resources\integrations\workbuddy\geo-publisher\SKILL.md'
   if (-not (Test-Path $skillPath)) {
     throw "Bundled WorkBuddy Skill was not found at $skillPath"
