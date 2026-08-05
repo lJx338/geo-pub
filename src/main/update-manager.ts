@@ -11,8 +11,12 @@ export function updatePlatformKey(platform = process.platform, arch = process.ar
   return null;
 }
 
-export function updateFeedUrl(channel = process.env.GEO_UPDATE_CHANNEL || 'stable'): string | null {
-  const platform = updatePlatformKey();
+export function updateFeedUrl(
+  channel = process.env.GEO_UPDATE_CHANNEL || 'stable',
+  runtimePlatform = process.platform,
+  runtimeArch = process.arch,
+): string | null {
+  const platform = updatePlatformKey(runtimePlatform, runtimeArch);
   if (!platform) return null;
   const base = (process.env.GEO_UPDATE_BASE_URL || DEFAULT_UPDATE_BASE_URL).replace(/\/+$/, '');
   return `${base}/channels/${channel}/${platform}`;

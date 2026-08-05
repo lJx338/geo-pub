@@ -19,7 +19,7 @@ describe('update feed platform selection', () => {
   });
 
   it('separates channel pointers from immutable version artifacts', () => {
-    expect(updateFeedUrl('stable')).toContain('/releases/channels/stable/');
-    expect(updateFeedUrl('beta')).toContain('/releases/channels/beta/');
+    expect(updateFeedUrl('stable', 'darwin', 'arm64')).toContain('/releases/channels/stable/mac-arm64');
+    expect(updateFeedUrl('beta', 'win32', 'x64')).toContain('/releases/channels/beta/win-x64');
   });
 });
