@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { updateChannelForVersion, updatePlatformKey } from './update-manager.js';
+import { updateChannelForVersion, updateFeedUrl, updatePlatformKey } from './update-manager.js';
 
 describe('update feed platform selection', () => {
   it('supports Apple Silicon macOS and Windows x64 only', () => {
@@ -16,5 +16,10 @@ describe('update feed platform selection', () => {
     expect(updateChannelForVersion('0.1.0-beta.1')).toBe('beta');
     expect(updateChannelForVersion('0.1.0-alpha.2')).toBe('beta');
     expect(updateChannelForVersion('0.1.0')).toBe('stable');
+  });
+
+  it('separates channel pointers from immutable version artifacts', () => {
+    expect(updateFeedUrl('stable')).toContain('/releases/channels/stable/');
+    expect(updateFeedUrl('beta')).toContain('/releases/channels/beta/');
   });
 });

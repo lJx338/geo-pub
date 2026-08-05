@@ -30,7 +30,8 @@
     "esbuild": "^0.28.1",
     "playwright": "^1.62.1",
     "typescript": "^6.0.3",
-    "vitest": "^4.0.16"
+    "vitest": "^4.0.16",
+    "yaml": "^2.9.0"
   },
   "build": {
     "appId": "com.lingxi.geo-publisher",

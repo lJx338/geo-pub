@@ -15,6 +15,24 @@ case "$CHANNEL" in stable|beta) ;; *) echo "unsupported channel: $CHANNEL" >&2; 
 
 PREFIX=${TENCENT_COS_PREFIX:-geo-publisher}
 CONFIG=${RUNNER_TEMP:-${TMPDIR:-/tmp}}/geo-publisher-cos.conf
+
+if [ "$TARGET" = "mac-arm64" ] && [ "$CHANNEL" = "beta" ]; then
+  manifest_name=beta-mac.yml
+elif [ "$TARGET" = "mac-arm64" ]; then
+  manifest_name=latest-mac.yml
+elif [ "$CHANNEL" = "beta" ]; then
+  manifest_name=beta.yml
+else
+  manifest_name=latest.yml
+fi
+manifest_file="$DIRECTORY/$manifest_name"
+[ -f "$manifest_file" ] || { echo "no update manifest found: $manifest_file" >&2; exit 1; }
+VERSION=$(node -e "const fs=require('fs');const YAML=require('yaml');process.stdout.write(String(YAML.parse(fs.readFileSync(process.argv[1],'utf8')).version||''))" "$manifest_file")
+[ -n "$VERSION" ] || { echo "update manifest has no version" >&2; exit 1; }
+
+PUBLIC_RELEASE_BASE=${GEO_UPDATE_PUBLIC_BASE:-https://${TENCENT_COS_BUCKET}.cos.${TENCENT_COS_REGION}.myqcloud.com/${PREFIX}/releases}
+VERSION_KEY="$PREFIX/releases/versions/$VERSION/$TARGET"
+VERSION_URL="$PUBLIC_RELEASE_BASE/versions/$VERSION/$TARGET"
 rm -f "$CONFIG"
 trap 'rm -f "$CONFIG"' EXIT INT TERM
 
@@ -31,25 +49,36 @@ for file in "$DIRECTORY"/*.exe "$DIRECTORY"/*.dmg "$DIRECTORY"/*.zip "$DIRECTORY
   found_artifact=1
   coscmd -c "$CONFIG" upload -f -y \
     -H '{"Cache-Control":"public, max-age=31536000, immutable"}' \
-    "$file" "$PREFIX/releases/$CHANNEL/$TARGET/$(basename "$file")"
+    "$file" "$VERSION_KEY/$(basename "$file")"
 done
 [ "$found_artifact" -eq 1 ] || { echo "no release artifact found for $TARGET" >&2; exit 1; }
 
-if [ "$TARGET" = "mac-arm64" ] && [ "$CHANNEL" = "beta" ]; then
-  manifest_name=beta-mac.yml
-elif [ "$TARGET" = "mac-arm64" ]; then
-  manifest_name=latest-mac.yml
-elif [ "$CHANNEL" = "beta" ]; then
-  manifest_name=beta.yml
-else
-  manifest_name=latest.yml
-fi
-found_manifest=0
-for file in "$DIRECTORY/$manifest_name"; do
-  [ -f "$file" ] || continue
-  found_manifest=1
+rendered_manifest="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/$manifest_name"
+node scripts/render-channel-manifest.mjs "$manifest_file" "$rendered_manifest" "$VERSION_URL"
+
+# Keep an immutable copy beside the artifacts for auditing and recovery.
+coscmd -c "$CONFIG" upload -f -y \
+  -H '{"Cache-Control":"public, max-age=31536000, immutable"}' \
+  "$rendered_manifest" "$VERSION_KEY/$manifest_name"
+
+# New clients read the channel pointer. It is uploaded only after all artifacts.
+coscmd -c "$CONFIG" upload -f -y \
+  -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
+  "$rendered_manifest" "$PREFIX/releases/channels/$CHANNEL/$TARGET/$manifest_name"
+
+if [ "$CHANNEL" = "stable" ]; then
+  # 0.2.0 and older stable clients use this legacy feed path.
   coscmd -c "$CONFIG" upload -f -y \
     -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
-    "$file" "$PREFIX/releases/$CHANNEL/$TARGET/$(basename "$file")"
-done
-[ "$found_manifest" -eq 1 ] || { echo "no update manifest found" >&2; exit 1; }
+    "$rendered_manifest" "$PREFIX/releases/stable/$TARGET/$manifest_name"
+
+  # One-way migration for historical beta clients. New beta builds use channels/beta.
+  if [ "$TARGET" = "mac-arm64" ]; then
+    legacy_beta_manifest=beta-mac.yml
+  else
+    legacy_beta_manifest=beta.yml
+  fi
+  coscmd -c "$CONFIG" upload -f -y \
+    -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
+    "$rendered_manifest" "$PREFIX/releases/beta/$TARGET/$legacy_beta_manifest"
+fi

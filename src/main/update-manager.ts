@@ -15,7 +15,7 @@ export function updateFeedUrl(channel = process.env.GEO_UPDATE_CHANNEL || 'stabl
   const platform = updatePlatformKey();
   if (!platform) return null;
   const base = (process.env.GEO_UPDATE_BASE_URL || DEFAULT_UPDATE_BASE_URL).replace(/\/+$/, '');
-  return `${base}/${channel}/${platform}`;
+  return `${base}/channels/${channel}/${platform}`;
 }
 
 export function updateChannelForVersion(version: string): 'stable' | 'beta' {
