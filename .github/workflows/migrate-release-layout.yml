@@ -37,9 +37,13 @@ jobs:
           base="https://${TENCENT_COS_BUCKET}.cos.${TENCENT_COS_REGION}.myqcloud.com/${TENCENT_COS_PREFIX:-geo-publisher}/releases"
           for manifest in \
             channels/stable/win-x64/latest.yml \
+            channels/stable/win-x64/stable.yml \
             channels/stable/mac-arm64/latest-mac.yml \
+            channels/stable/mac-arm64/stable-mac.yml \
             stable/win-x64/latest.yml \
+            stable/win-x64/stable.yml \
             stable/mac-arm64/latest-mac.yml \
+            stable/mac-arm64/stable-mac.yml \
             beta/win-x64/beta.yml \
             beta/mac-arm64/beta-mac.yml; do
             value=$(curl -fsSL --retry 5 "$base/$manifest" | sed -n 's/^version: //p' | head -1)
