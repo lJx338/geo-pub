@@ -11,6 +11,11 @@ on:
         default: beta
         type: choice
         options: [beta, stable]
+      upload_to_cos:
+        description: Upload artifacts and update manifests in COS
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -59,8 +64,10 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-      - run: python -m pip install coscmd
+      - if: github.event_name != 'workflow_dispatch' || inputs.upload_to_cos
+        run: python -m pip install coscmd
       - shell: bash
+        if: github.event_name != 'workflow_dispatch' || inputs.upload_to_cos
         run: sh scripts/upload-release.sh release/win-x64 win-x64 "$CHANNEL"
       - uses: actions/upload-artifact@v4
         with:
@@ -107,8 +114,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - run: python -m pip install coscmd
+      - if: github.event_name != 'workflow_dispatch' || inputs.upload_to_cos
+        run: python -m pip install coscmd
       - name: Upload macOS artifacts and update manifest
+        if: github.event_name != 'workflow_dispatch' || inputs.upload_to_cos
         run: sh scripts/upload-release.sh release/mac-arm64 mac-arm64 "$CHANNEL"
       - uses: actions/upload-artifact@v4
         with:
