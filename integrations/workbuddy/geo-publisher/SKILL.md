@@ -5,7 +5,7 @@ description: Use GEO Publisher Desktop and its local CLI to validate, fill, prev
 
 # GEO Publisher
 
-Use the desktop application as the execution engine. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, or direct browser automation.
+Use the desktop application as the execution engine. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, or direct browser automation. `inspect`, `fill`, and `publish` run in GEO Publisher's background execution page and must not be preceded by `show` or `open`.
 
 ## Resolve the CLI
 
@@ -29,8 +29,8 @@ Never copy a path or user name from another computer. If discovery is missing, a
 ## Interpret platform status correctly
 
 - `created` means the platform page currently has an in-memory WebView. `created=false` does not mean logged out.
-- `attached` means the platform page is currently visible. `attached=false` does not mean disconnected or logged out.
-- The desktop intentionally keeps only one platform WebView resident. It is normal for only the current platform to report `created=true` and `attached=true`; login cookies remain stored per platform.
+- `attached` means the platform page is currently visible in the GEO Publisher window. `runtimeState=background` means an automation page is retained without showing it. Neither state indicates whether the account is logged in.
+- The desktop keeps the current interactive page and at most one background task page. Login cookies remain stored per platform.
 - Never convert `created/attached` into a login table or label a platform as `待登录` from those fields.
 - When the user asks whether platforms are logged in, run `inspect <platform>` serially for every requested platform. Report `已登录` only when the actual publishing page is visible, and report `待登录` only when the inspected page contains a visible login, verification, or risk-control prompt. Otherwise report `登录状态未确认`.
 
@@ -45,7 +45,7 @@ Use these platform mappings:
 
 ## Handle failures
 
-- For login, captcha, or risk-control errors, ask the user to complete the visible action in GEO Publisher, then retry once.
+- For `LOGIN_REQUIRED`, `VERIFICATION_REQUIRED`, or `RISK_CONTROL_REQUIRED`, GEO Publisher has already opened the exact affected page. Ask the user to complete that visible action, then retry the same command once. Do not wait on the original command or issue `publish` again automatically.
 - For quota exhaustion, stop that platform and report the platform message.
 - For `result_uncertain`, query status or reconcile the management page. Never click publish again automatically.
 - Never weaken required input validation to force a task through.

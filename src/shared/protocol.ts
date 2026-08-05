@@ -60,7 +60,7 @@ export interface PlatformStatus {
   platform: Platform;
   created: boolean;
   attached: boolean;
-  runtimeState: 'not_loaded' | 'resident' | 'active';
+  runtimeState: 'not_loaded' | 'resident' | 'background' | 'active';
   loginState: 'not_checked';
   statusNote: string;
   loading: boolean;
@@ -75,6 +75,14 @@ export interface DesktopStatus {
   ready: boolean;
   busy: boolean;
   activePlatform: Platform | null;
+  executingPlatform: Platform | null;
+  windowState: 'visible' | 'minimized' | 'hidden';
+  attentionRequired: {
+    platform: Platform;
+    code: 'LOGIN_REQUIRED' | 'VERIFICATION_REQUIRED' | 'RISK_CONTROL_REQUIRED';
+    message: string;
+    url: string;
+  } | null;
   platforms: PlatformStatus[];
 }
 
@@ -95,4 +103,9 @@ export interface WorkBuddyIntegrationStatus {
   prepared: boolean;
   skillPath: string | null;
   promptPath: string | null;
+}
+
+export interface LaunchAtLoginStatus {
+  available: boolean;
+  enabled: boolean;
 }

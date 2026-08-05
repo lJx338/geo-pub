@@ -1,20 +1,22 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BrowserWindow, session, WebContentsView } from 'electron';
+import { BrowserWindow, session, WebContents, WebContentsView } from 'electron';
 import type { DesktopStatus, Platform, PlatformStatus } from '../shared/protocol.js';
 import { PLATFORMS } from '../shared/protocol.js';
+import { BackgroundExecutionHost } from './background-execution-host.js';
+import { AttentionRequiredError, type AttentionCode, type AttentionRequired } from './attention-required.js';
 import { fillBaijiaDraft } from './baijia-adapter.js';
+import { fillNeteaseDraft } from './netease-adapter.js';
 import { fillPenguinDraft } from './penguin-adapter.js';
+import { publishFilledDraft, type PublishResult } from './publish-adapter.js';
 import { fillSohuDraft } from './sohu-adapter.js';
 import { evidenceDirectory } from './runtime-paths.js';
 import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
-import { fillNeteaseDraft } from './netease-adapter.js';
-import { publishFilledDraft } from './publish-adapter.js';
 import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
 
-const PLATFORM_URLS: Record<Platform, string> = {
+const defaultPlatformUrls: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
   toutiao: 'https://mp.toutiao.com/profile_v4/graphic/publish',
   zhihu: 'https://zhuanlan.zhihu.com/write',
@@ -23,15 +25,22 @@ const PLATFORM_URLS: Record<Platform, string> = {
   netease: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
 };
 
+const PLATFORM_URLS: Record<Platform, string> = process.env.GEO_PUBLISHER_TEST_PLATFORM_URL
+  ? Object.fromEntries(PLATFORMS.map((platform) => [platform, process.env.GEO_PUBLISHER_TEST_PLATFORM_URL])) as Record<Platform, string>
+  : defaultPlatformUrls;
+
+type ViewHost = 'interactive' | 'background';
+
 interface ManagedView {
   platform: Platform;
   view: WebContentsView;
   partition: Electron.Session;
+  host: ViewHost;
   loading: boolean;
   lastUsedAt: number;
 }
 
-const MAX_RESIDENT_PLATFORM_VIEWS = 1;
+const MAX_RESIDENT_INTERACTIVE_VIEWS = 1;
 
 export function pickEvictionCandidate(
   views: Array<{ platform: Platform; lastUsedAt: number }>,
@@ -47,116 +56,102 @@ export function pickEvictionCandidate(
     })[0]?.platform ?? null;
 }
 
-export function platformRuntimeState(created: boolean, attached: boolean): PlatformStatus['runtimeState'] {
+export function platformRuntimeState(
+  created: boolean,
+  attached: boolean,
+  executingInBackground = false,
+): PlatformStatus['runtimeState'] {
   if (attached) return 'active';
+  if (executingInBackground) return 'background';
   return created ? 'resident' : 'not_loaded';
+}
+
+function originalErrorCode(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] ?? null;
+}
+
+function attentionFromError(platform: Platform, error: unknown, url: string): AttentionRequired | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const original = originalErrorCode(error);
+  if (original?.endsWith('_LOGIN_REQUIRED')) {
+    return { platform, code: 'LOGIN_REQUIRED', message: `${original}: 请完成登录后重新执行任务`, url };
+  }
+  if (original?.endsWith('_VERIFICATION_REQUIRED') || /(?:验证码|滑块验证|人机验证|安全验证)/.test(message)) {
+    return { platform, code: 'VERIFICATION_REQUIRED', message: `${original || 'VERIFICATION_REQUIRED'}: 请完成验证后重新执行任务`, url };
+  }
+  if (/(?:风控|账号异常|异常操作|风险控制)/.test(message)) {
+    return { platform, code: 'RISK_CONTROL_REQUIRED', message: `${original || 'RISK_CONTROL_REQUIRED'}: 请处理平台风险提示后重新执行任务`, url };
+  }
+  return null;
+}
+
+async function detectVisibleAttention(webContents: WebContents, platform: Platform): Promise<AttentionRequired | null> {
+  const state = await webContents.executeJavaScript(`(() => {
+    const visible=(element)=>element instanceof HTMLElement&&(()=>{const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden';})();
+    const normalize=(value)=>String(value||'').replace(/\\s+/g,' ').trim();
+    const dialogs=[...document.querySelectorAll('[role="dialog"],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="verify"],[class*="Verify"]')]
+      .filter(visible).map((element)=>normalize(element.textContent)).join(' ');
+    const hasPassword=[...document.querySelectorAll('input[type="password"]')].some(visible);
+    const visibleText=[...document.querySelectorAll('button,a,[role="button"],label')].filter(visible).map((element)=>normalize(element.textContent)).join(' ');
+    return { url: location.href, dialogs, hasPassword, visibleText };
+  })()`);
+  const text = `${state.dialogs} ${state.visibleText}`;
+  if (/(?:验证码|滑块验证|人机验证|安全验证|请完成验证)/.test(text)) {
+    return { platform, code: 'VERIFICATION_REQUIRED', message: 'VERIFICATION_REQUIRED: 页面出现可见验证，请完成后重新执行任务', url: state.url };
+  }
+  if (/(?:风控|账号异常|异常操作|风险控制|安全校验)/.test(text)) {
+    return { platform, code: 'RISK_CONTROL_REQUIRED', message: 'RISK_CONTROL_REQUIRED: 页面出现可见风险提示，请处理后重新执行任务', url: state.url };
+  }
+  if (state.hasPassword || /(?:登录|扫码登录|请先登录|重新登录)/.test(text) || /(?:login|passport)/i.test(state.url)) {
+    return { platform, code: 'LOGIN_REQUIRED', message: 'LOGIN_REQUIRED: 页面需要登录，请完成后重新执行任务', url: state.url };
+  }
+  return null;
 }
 
 export class PlatformSessions {
   private readonly views = new Map<Platform, ManagedView>();
+  private readonly executionHost = new BackgroundExecutionHost();
+  private background: ManagedView | null = null;
   private activePlatform: Platform | null = null;
+  private executingPlatform: Platform | null = null;
+  private attentionRequired: AttentionRequired | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private pendingOperations = 0;
 
-  constructor(private readonly window: BrowserWindow, private readonly version: string) {}
+  constructor(
+    private readonly window: BrowserWindow,
+    private readonly version: string,
+    private readonly onAttentionRequired: (attention: AttentionRequired) => void = () => undefined,
+  ) {}
 
   async open(platform: Platform): Promise<PlatformStatus> {
+    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，请等待任务完成后再打开平台页面');
+    if (this.background?.platform === platform) {
+      await this.promoteBackground(platform);
+      return this.platformStatus(platform);
+    }
     let managed = this.views.get(platform);
     if (!managed) {
-      this.evictIdleView(platform);
-      const useMinimalBrowserEnvironment = platform === 'toutiao' || platform === 'netease';
-      const view = new WebContentsView({
-        webPreferences: {
-          partition: `persist:geo-publisher-${platform}`,
-          contextIsolation: false, // 必须设为 false，让 preload 可以直接修改页面环境
-          sandbox: false, // 必须设为 false，让 preload 有足够权限
-          nodeIntegration: false, // 仍然禁用 Node.js
-          backgroundThrottling: true,
-          // 反检测配置
-          webSecurity: true,
-          allowRunningInsecureContent: false,
-          enableWebSQL: false,
-          // 使用专门的反检测 preload 脚本
-          preload: useMinimalBrowserEnvironment ? undefined : join(__dirname, '..', 'stealth-preload.cjs'),
-        },
-      });
-
-      // 为该平台的session配置反检测
-      const platformSession = session.fromPartition(`persist:geo-publisher-${platform}`);
-      // 头条与网易的编辑器会被 JS 指纹改写干扰，只保留 UA 中移除 Electron 标识。
-      if (!useMinimalBrowserEnvironment) setupStealthSession(platformSession);
-      else setupStealthUserAgent(platformSession);
-      await restorePlatformCookies(platformSession, platform);
-
-      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now() };
+      this.evictIdleInteractiveView(platform);
+      managed = await this.createView(platform, 'interactive');
       this.views.set(platform, managed);
-      view.webContents.setWindowOpenHandler(({ url }) => {
-        if (managed && !managed.loading && url !== managed.view.webContents.getURL()) {
-          void this.loadUrl(managed, url);
-        }
-        return { action: 'deny' };
-      });
-      view.webContents.on('did-start-loading', () => { if (managed) managed.loading = true; });
-      view.webContents.on('console-message', (_event, level, message) => {
-        if (level >= 2) console.error(`[${platform}] renderer: ${message}`);
-      });
-      view.webContents.on('render-process-gone', (_event, details) => {
-        console.error(`[${platform}] renderer process gone: ${details.reason}`);
-        if (managed && this.activePlatform === platform && !managed.view.webContents.isDestroyed()) {
-          setTimeout(() => {
-            if (!managed || managed.view.webContents.isDestroyed()) return;
-            void this.loadUrl(managed, managed.view.webContents.getURL() || PLATFORM_URLS[platform]);
-          }, 800);
-        }
-      });
-      view.webContents.on('dom-ready', () => this.restoreActiveView(platform));
-      view.webContents.on('did-stop-loading', () => {
-        if (managed) {
-          managed.loading = false;
-          this.restoreActiveView(platform);
-          void managed.partition.flushStorageData();
-          void snapshotPlatformCookies(managed.partition, managed.platform).catch(() => undefined);
-        }
-      });
-      platformSession.cookies.on('changed', () => {
-        void platformSession.flushStorageData();
-        void snapshotPlatformCookies(platformSession, platform).catch(() => undefined);
-      });
-
-      // 设置反检测脚本注入（多时机注入确保生效）
-      if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
-
-      this.attach(platform);
-      this.window.show();
+      this.attachInteractive(managed);
       await this.loadUrl(managed, PLATFORM_URLS[platform]);
+    } else if (this.activePlatform !== platform) {
+      this.attachInteractive(managed);
     }
-    if (this.activePlatform !== platform) this.attach(platform);
-    if (!this.window.isVisible()) this.window.show();
+    if (this.window.isMinimized()) this.window.restore();
+    this.window.show();
+    this.window.focus();
+    this.attentionRequired = null;
     return this.platformStatus(platform);
-  }
-
-  attach(platform: Platform): void {
-    const managed = this.views.get(platform);
-    if (!managed) throw new Error(`平台尚未创建：${platform}`);
-    if (this.activePlatform) {
-      const active = this.views.get(this.activePlatform);
-      if (active) {
-        active.lastUsedAt = Date.now();
-        active.view.webContents.setBackgroundThrottling(true);
-        this.window.contentView.removeChildView(active.view);
-      }
-    }
-    this.window.contentView.addChildView(managed.view);
-    managed.lastUsedAt = Date.now();
-    managed.view.webContents.setBackgroundThrottling(false);
-    managed.view.setVisible(true);
-    managed.view.setBounds(this.viewBounds());
-    this.activePlatform = platform;
   }
 
   resize(): void {
     if (!this.activePlatform) return;
-    this.views.get(this.activePlatform)?.view.setBounds(this.viewBounds());
+    const managed = this.views.get(this.activePlatform);
+    if (managed) this.restoreManagedView(managed);
   }
 
   async fillDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
@@ -164,124 +159,76 @@ export class PlatformSessions {
   }
 
   private async fillDraftInternal(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
-    await this.open(platform);
-    const managed = this.views.get(platform);
-    if (!managed) throw new Error(`${platform} 浏览器创建失败`);
-    const result = platform === 'baijia'
-      ? await fillBaijiaDraft(managed.view.webContents, title, html, coverPath)
-      : platform === 'toutiao'
-        ? await fillToutiaoDraft(managed.view.webContents, title, html, coverPath)
-        : platform === 'zhihu'
-          ? await fillZhihuDraft(managed.view.webContents, title, html)
-          : platform === 'penguin'
-            ? await fillPenguinDraft(managed.view.webContents, title, html, tags)
-            : platform === 'sohu'
-              ? await fillSohuDraft(managed.view.webContents, title, html)
-              : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath);
-    if (platform === 'sohu') {
-      const settingsScreenshotPath = await this.captureEvidence(platform, 'fill-settings');
-      await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const screenshotPath = await this.captureEvidence(platform, 'fill-content');
-      return { ...result, screenshotPath, settingsScreenshotPath };
+    const managed = await this.openBackground(platform);
+    try {
+      const result = platform === 'baijia'
+        ? await fillBaijiaDraft(managed.view.webContents, title, html, coverPath)
+        : platform === 'toutiao'
+          ? await fillToutiaoDraft(managed.view.webContents, title, html, coverPath)
+          : platform === 'zhihu'
+            ? await fillZhihuDraft(managed.view.webContents, title, html)
+            : platform === 'penguin'
+              ? await fillPenguinDraft(managed.view.webContents, title, html, tags)
+              : platform === 'sohu'
+                ? await fillSohuDraft(managed.view.webContents, title, html)
+                : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath);
+      return await this.captureFillEvidence(managed, result);
+    } catch (error) {
+      const attention = await this.promoteForAttention(managed, error);
+      if (attention) throw new AttentionRequiredError(attention, originalErrorCode(error));
+      throw error;
     }
-    if (platform === 'toutiao') {
-      const settingsScreenshotPath = await this.captureEvidence(platform, 'fill-settings');
-      await managed.view.webContents.executeJavaScript(`(() => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-        const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')].filter(visible).find((element) => normalize(element.textContent) === '单图');
-        let root = single instanceof HTMLElement ? single.parentElement : null;
-        for (let depth = 0; root && depth < 12; depth += 1) { const text = normalize(root.textContent); if (text.includes('展示封面') && text.includes('无封面')) break; root = root.parentElement; }
-        if (!(root instanceof HTMLElement)) return false; root.scrollIntoView({ block: 'center', inline: 'nearest' }); return true;
-      })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const screenshotPath = await this.captureEvidence(platform, 'fill-cover');
-      return { ...result, screenshotPath, settingsScreenshotPath };
-    }
-    const screenshotPath = await this.captureEvidence(platform, 'fill');
-    return { ...result, screenshotPath };
   }
 
   async publishDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
     return await this.runExclusive(async () => {
       const fill = await this.fillDraftInternal(platform, title, html, coverPath, tags);
-      const managed = this.views.get(platform);
-      if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
-      const result = await publishFilledDraft(managed.view.webContents, platform, title);
-      const screenshotPath = await this.captureEvidence(platform, `publish-${result.status}`);
-      return { fill, ...result, screenshotPath };
+      const managed = this.background;
+      if (!managed || managed.platform !== platform) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
+      try {
+        const result = await publishFilledDraft(managed.view.webContents, platform, title);
+        const screenshotPath = await this.captureEvidence(managed, `publish-${result.status}`);
+        if (result.status === 'action_required') await this.promoteForVisibleAttention(managed, result);
+        if (result.status === 'success') await this.closeBackground();
+        return { fill, ...result, screenshotPath };
+      } catch (error) {
+        const attention = await this.promoteForAttention(managed, error);
+        if (attention) throw new AttentionRequiredError(attention, originalErrorCode(error));
+        throw error;
+      }
     });
   }
 
-  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
-    await this.open(platform);
-    const managed = this.views.get(platform);
-    if (!managed) throw new Error(`PLATFORM_VIEW_MISSING: ${platform} 页面未能创建`);
+  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[]; attentionRequired: AttentionRequired | null }> {
+    return await this.runExclusive(() => this.inspectInternal(platform));
+  }
+
+  private async inspectInternal(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[]; attentionRequired: AttentionRequired | null }> {
+    const managed = await this.openBackground(platform);
     const details = await managed.view.webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
       const visible = (element) => element instanceof HTMLElement && (() => {
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
       })();
-      const controls = [...document.querySelectorAll('label,[role="checkbox"],[role="radio"]')]
-        .filter(visible)
-        .filter((element) => element.matches('[role="checkbox"],[role="radio"]')
-          || element.querySelector('input[type="checkbox"],input[type="radio"]'))
-        .slice(0, 80)
-        .map((element) => {
-          const input = element.matches('input') ? element : element.querySelector('input[type="checkbox"],input[type="radio"]');
-          return {
-            type: input?.getAttribute('type') || element.getAttribute('role'),
-            value: input?.getAttribute('value'),
-            checked: input instanceof HTMLInputElement ? input.checked : element.getAttribute('aria-checked') === 'true',
-            text: normalize(element.textContent).slice(0, 80),
-            className: String(element.className || '').slice(0, 160),
-            inputClassName: String(input?.className || '').slice(0, 160),
-            inputId: input?.getAttribute('id'),
-          };
-        });
+      const controls = [...document.querySelectorAll('label,[role="checkbox"],[role="radio"]')].filter(visible).filter((element) => element.matches('[role="checkbox"],[role="radio"]') || element.querySelector('input[type="checkbox"],input[type="radio"]')).slice(0, 80).map((element) => {
+        const input = element.matches('input') ? element : element.querySelector('input[type="checkbox"],input[type="radio"]');
+        return { type: input?.getAttribute('type') || element.getAttribute('role'), value: input?.getAttribute('value'), checked: input instanceof HTMLInputElement ? input.checked : element.getAttribute('aria-checked') === 'true', text: normalize(element.textContent).slice(0, 80), className: String(element.className || '').slice(0, 160), inputClassName: String(input?.className || '').slice(0, 160), inputId: input?.getAttribute('id') };
+      });
       return {
-        textStart: normalize(document.body?.innerText).slice(0, 800),
-        controls,
-        editables: [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"],iframe')]
-          .filter((element) => element instanceof HTMLIFrameElement || visible(element))
-          .slice(0, 80)
-          .map((element) => {
-            const rect = element instanceof HTMLElement ? element.getBoundingClientRect() : { width: 0, height: 0 };
-            return {
-              tag: element.tagName,
-              type: element.getAttribute('type'),
-              placeholder: element.getAttribute('placeholder') || element.getAttribute('data-placeholder') || element.getAttribute('aria-label'),
-              className: String(element.className || '').slice(0, 180),
-              contenteditable: element.getAttribute('contenteditable'),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
-              text: normalize(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
-                ? element.value : element.textContent).slice(0, 100),
-              outerHTML: element.outerHTML.slice(0, 1000),
-              parentOuterHTML: element.parentElement?.parentElement?.parentElement?.outerHTML?.slice(0, 3000) || '',
-            };
-          }),
-        buttons: [...document.querySelectorAll('button,[role="button"]')]
-          .filter(visible)
-          .slice(0, 100)
-          .map((element) => ({
-            text: normalize(element.textContent).slice(0, 80),
-            className: String(element.className || '').slice(0, 180),
-            ariaLabel: element.getAttribute('aria-label'),
-            title: element.getAttribute('title'),
-            dataAttrs: [...element.attributes].filter((attribute) => attribute.name.startsWith('data-')).slice(0, 8).map((attribute) => [attribute.name, attribute.value]),
-            outerHTML: element.outerHTML.slice(0, 1200),
-            disabled: element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true',
-          })),
-        dialogs: [...document.querySelectorAll('[role="dialog"],[class*="message"],[class*="Message"],[class*="modal"],[class*="Modal"]')]
-          .filter(visible).slice(0, 20).map((element) => ({ text: normalize(element.textContent).slice(0, 300), className: String(element.className || '').slice(0, 200), outerHTML: element.outerHTML.slice(0, 2000) })),
+        textStart: normalize(document.body?.innerText).slice(0, 800), controls,
+        editables: [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"],iframe')].filter((element) => element instanceof HTMLIFrameElement || visible(element)).slice(0, 80).map((element) => {
+          const rect = element instanceof HTMLElement ? element.getBoundingClientRect() : { width: 0, height: 0 };
+          return { tag: element.tagName, type: element.getAttribute('type'), placeholder: element.getAttribute('placeholder') || element.getAttribute('data-placeholder') || element.getAttribute('aria-label'), className: String(element.className || '').slice(0, 180), contenteditable: element.getAttribute('contenteditable'), width: Math.round(rect.width), height: Math.round(rect.height), text: normalize(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : element.textContent).slice(0, 100), outerHTML: element.outerHTML.slice(0, 1000), parentOuterHTML: element.parentElement?.parentElement?.parentElement?.outerHTML?.slice(0, 3000) || '' };
+        }),
+        buttons: [...document.querySelectorAll('button,[role="button"]')].filter(visible).slice(0, 100).map((element) => ({ text: normalize(element.textContent).slice(0, 80), className: String(element.className || '').slice(0, 180), ariaLabel: element.getAttribute('aria-label'), title: element.getAttribute('title'), dataAttrs: [...element.attributes].filter((attribute) => attribute.name.startsWith('data-')).slice(0, 8).map((attribute) => [attribute.name, attribute.value]), outerHTML: element.outerHTML.slice(0, 1200), disabled: element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' })),
+        dialogs: [...document.querySelectorAll('[role="dialog"],[class*="message"],[class*="Message"],[class*="modal"],[class*="Modal"]')].filter(visible).slice(0, 20).map((element) => ({ text: normalize(element.textContent).slice(0, 300), className: String(element.className || '').slice(0, 200), outerHTML: element.outerHTML.slice(0, 2000) })),
         storage: Object.keys(localStorage).slice(0, 100).map((key) => ({ key, length: String(localStorage.getItem(key) || '').length, valueStart: String(localStorage.getItem(key) || '').slice(0, 300) })),
       };
     })()`);
-    return { ...this.platformStatus(platform), ...details };
+    const attention = await detectVisibleAttention(managed.view.webContents, platform);
+    if (attention) await this.promoteBackgroundForAttention(managed, attention);
+    return { ...this.platformStatus(platform), ...details, attentionRequired: attention };
   }
 
   status(): DesktopStatus {
@@ -291,6 +238,9 @@ export class PlatformSessions {
       ready: true,
       busy: this.isBusy(),
       activePlatform: this.activePlatform,
+      executingPlatform: this.executingPlatform,
+      windowState: this.window.isMinimized() ? 'minimized' : this.window.isVisible() ? 'visible' : 'hidden',
+      attentionRequired: this.attentionRequired,
       platforms: PLATFORMS.map((platform) => this.platformStatus(platform)),
     };
   }
@@ -300,45 +250,199 @@ export class PlatformSessions {
   }
 
   async flushStorage(): Promise<void> {
-    await Promise.all([...this.views.values()].flatMap(({ platform, partition }) => [
-      partition.flushStorageData(),
-      snapshotPlatformCookies(partition, platform),
-    ]));
+    const managed = [...this.views.values(), ...(this.background ? [this.background] : [])];
+    await Promise.all(managed.flatMap(({ platform, partition }) => [partition.flushStorageData(), snapshotPlatformCookies(partition, platform)]));
   }
 
-  private platformStatus(platform: Platform): PlatformStatus {
-    const managed = this.views.get(platform);
-    const created = Boolean(managed);
-    const attached = this.activePlatform === platform;
-    return {
-      platform,
-      created,
-      attached,
-      runtimeState: platformRuntimeState(created, attached),
-      loginState: 'not_checked',
-      statusNote: 'created/attached 仅表示页面是否驻留和显示，不能用于判断登录；登录状态必须通过 inspect 检查实际页面',
-      loading: managed?.loading ?? false,
-      url: managed?.view.webContents.getURL() ?? '',
-      title: managed?.view.webContents.getTitle() ?? '',
-    };
+  dispose(): void {
+    this.executionHost.destroy();
   }
 
-  private evictIdleView(requestedPlatform: Platform): void {
-    if (this.views.size < MAX_RESIDENT_PLATFORM_VIEWS) return;
-    const candidate = pickEvictionCandidate(
-      [...this.views.values()].map(({ platform, lastUsedAt }) => ({ platform, lastUsedAt })),
-      this.activePlatform,
-      requestedPlatform,
-    );
-    if (!candidate) return;
-    const managed = this.views.get(candidate);
+  private async createView(platform: Platform, host: ViewHost): Promise<ManagedView> {
+    const useMinimalBrowserEnvironment = platform === 'toutiao' || platform === 'netease';
+    const view = new WebContentsView({
+      webPreferences: {
+        partition: `persist:geo-publisher-${platform}`,
+        contextIsolation: false,
+        sandbox: false,
+        nodeIntegration: false,
+        backgroundThrottling: false,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        enableWebSQL: false,
+        preload: useMinimalBrowserEnvironment ? undefined : join(__dirname, '..', 'stealth-preload.cjs'),
+      },
+    });
+    const partition = session.fromPartition(`persist:geo-publisher-${platform}`);
+    if (useMinimalBrowserEnvironment) setupStealthUserAgent(partition);
+    else setupStealthSession(partition);
+    await restorePlatformCookies(partition, platform);
+    const managed: ManagedView = { platform, view, partition, host, loading: false, lastUsedAt: Date.now() };
+    view.webContents.setWindowOpenHandler(({ url }) => {
+      if (!managed.loading && url !== managed.view.webContents.getURL()) void this.loadUrl(managed, url);
+      return { action: 'deny' };
+    });
+    view.webContents.on('did-start-loading', () => { managed.loading = true; });
+    view.webContents.on('console-message', (_event, level, message) => { if (level >= 2) console.error(`[${platform}] renderer: ${message}`); });
+    view.webContents.on('render-process-gone', (_event, details) => {
+      console.error(`[${platform}] renderer process gone: ${details.reason}`);
+      const retained = this.background === managed || this.views.get(platform) === managed;
+      if (retained && !view.webContents.isDestroyed()) setTimeout(() => void this.loadUrl(managed, view.webContents.getURL() || PLATFORM_URLS[platform]), 800);
+    });
+    view.webContents.on('dom-ready', () => this.restoreManagedView(managed));
+    view.webContents.on('did-stop-loading', () => {
+      managed.loading = false;
+      this.restoreManagedView(managed);
+      void partition.flushStorageData();
+      void snapshotPlatformCookies(partition, platform).catch(() => undefined);
+    });
+    partition.cookies.on('changed', () => {
+      void partition.flushStorageData();
+      void snapshotPlatformCookies(partition, platform).catch(() => undefined);
+    });
+    if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
+    return managed;
+  }
+
+  private async openBackground(platform: Platform): Promise<ManagedView> {
+    if (this.background && this.background.platform !== platform) await this.closeBackground();
+    if (!this.background) {
+      this.background = await this.createView(platform, 'background');
+      this.attachBackground(this.background);
+      await this.loadUrl(this.background, PLATFORM_URLS[platform]);
+      await this.executionHost.prepare(this.background.view.webContents);
+    } else {
+      this.attachBackground(this.background);
+      await this.executionHost.prepare(this.background.view.webContents);
+    }
+    this.executingPlatform = platform;
+    return this.background;
+  }
+
+  private attachInteractive(managed: ManagedView): void {
+    if (this.activePlatform) {
+      const active = this.views.get(this.activePlatform);
+      if (active && active !== managed) {
+        active.lastUsedAt = Date.now();
+        active.view.webContents.setBackgroundThrottling(true);
+        this.window.contentView.removeChildView(active.view);
+      }
+    }
+    this.window.contentView.addChildView(managed.view);
+    managed.host = 'interactive';
+    managed.lastUsedAt = Date.now();
+    managed.view.webContents.setBackgroundThrottling(false);
+    managed.view.setVisible(true);
+    managed.view.setBounds(this.interactiveViewBounds());
+    this.activePlatform = managed.platform;
+  }
+
+  private attachBackground(managed: ManagedView): void {
+    managed.host = 'background';
+    managed.lastUsedAt = Date.now();
+    this.executionHost.attach(managed.view);
+  }
+
+  private async promoteBackground(platform: Platform): Promise<void> {
+    const managed = this.background;
+    if (!managed || managed.platform !== platform) return;
+    const existing = this.views.get(platform);
+    if (existing) this.closeInteractiveView(existing);
+    this.evictIdleInteractiveView(platform);
+    this.executionHost.detach(managed.view);
+    this.background = null;
+    this.executingPlatform = null;
+    this.views.set(platform, managed);
+    this.attachInteractive(managed);
+  }
+
+  private async closeBackground(): Promise<void> {
+    const managed = this.background;
     if (!managed) return;
-    if (this.activePlatform === candidate) {
+    this.executionHost.detach(managed.view);
+    this.background = null;
+    this.executingPlatform = null;
+    await managed.partition.flushStorageData();
+    await snapshotPlatformCookies(managed.partition, managed.platform).catch(() => undefined);
+    if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close({ waitForBeforeUnload: false });
+  }
+
+  private closeInteractiveView(managed: ManagedView): void {
+    if (this.activePlatform === managed.platform) {
       this.window.contentView.removeChildView(managed.view);
       this.activePlatform = null;
     }
-    managed.view.webContents.close({ waitForBeforeUnload: false });
-    this.views.delete(candidate);
+    this.views.delete(managed.platform);
+    if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close({ waitForBeforeUnload: false });
+  }
+
+  private evictIdleInteractiveView(requestedPlatform: Platform): void {
+    if (this.views.size < MAX_RESIDENT_INTERACTIVE_VIEWS) return;
+    const candidate = pickEvictionCandidate([...this.views.values()].map(({ platform, lastUsedAt }) => ({ platform, lastUsedAt })), this.activePlatform, requestedPlatform);
+    if (!candidate) return;
+    const managed = this.views.get(candidate);
+    if (managed) this.closeInteractiveView(managed);
+  }
+
+  private async promoteForAttention(managed: ManagedView, error: unknown): Promise<AttentionRequired | null> {
+    const attention = attentionFromError(managed.platform, error, managed.view.webContents.getURL()) || await detectVisibleAttention(managed.view.webContents, managed.platform);
+    if (attention) await this.promoteBackgroundForAttention(managed, attention);
+    return attention;
+  }
+
+  private async promoteForVisibleAttention(managed: ManagedView, result: PublishResult): Promise<void> {
+    const attention = await detectVisibleAttention(managed.view.webContents, managed.platform);
+    if (attention) await this.promoteBackgroundForAttention(managed, attention);
+    else if (/验证码|验证|登录失效|重新登录|账号异常|风控/.test(result.message)) {
+      await this.promoteBackgroundForAttention(managed, { platform: managed.platform, code: 'RISK_CONTROL_REQUIRED', message: `RISK_CONTROL_REQUIRED: ${result.message}`, url: result.url });
+    }
+  }
+
+  private async promoteBackgroundForAttention(managed: ManagedView, attention: AttentionRequired): Promise<void> {
+    if (this.background === managed) await this.promoteBackground(managed.platform);
+    this.attentionRequired = attention;
+    if (this.window.isMinimized()) this.window.restore();
+    this.window.show();
+    this.window.focus();
+    this.onAttentionRequired(attention);
+  }
+
+  private async captureFillEvidence(managed: ManagedView, result: any): Promise<unknown> {
+    if (managed.platform === 'sohu') {
+      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
+    }
+    if (managed.platform === 'toutiao') {
+      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => {
+        const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+        const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')].filter(visible).find((element) => normalize(element.textContent) === '单图');
+        let root = single instanceof HTMLElement ? single.parentElement : null;
+        for (let depth = 0; root && depth < 12; depth += 1) { const text = normalize(root.textContent); if (text.includes('展示封面') && text.includes('无封面')) break; root = root.parentElement; }
+        if (!(root instanceof HTMLElement)) return false; root.scrollIntoView({ block: 'center', inline: 'nearest' }); return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-cover'), settingsScreenshotPath };
+    }
+    return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill') };
+  }
+
+  private platformStatus(platform: Platform): PlatformStatus {
+    const interactive = this.views.get(platform);
+    const background = this.background?.platform === platform;
+    const created = Boolean(interactive || background);
+    const attached = this.activePlatform === platform;
+    const managed = this.executingPlatform === platform && background
+      ? this.background
+      : interactive || (background ? this.background : undefined);
+    return {
+      platform, created, attached, runtimeState: platformRuntimeState(created, attached, background), loginState: 'not_checked',
+      statusNote: 'active 表示显示在主窗口；background 表示后台任务页，二者都不能用于判断登录状态。',
+      loading: managed?.loading ?? false, url: managed?.view.webContents.getURL() ?? '', title: managed?.view.webContents.getTitle() ?? '',
+    };
   }
 
   private async loadUrl(managed: ManagedView, url: string): Promise<void> {
@@ -351,29 +455,27 @@ export class PlatformSessions {
       if (!/ERR_ABORTED \(-3\)/.test(message)) throw error;
     } finally {
       managed.loading = managed.view.webContents.isLoading();
-      this.restoreActiveView(managed.platform);
+      this.restoreManagedView(managed);
     }
   }
 
-  private restoreActiveView(platform: Platform): void {
-    if (this.activePlatform !== platform) return;
-    const managed = this.views.get(platform);
-    if (!managed || managed.view.webContents.isDestroyed()) return;
-    managed.view.setVisible(true);
-    managed.view.setBounds(this.viewBounds());
+  private restoreManagedView(managed: ManagedView): void {
+    if (managed.host === 'background' && this.background === managed) this.executionHost.restore(managed.view);
+    if (managed.host === 'interactive' && this.activePlatform === managed.platform) {
+      managed.view.setVisible(true);
+      managed.view.setBounds(this.interactiveViewBounds());
+    }
   }
 
-  private viewBounds(): { x: number; y: number; width: number; height: number } {
+  private interactiveViewBounds(): { x: number; y: number; width: number; height: number } {
     const [width = 920, height = 640] = this.window.getContentSize();
     return { x: 220, y: 56, width: Math.max(320, width - 220), height: Math.max(240, height - 56) };
   }
 
-  private async captureEvidence(platform: Platform, stage: string): Promise<string> {
-    const managed = this.views.get(platform);
-    if (!managed) throw new Error(`平台尚未创建：${platform}`);
+  private async captureEvidence(managed: ManagedView, stage: string): Promise<string> {
     const directory = join(evidenceDirectory(), new Date().toISOString().slice(0, 10));
     await mkdir(directory, { recursive: true });
-    const path = join(directory, `${Date.now()}-${platform}-${stage}.png`);
+    const path = join(directory, `${Date.now()}-${managed.platform}-${stage}.png`);
     const image = await managed.view.webContents.capturePage();
     await writeFile(path, image.toPNG());
     return path;
@@ -389,6 +491,7 @@ export class PlatformSessions {
       return await operation();
     } finally {
       this.pendingOperations -= 1;
+      this.executingPlatform = null;
       release();
     }
   }

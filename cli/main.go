@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
@@ -325,13 +325,13 @@ func startDesktop() error {
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.Command("open", "-a", "GEO Publisher")
+		command = exec.Command("open", "-g", "-a", "GEO Publisher", "--args", "--background")
 	case "windows":
 		path := windowsDesktopExecutable()
 		if path == "" {
 			return &cliError{code: "DESKTOP_START_FAILED", message: "找不到 GEO Publisher.exe", suggestion: "请手动打开一次 GEO Publisher，随后 CLI 会从 discovery.json 记住实际安装位置"}
 		}
-		command = exec.Command(path)
+		command = exec.Command(path, "--background")
 	default:
 		command = exec.Command("geo-publisher-desktop")
 	}
@@ -500,6 +500,9 @@ func readToken() (string, error) {
 }
 
 func dataDirectory() string {
+	if override := os.Getenv("GEO_PUBLISHER_USER_DATA_DIR"); override != "" {
+		return override
+	}
 	home, _ := os.UserHomeDir()
 	switch runtime.GOOS {
 	case "windows":
@@ -523,6 +526,9 @@ func tokenPath() string     { return filepath.Join(dataDirectory(), "control-tok
 func discoveryPath() string { return filepath.Join(dataDirectory(), "discovery.json") }
 
 func controlEndpoint() string {
+	if override := os.Getenv("GEO_PUBLISHER_CONTROL_ENDPOINT"); override != "" {
+		return override
+	}
 	home, _ := os.UserHomeDir()
 	sum := sha256.Sum256([]byte(home))
 	key := hex.EncodeToString(sum[:])[:12]
@@ -546,6 +552,8 @@ func usageError(message string) error {
 
 func suggestionFor(code string) string {
 	switch code {
+	case "LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "RISK_CONTROL_REQUIRED":
+		return "GEO Publisher 已打开对应页面；请完成登录、验证或风险提示处理后重新执行同一命令一次"
 	case "UNAUTHORIZED":
 		return "完全退出并重新启动桌面端，再重试命令"
 	case "CONTROL_REQUEST_FAILED":

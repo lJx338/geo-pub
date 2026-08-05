@@ -21,6 +21,9 @@ button:disabled { cursor: wait; opacity: .62; }
 .command-button { background: #f5f6f8; }
 .primary-command { margin-top: 8px; justify-content: center; background: #175cd3; color: #fff; text-align: center; }
 .primary-command:hover { background: #144cae; color: #fff; }
+.setting-toggle { display: flex; align-items: center; gap: 8px; margin: 14px 10px 0; color: #667085; font-size: 12px; cursor: pointer; }
+.setting-toggle input { width: 14px; height: 14px; margin: 0; accent-color: #175cd3; }
+.setting-toggle input:disabled { cursor: not-allowed; }
 main { margin: 56px 0 0 220px; height: calc(100vh - 56px); display: grid; place-content: center; padding: 48px; color: #667085; }
 .setup { width: min(520px, calc(100vw - 316px)); }
 .setup h1 { margin: 0 0 28px; color: #273047; font-size: 24px; letter-spacing: 0; }

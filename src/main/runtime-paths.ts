@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export function dataDirectory(): string {
+  if (process.env.GEO_PUBLISHER_USER_DATA_DIR) return process.env.GEO_PUBLISHER_USER_DATA_DIR;
   if (process.platform === 'win32') {
     return join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'GEO Publisher Desktop');
   }
@@ -38,6 +39,7 @@ export function integrationsDirectory(): string {
 }
 
 export function controlEndpoint(): string {
+  if (process.env.GEO_PUBLISHER_CONTROL_ENDPOINT) return process.env.GEO_PUBLISHER_CONTROL_ENDPOINT;
   const userKey = createHash('sha256').update(homedir()).digest('hex').slice(0, 12);
   if (process.platform === 'win32') return `\\\\.\\pipe\\geo-publisher-${userKey}`;
   return `/tmp/geo-publisher-${userKey}.sock`;

@@ -22,6 +22,7 @@ describe('platform runtime status', () => {
   it('does not confuse view residency with login state', () => {
     expect(platformRuntimeState(false, false)).toBe('not_loaded');
     expect(platformRuntimeState(true, false)).toBe('resident');
+    expect(platformRuntimeState(true, false, true)).toBe('background');
     expect(platformRuntimeState(true, true)).toBe('active');
   });
 });

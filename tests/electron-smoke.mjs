@@ -1,20 +1,28 @@
+import { execFile } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { promisify } from 'node:util';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { _electron as electron } from 'playwright';
 
 const evidenceDirectory = join(process.cwd(), 'release', 'test-evidence');
-const userDataDirectory = process.platform === 'win32'
-  ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'GEO Publisher Desktop')
-  : process.platform === 'darwin'
-    ? join(homedir(), 'Library', 'Application Support', 'GEO Publisher Desktop')
-    : join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'geo-publisher');
+const isolatedUserDataDirectory = join(process.cwd(), 'release', 'test-user-data');
+const isolatedControlEndpoint = join(isolatedUserDataDirectory, 'control.sock');
+const fixtureUrl = pathToFileURL(join(process.cwd(), 'tests', 'fixtures', 'silent-platform.html')).toString();
+const userDataDirectory = isolatedUserDataDirectory;
+const execFileAsync = promisify(execFile);
 await mkdir(evidenceDirectory, { recursive: true });
 
 const app = await electron.launch({
   args: ['.'],
   cwd: process.cwd(),
-  env: { ...process.env, GEO_DISABLE_OPEN_WORKBUDDY: '1' },
+  env: {
+    ...process.env,
+    GEO_DISABLE_OPEN_WORKBUDDY: '1',
+    GEO_PUBLISHER_USER_DATA_DIR: isolatedUserDataDirectory,
+    GEO_PUBLISHER_CONTROL_ENDPOINT: isolatedControlEndpoint,
+    GEO_PUBLISHER_TEST_PLATFORM_URL: fixtureUrl,
+  },
 });
 
 try {
@@ -66,6 +74,28 @@ try {
   if ((compact.updateBottom || Infinity) > compact.height) throw new Error(`compact controls clipped: ${JSON.stringify(compact)}`);
 
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-home.png') });
+  const cliPath = process.platform === 'win32'
+    ? join(process.cwd(), 'dist', 'cli', 'geo-publisher-windows-amd64.exe')
+    : join(process.cwd(), 'dist', 'cli', 'geo-publisher-darwin-arm64');
+  const cliEnv = {
+    ...process.env,
+    GEO_PUBLISHER_USER_DATA_DIR: isolatedUserDataDirectory,
+    GEO_PUBLISHER_CONTROL_ENDPOINT: isolatedControlEndpoint,
+  };
+  const runInspect = async () => JSON.parse((await execFileAsync(cliPath, ['inspect', 'baijia'], { env: cliEnv })).stdout);
+  await window.bringToFront();
+  const visibleBefore = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
+  if (!visibleBefore.some((state) => state.visible && state.focused)) throw new Error(`could not focus main window: ${JSON.stringify(visibleBefore)}`);
+  const visibleInspect = await runInspect();
+  if (!visibleInspect.ok || visibleInspect.data?.runtimeState !== 'background') throw new Error(`visible background inspect failed: ${JSON.stringify(visibleInspect)}`);
+  const visibleAfter = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
+  if (!visibleAfter.some((state) => state.visible && state.focused) || visibleAfter.some((state) => state.visible && !state.focused)) throw new Error(`background inspect changed focus: ${JSON.stringify(visibleAfter)}`);
+
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.close());
+  const hiddenInspect = await runInspect();
+  if (!hiddenInspect.ok || hiddenInspect.data?.runtimeState !== 'background') throw new Error(`hidden background inspect failed: ${JSON.stringify(hiddenInspect)}`);
+  const backgroundState = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
+  if (backgroundState.some((state) => state.visible || state.focused)) throw new Error(`background task changed window state: ${JSON.stringify(backgroundState)}`);
   process.stdout.write(`${JSON.stringify({ initial, compact, screenshot: join(evidenceDirectory, 'desktop-home.png') }, null, 2)}\n`);
 } finally {
   await app.close();

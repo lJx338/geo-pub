@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { controlRequestSchema, type ControlRequest, type ControlResponse } from '../shared/protocol.js';
 import { controlEndpoint } from './runtime-paths.js';
+import { AttentionRequiredError } from './attention-required.js';
 
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
 
@@ -66,10 +67,11 @@ export class ControlServer {
       this.reply(socket, { id, ok: true, data });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const attention = error instanceof AttentionRequiredError ? error : null;
       this.reply(socket, {
         id,
         ok: false,
-        error: { code: errorCodeForMessage(message), message },
+        error: { code: attention?.code || errorCodeForMessage(message), message, details: attention?.details },
       });
     }
   }

@@ -4,6 +4,7 @@ const actionMessage = document.querySelector('#action-message');
 const workBuddyState = document.querySelector('#workbuddy-state');
 const updateState = document.querySelector('#update-state');
 const installUpdateButton = document.querySelector('#install-update');
+const launchAtLogin = document.querySelector('#launch-at-login');
 
 function showMessage(message, error = false) {
   actionMessage.textContent = message;
@@ -92,15 +93,38 @@ installUpdateButton.addEventListener('click', async () => {
   showMessage(result.message, !result.accepted);
 });
 
+launchAtLogin.addEventListener('change', async () => {
+  launchAtLogin.disabled = true;
+  try {
+    const result = await window.geoPublisher.setLaunchAtLogin(launchAtLogin.checked);
+    launchAtLogin.checked = result.enabled;
+    showMessage(result.enabled ? '已开启开机自动启动' : '已关闭开机自动启动');
+  } catch (error) {
+    launchAtLogin.checked = !launchAtLogin.checked;
+    showMessage(`设置开机启动失败：${error.message}`, true);
+  } finally {
+    launchAtLogin.disabled = false;
+  }
+});
+
 window.geoPublisher.onUpdateStatus(renderUpdate);
+window.geoPublisher.onAttentionRequired((attention) => {
+  if (!attention) return;
+  setConnection('需要人工处理', 'error');
+  showMessage(`${attention.platform}需要人工处理：${attention.message}`, true);
+});
 
 void Promise.all([
   window.geoPublisher.status(),
   window.geoPublisher.workBuddyStatus(),
   window.geoPublisher.updateStatus(),
-]).then(([status, workBuddy, update]) => {
+  window.geoPublisher.launchAtLoginStatus(),
+]).then(([status, workBuddy, update, launchStatus]) => {
   setConnection(status.busy ? '发布任务运行中' : '桌面端已就绪', status.busy ? 'busy' : 'ready');
   document.querySelector('#version').textContent = `v${status.version}`;
   workBuddyState.textContent = workBuddy.prepared ? '已准备' : '未连接';
+  launchAtLogin.disabled = !launchStatus.available;
+  launchAtLogin.checked = launchStatus.enabled;
+  launchAtLogin.title = launchStatus.available ? '' : '安装后的正式版支持开机自动启动';
   renderUpdate(update);
 });
