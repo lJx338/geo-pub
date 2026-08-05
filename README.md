@@ -50,9 +50,15 @@ Windows x64 打包：
 npm run package:win
 ```
 
+macOS 仅支持 Apple Silicon（M1/M2/M3/M4），不提供 Intel Mac 版本：
+
+```bash
+npm run package:mac
+```
+
 ## 自动更新
 
-Windows 客户端启动 30 秒后检查更新，之后每 4 小时检查一次。更新在后台下载，发布任务运行时不允许重启安装。GitHub Actions 构建安装包并上传腾讯云 COS，版本化安装包先上传，更新清单最后上传。
+客户端启动 30 秒后检查更新，之后每 4 小时检查一次。更新在后台下载，发布任务运行时不允许重启安装。GitHub Actions 构建安装包并上传腾讯云 COS，版本化安装包先上传，更新清单最后上传。
 
 发布新版本：
 

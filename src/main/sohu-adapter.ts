@@ -1,10 +1,12 @@
 import type { WebContents } from 'electron';
+import { contentMatchesExpected } from './content-verification.js';
 
 const PUBLISH_URL = 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1';
 
 export interface SohuDraftFillResult {
   titleFilled: boolean;
   bodyFilled: boolean;
+  bodyVerificationSource: 'editor' | 'page' | 'none';
   title: string;
   bodyTextLength: number;
   summaryClicked: boolean;
@@ -31,15 +33,21 @@ async function clickPoint(webContents: WebContents, point: { x: number; y: numbe
 
 function contentScript(title: string, html: string, write: boolean): string {
   return `(() => {
-    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '').replace(/[\\u200B-\\u200D\\uFEFF]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const contentMatchesExpected = ${contentMatchesExpected.toString()};
     const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
     const meta = (element) => normalize([element?.getAttribute?.('placeholder'), element?.getAttribute?.('data-placeholder'), element?.getAttribute?.('aria-label'), element?.className].join(' '));
     const candidates = [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')].filter(visible);
     const titleElement = candidates.map((element) => ({ element, score: (meta(element).includes('标题') ? 300 : 0) + (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? 80 : 0) }))
       .sort((left, right) => right.score - left.score)[0]?.element || null;
-    const bodyElement = candidates.filter((element) => element !== titleElement).map((element) => ({ element, score: (meta(element).includes('正文') ? 300 : 0) + (meta(element).toLowerCase().includes('editor') ? 120 : 0) + (element.getBoundingClientRect().height > 160 ? 120 : 0) }))
-      .sort((left, right) => right.score - left.score)[0]?.element || null;
     const holder = document.createElement('div'); holder.innerHTML = ${JSON.stringify(html)}; const expectedBody = normalize(holder.innerText || holder.textContent || '');
+    const bodyCandidates = candidates.filter((element) => element !== titleElement).map((element) => {
+      const actual = normalize(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : element.innerText || element.textContent);
+      const explicitEditor = element.matches('.ql-editor,.ProseMirror,[data-placeholder*="正文"]');
+      const score = (explicitEditor ? 500 : 0) + (meta(element).includes('正文') ? 300 : 0) + (meta(element).toLowerCase().includes('editor') ? 120 : 0) + (element.getBoundingClientRect().height > 160 ? 120 : 0) + (contentMatchesExpected(actual, expectedBody) ? 1000 : 0);
+      return { element, actual, score };
+    }).sort((left, right) => right.score - left.score);
+    const bodyElement = bodyCandidates[0]?.element || null;
     const setValue = (element, value) => { const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(element, value); element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: value })); element.dispatchEvent(new Event('change', { bubbles: true })); };
     if (${write}) {
       if (titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement) setValue(titleElement, ${JSON.stringify(title)});
@@ -48,9 +56,13 @@ function contentScript(title: string, html: string, write: boolean): string {
       else if (bodyElement instanceof HTMLElement) { bodyElement.focus(); const range = document.createRange(); range.selectNodeContents(bodyElement); const selection = getSelection(); selection?.removeAllRanges(); selection?.addRange(range); if (!document.execCommand('insertHTML', false, ${JSON.stringify(html)})) bodyElement.innerHTML = ${JSON.stringify(html)}; bodyElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: expectedBody })); bodyElement.dispatchEvent(new Event('change', { bubbles: true })); }
     }
     const actualTitle = normalize(titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement ? titleElement.value : titleElement?.textContent);
-    const actualBody = normalize(bodyElement instanceof HTMLInputElement || bodyElement instanceof HTMLTextAreaElement ? bodyElement.value : bodyElement?.innerText || bodyElement?.textContent);
-    const edge = Math.min(20, expectedBody.length);
-    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: actualBody.includes(expectedBody.slice(0, edge)) && actualBody.includes(expectedBody.slice(-edge)), title: actualTitle, bodyTextLength: actualBody.length, editorFound: Boolean(titleElement && bodyElement) };
+    const actualBodies = bodyCandidates.map(({ element }) => normalize(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : element.innerText || element.textContent));
+    const pageBody = normalize(document.body?.innerText || document.body?.textContent || '');
+    const editorMatch = actualBodies.some((body) => contentMatchesExpected(body, expectedBody));
+    const pageMatch = contentMatchesExpected(pageBody, expectedBody);
+    const bodyVerificationSource = editorMatch ? 'editor' : pageMatch ? 'page' : 'none';
+    const actualBody = actualBodies.sort((left, right) => right.length - left.length)[0] || '';
+    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource !== 'none', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, editorFound: Boolean(titleElement && bodyElement) };
   })()`;
 }
 
@@ -76,7 +88,7 @@ export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120
   throw new Error('SOHU_EDITOR_NOT_READY: 搜狐号编辑器 120 秒内未就绪');
 }
 
-async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; title: string; bodyTextLength: number }> {
+async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'page' | 'none'; title: string; bodyTextLength: number }> {
   await webContents.executeJavaScript(`(async () => {
     const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const normalize = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();

@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron';
+import { contentMatchesExpected } from './content-verification.js';
 
 const PUBLISH_URL = 'https://om.qq.com/main/creation/article';
 const TITLE_SELECTORS = ['input[placeholder*="标题"]', 'textarea[placeholder*="标题"]', '.article-title input', '.title input', '[contenteditable="true"][data-placeholder*="标题"]'];
@@ -7,6 +8,7 @@ const BODY_SELECTORS = ['.ql-editor', '.ProseMirror', '.DraftEditor-editorContai
 export interface PenguinDraftFillResult {
   titleFilled: boolean;
   bodyFilled: boolean;
+  bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none';
   title: string;
   bodyTextLength: number;
   tagsRequested: string[];
@@ -67,24 +69,33 @@ export async function ensurePenguinEditor(webContents: WebContents, timeoutMs = 
   throw new Error('PENGUIN_EDITOR_NOT_READY: 企鹅号编辑器 120 秒内未就绪');
 }
 
-async function readContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; title: string; bodyTextLength: number }> {
+async function readContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none'; title: string; bodyTextLength: number }> {
   return await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const contentMatchesExpected = ${contentMatchesExpected.toString()};
     const holder = document.createElement('div'); holder.innerHTML = ${JSON.stringify(html)};
     const expected = normalize(holder.innerText || holder.textContent || '');
     const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     const titleElement = ${JSON.stringify(TITLE_SELECTORS)}.flatMap((selector) => [...document.querySelectorAll(selector)]).find(visible);
-    const bodyElement = ${JSON.stringify(BODY_SELECTORS)}.flatMap((selector) => [...document.querySelectorAll(selector)])
-      .find((element) => element !== titleElement && (element instanceof HTMLIFrameElement || visible(element)));
-    const bodyTarget = bodyElement instanceof HTMLIFrameElement ? bodyElement.contentDocument?.body : bodyElement;
+    const bodyTargets = [...new Set(${JSON.stringify(BODY_SELECTORS)}.flatMap((selector) => [...document.querySelectorAll(selector)]))]
+      .filter((element) => element !== titleElement && (element instanceof HTMLIFrameElement || visible(element)))
+      .map((element) => element instanceof HTMLIFrameElement ? element.contentDocument?.body : element).filter(Boolean);
     const actualTitle = normalize(titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement ? titleElement.value : titleElement?.textContent);
-    const actualBody = normalize(bodyTarget instanceof HTMLInputElement || bodyTarget instanceof HTMLTextAreaElement ? bodyTarget.value : bodyTarget?.innerText || bodyTarget?.textContent);
-    const edge = Math.min(20, expected.length);
-    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: actualBody.includes(expected.slice(0, edge)) && actualBody.includes(expected.slice(-edge)), title: actualTitle, bodyTextLength: actualBody.length };
+    const bodies = bodyTargets.map((target) => normalize(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target.value : target?.innerText || target?.textContent));
+    const cacheBodies = Object.keys(localStorage).filter((key) => key.startsWith('OM_ARTICLE_CACHE_')).map((key) => {
+      try { const value = JSON.parse(localStorage.getItem(key) || '{}'); return normalize(value.content || ''); } catch { return ''; }
+    });
+    const pageBody = normalize(document.body?.innerText || document.body?.textContent || '');
+    const editorMatch = bodies.some((body) => contentMatchesExpected(body, expected));
+    const cacheMatch = cacheBodies.some((body) => contentMatchesExpected(body, expected));
+    const pageMatch = contentMatchesExpected(pageBody, expected);
+    const bodyVerificationSource = editorMatch ? 'editor' : cacheMatch ? 'draft_cache' : pageMatch ? 'page' : 'none';
+    const actualBody = [...bodies, ...cacheBodies].sort((left, right) => right.length - left.length)[0] || '';
+    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource !== 'none', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length };
   })()`);
 }
 
-async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; title: string; bodyTextLength: number }> {
+async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none'; title: string; bodyTextLength: number }> {
   await webContents.executeJavaScript(`(() => {
     const requestedTitle = ${JSON.stringify(title)}; const requestedHtml = ${JSON.stringify(html)};
     const holder = document.createElement('div'); holder.innerHTML = requestedHtml;

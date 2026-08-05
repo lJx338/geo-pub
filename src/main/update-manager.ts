@@ -6,7 +6,7 @@ const DEFAULT_UPDATE_BASE_URL = 'https://lingxi-1303034624.cos.ap-guangzhou.myqc
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 export function updatePlatformKey(platform = process.platform, arch = process.arch): string | null {
-  if (platform === 'darwin' && (arch === 'arm64' || arch === 'x64')) return `mac-${arch}`;
+  if (platform === 'darwin' && arch === 'arm64') return 'mac-arm64';
   if (platform === 'win32' && arch === 'x64') return 'win-x64';
   return null;
 }

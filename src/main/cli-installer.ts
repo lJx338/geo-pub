@@ -5,7 +5,6 @@ import { cliExecutablePath } from './runtime-paths.js';
 
 function bundledCliName(): string | null {
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'geo-publisher-darwin-arm64';
-  if (process.platform === 'darwin' && process.arch === 'x64') return 'geo-publisher-darwin-amd64';
   if (process.platform === 'win32' && process.arch === 'x64') return 'geo-publisher-windows-amd64.exe';
   return null;
 }

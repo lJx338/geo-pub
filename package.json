@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "private": true,
   "description": "GEO Publisher desktop application with a built-in persistent browser",
   "author": "Lingxi",
@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:e2e": "npm run build && npm run build:cli && node tests/electron-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package:mac": "npm run build && npm run build:cli && electron-builder --mac",
+    "package:mac": "npm run build && npm run build:cli && electron-builder --mac --arm64",
     "package:win": "npm run build && npm run build:cli && electron-builder --win --x64",
     "version:set": "node scripts/set-version.mjs",
     "verify": "npm run typecheck && npm test && npm run build && npm run build:cli"
@@ -61,12 +61,16 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "forceCodeSigning": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
       "extraResources": [
         {
           "from": "dist/cli",
           "to": "cli",
           "filter": [
-            "geo-publisher-darwin-*"
+            "geo-publisher-darwin-arm64"
           ]
         }
       ],

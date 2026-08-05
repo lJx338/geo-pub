@@ -5,7 +5,7 @@ DIRECTORY=${1:?usage: upload-release.sh directory target channel}
 TARGET=${2:?usage: upload-release.sh directory target channel}
 CHANNEL=${3:?usage: upload-release.sh directory target channel}
 
-case "$TARGET" in win-x64) ;; *) echo "unsupported target: $TARGET" >&2; exit 1 ;; esac
+case "$TARGET" in win-x64|mac-arm64) ;; *) echo "unsupported target: $TARGET" >&2; exit 1 ;; esac
 case "$CHANNEL" in stable|beta) ;; *) echo "unsupported channel: $CHANNEL" >&2; exit 1 ;; esac
 
 : "${TENCENT_CLOUD_SECRET_ID:?missing TENCENT_CLOUD_SECRET_ID}"
@@ -26,16 +26,20 @@ coscmd -c "$CONFIG" config \
   --retry 5 --timeout 120
 
 found_artifact=0
-for file in "$DIRECTORY"/*.exe "$DIRECTORY"/*.blockmap; do
+for file in "$DIRECTORY"/*.exe "$DIRECTORY"/*.dmg "$DIRECTORY"/*.zip "$DIRECTORY"/*.blockmap; do
   [ -f "$file" ] || continue
   found_artifact=1
   coscmd -c "$CONFIG" upload -f -y \
     -H '{"Cache-Control":"public, max-age=31536000, immutable"}' \
     "$file" "$PREFIX/releases/$CHANNEL/$TARGET/$(basename "$file")"
 done
-[ "$found_artifact" -eq 1 ] || { echo "no Windows release artifact found" >&2; exit 1; }
+[ "$found_artifact" -eq 1 ] || { echo "no release artifact found for $TARGET" >&2; exit 1; }
 
-if [ "$CHANNEL" = "beta" ]; then
+if [ "$TARGET" = "mac-arm64" ] && [ "$CHANNEL" = "beta" ]; then
+  manifest_name=beta-mac.yml
+elif [ "$TARGET" = "mac-arm64" ]; then
+  manifest_name=latest-mac.yml
+elif [ "$CHANNEL" = "beta" ]; then
   manifest_name=beta.yml
 else
   manifest_name=latest.yml
