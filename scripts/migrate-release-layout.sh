@@ -58,6 +58,12 @@ for target in win-x64 mac-arm64; do
   node scripts/render-channel-manifest.mjs \
     "$source_manifest" "$rendered_manifest" "$version_url"
 
+  # Do not publish a channel pointer until every referenced artifact is reachable.
+  node -e "const fs=require('fs');const YAML=require('yaml');for(const file of YAML.parse(fs.readFileSync(process.argv[1],'utf8')).files) console.log(file.url)" "$rendered_manifest" |
+  while IFS= read -r artifact_url; do
+    curl -fsSIL --retry 5 --retry-all-errors --retry-delay 2 "$artifact_url" >/dev/null
+  done
+
   coscmd -c "$CONFIG" upload -f -y \
     -H '{"Cache-Control":"public, max-age=31536000, immutable"}' \
     "$rendered_manifest" "$version_key/$stable_manifest"

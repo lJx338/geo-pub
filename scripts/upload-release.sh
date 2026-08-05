@@ -61,6 +61,12 @@ coscmd -c "$CONFIG" upload -f -y \
   -H '{"Cache-Control":"public, max-age=31536000, immutable"}' \
   "$rendered_manifest" "$VERSION_KEY/$manifest_name"
 
+# Do not publish a channel pointer until every referenced artifact is reachable.
+node -e "const fs=require('fs');const YAML=require('yaml');for(const file of YAML.parse(fs.readFileSync(process.argv[1],'utf8')).files) console.log(file.url)" "$rendered_manifest" |
+while IFS= read -r artifact_url; do
+  curl -fsSIL --retry 5 --retry-all-errors --retry-delay 2 "$artifact_url" >/dev/null
+done
+
 # New clients read the channel pointer. It is uploaded only after all artifacts.
 coscmd -c "$CONFIG" upload -f -y \
   -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \

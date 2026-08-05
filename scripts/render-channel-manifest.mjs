@@ -5,7 +5,15 @@ import { parse, stringify } from 'yaml';
 function encodeArtifactName(value) {
   return String(value)
     .split('/')
-    .map((part) => encodeURIComponent(part))
+    .map((part) => {
+      let decoded = part;
+      let previous;
+      do {
+        previous = decoded;
+        decoded = decodeURIComponent(decoded);
+      } while (decoded !== previous);
+      return encodeURIComponent(decoded);
+    })
     .join('/');
 }
 
