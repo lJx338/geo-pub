@@ -60,6 +60,9 @@ export interface PlatformStatus {
   platform: Platform;
   created: boolean;
   attached: boolean;
+  runtimeState: 'not_loaded' | 'resident' | 'active';
+  loginState: 'not_checked';
+  statusNote: string;
   loading: boolean;
   url: string;
   title: string;

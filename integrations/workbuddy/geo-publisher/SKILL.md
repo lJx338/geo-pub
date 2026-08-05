@@ -26,6 +26,14 @@ Never copy a path or user name from another computer. If discovery is missing, a
 6. Process multiple platforms serially in this order unless the user specifies another order: `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`.
 7. Report the structured result for every platform.
 
+## Interpret platform status correctly
+
+- `created` means the platform page currently has an in-memory WebView. `created=false` does not mean logged out.
+- `attached` means the platform page is currently visible. `attached=false` does not mean disconnected or logged out.
+- The desktop intentionally keeps only one platform WebView resident. It is normal for only the current platform to report `created=true` and `attached=true`; login cookies remain stored per platform.
+- Never convert `created/attached` into a login table or label a platform as `待登录` from those fields.
+- When the user asks whether platforms are logged in, run `inspect <platform>` serially for every requested platform. Report `已登录` only when the actual publishing page is visible, and report `待登录` only when the inspected page contains a visible login, verification, or risk-control prompt. Otherwise report `登录状态未确认`.
+
 Use these platform mappings:
 
 - 百家号: `baijia`

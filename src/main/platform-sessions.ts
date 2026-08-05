@@ -47,6 +47,11 @@ export function pickEvictionCandidate(
     })[0]?.platform ?? null;
 }
 
+export function platformRuntimeState(created: boolean, attached: boolean): PlatformStatus['runtimeState'] {
+  if (attached) return 'active';
+  return created ? 'resident' : 'not_loaded';
+}
+
 export class PlatformSessions {
   private readonly views = new Map<Platform, ManagedView>();
   private activePlatform: Platform | null = null;
@@ -210,8 +215,9 @@ export class PlatformSessions {
   }
 
   async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
+    await this.open(platform);
     const managed = this.views.get(platform);
-    if (!managed) return { ...this.platformStatus(platform), textStart: '', controls: [], editables: [], buttons: [], dialogs: [], storage: [] };
+    if (!managed) throw new Error(`PLATFORM_VIEW_MISSING: ${platform} 页面未能创建`);
     const details = await managed.view.webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
       const visible = (element) => element instanceof HTMLElement && (() => {
@@ -302,10 +308,15 @@ export class PlatformSessions {
 
   private platformStatus(platform: Platform): PlatformStatus {
     const managed = this.views.get(platform);
+    const created = Boolean(managed);
+    const attached = this.activePlatform === platform;
     return {
       platform,
-      created: Boolean(managed),
-      attached: this.activePlatform === platform,
+      created,
+      attached,
+      runtimeState: platformRuntimeState(created, attached),
+      loginState: 'not_checked',
+      statusNote: 'created/attached 仅表示页面是否驻留和显示，不能用于判断登录；登录状态必须通过 inspect 检查实际页面',
       loading: managed?.loading ?? false,
       url: managed?.view.webContents.getURL() ?? '',
       title: managed?.view.webContents.getTitle() ?? '',

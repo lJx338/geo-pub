@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pickEvictionCandidate } from './platform-sessions.js';
+import { pickEvictionCandidate, platformRuntimeState } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -15,5 +15,13 @@ describe('platform view eviction', () => {
       { platform: 'baijia', lastUsedAt: 10 },
       { platform: 'toutiao', lastUsedAt: 20 },
     ], 'baijia', 'toutiao')).toBe('baijia');
+  });
+});
+
+describe('platform runtime status', () => {
+  it('does not confuse view residency with login state', () => {
+    expect(platformRuntimeState(false, false)).toBe('not_loaded');
+    expect(platformRuntimeState(true, false)).toBe('resident');
+    expect(platformRuntimeState(true, true)).toBe('active');
   });
 });
