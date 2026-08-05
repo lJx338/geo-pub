@@ -17,6 +17,11 @@ export interface NeteaseDraftFillResult {
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const normalize = (value: unknown) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
 
+function isTransientPageError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Execution context was destroyed|Render frame was disposed|frame was detached|Object has been destroyed|ERR_ABORTED|navigation|target closed/i.test(message);
+}
+
 function visibleScript(): string {
   return `(element) => element instanceof HTMLElement && (() => { const r = element.getBoundingClientRect(); const s = getComputedStyle(element); return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'; })()`;
 }
@@ -36,13 +41,27 @@ async function ensureEditor(webContents: WebContents): Promise<void> {
     await webContents.loadURL(PUBLISH_URL);
   }
   const deadline = Date.now() + 120_000;
+  let transientFailures = 0;
   while (Date.now() < deadline) {
-    const state = await webContents.executeJavaScript(`(() => {
-      const visible = ${visibleScript()};
-      const text = String(document.body ? document.body.innerText : '');
-      const fields = [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')].filter(visible);
-      return { ready: fields.length >= 2, login: /登录|扫码|验证码|安全验证|账号异常/.test(text) && fields.length < 2 };
-    })()`);
+    let state: { ready: boolean; login: boolean };
+    try {
+      state = await webContents.executeJavaScript(`(() => {
+        const visible = ${visibleScript()};
+        const text = String(document.body ? document.body.innerText : '');
+        const fields = [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')].filter(visible);
+        return { ready: fields.length >= 2, login: /登录|扫码|验证码|安全验证|账号异常/.test(text) && fields.length < 2 };
+      })()`);
+      transientFailures = 0;
+    } catch (error) {
+      if (!isTransientPageError(error)) throw error;
+      transientFailures += 1;
+      if (transientFailures >= 3 && !webContents.isLoading()) {
+        webContents.reload();
+        transientFailures = 0;
+      }
+      await delay(900);
+      continue;
+    }
     if (state.login) throw new Error('NETEASE_LOGIN_REQUIRED: 请在当前桌面端完成网易号登录');
     if (state.ready) return;
     await delay(800);
@@ -137,6 +156,10 @@ async function setFileInput(webContents: WebContents, filePath: string): Promise
   } finally { if (attached && debuggerApi.isAttached()) debuggerApi.detach(); }
 }
 
+async function bodyImageExists(webContents: WebContents): Promise<boolean> {
+  return await webContents.executeJavaScript(`(() => { const imgs=[...document.querySelectorAll('.public-DraftEditor-content img')]; return imgs.some(i=>{const r=i.getBoundingClientRect(); return r.width>20&&r.height>20&&i.complete&&i.naturalWidth>0;}); })()`);
+}
+
 async function clickDomSelector(webContents: WebContents, selector: string): Promise<boolean> {
   const scrolled = await webContents.executeJavaScript(`(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
@@ -216,7 +239,16 @@ async function insertBodyImage(webContents: WebContents, filePath: string): Prom
     await delay(400);
   }
   if (!await step('NETEASE_IMAGE_CONFIRM_CLICK_FAILED', () => clickDomSelector(webContents, '.ne-modal-footer button:last-child'))) return false;
-  for (let i=0;i<24;i+=1) { await delay(700); const found = await step('NETEASE_IMAGE_VERIFY_FAILED', () => webContents.executeJavaScript(`(() => { const imgs=[...document.querySelectorAll('.public-DraftEditor-content img')]; return imgs.some(i=>{const r=i.getBoundingClientRect(); return r.width>20&&r.height>20;}); })()`)); if (found) return true; }
+  for (let i=0;i<30;i+=1) {
+    await delay(700);
+    try {
+      if (await bodyImageExists(webContents)) return true;
+    } catch (error) {
+      // Windows may replace the renderer context while the uploaded image is
+      // committed. Re-read the live editor instead of reporting permission loss.
+      if (!isTransientPageError(error)) throw new Error(`NETEASE_IMAGE_VERIFY_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   return false;
 }
 

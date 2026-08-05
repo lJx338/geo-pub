@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,11 +22,12 @@ import (
 
 const (
 	defaultTimeout  = 15 * time.Second
+	platformTimeout = 150 * time.Second
 	publishTimeout  = 4 * time.Minute
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.1.0-beta.7"
+var version = "0.2.0"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
@@ -136,7 +138,10 @@ func run(args []string) (string, json.RawMessage, error) {
 		if command == "inspect" {
 			action = "platform.inspect"
 		}
-		return call(command, controlRequest{Action: action, Platform: args[0]}, defaultTimeout)
+		// Platform pages, especially NetEase on Windows, can legitimately take well
+		// over 15 seconds to finish a cold load. Keep the short timeout for status
+		// calls, but do not turn a slow page into a misleading connection failure.
+		return call(command, controlRequest{Action: action, Platform: args[0]}, platformTimeout)
 	case "validate", "fill", "publish":
 		input, err := readFillInput(args, os.Stdin)
 		if err != nil {
@@ -173,6 +178,14 @@ func run(args []string) (string, json.RawMessage, error) {
 func call(command string, request controlRequest, timeout time.Duration) (string, json.RawMessage, error) {
 	response, err := send(request, timeout)
 	if err != nil {
+		var typed *cliError
+		if errors.As(err, &typed) && typed.code == "CONTROL_READ_TIMEOUT" && (command == "fill" || command == "publish") {
+			return command, nil, &cliError{
+				code:       typed.code,
+				message:    "桌面端 4 分钟内尚未返回结果，网络可能过慢，原任务也可能仍在执行",
+				suggestion: "先检查网络，不要立即重复发布；运行 geo-publisher status，待 busy=false 后再 inspect 对应平台",
+			}
+		}
 		return command, nil, err
 	}
 	return command, response, nil
@@ -205,6 +218,14 @@ func send(request controlRequest, timeout time.Duration) (json.RawMessage, error
 	reader := bufio.NewReader(io.LimitReader(connection, maxResponseSize+1))
 	line, err := reader.ReadBytes('\n')
 	if err != nil {
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			return nil, &cliError{
+				code:       "CONTROL_READ_TIMEOUT",
+				message:    "桌面端在当前命令的等待时间内尚未返回，网络可能过慢",
+				suggestion: "先检查网络，再确认桌面端当前状态",
+			}
+		}
 		return nil, &cliError{code: "CONTROL_READ_FAILED", message: err.Error(), suggestion: "检查桌面端日志后重试"}
 	}
 	if len(line) > maxResponseSize {

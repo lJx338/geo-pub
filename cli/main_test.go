@@ -5,7 +5,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestPlatformTimeoutCoversSlowPublisherPages(t *testing.T) {
+	if platformTimeout < 2*time.Minute {
+		t.Fatalf("platform timeout is too short: %s", platformTimeout)
+	}
+	if defaultTimeout >= platformTimeout {
+		t.Fatalf("status timeout should remain shorter than platform timeout")
+	}
+	if publishTimeout != 4*time.Minute {
+		t.Fatalf("publish timeout must stay at the customer-facing four minute limit: %s", publishTimeout)
+	}
+}
 
 func TestReadFillInputFromStdin(t *testing.T) {
 	input, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","title":"标题","html":"<p>正文</p>","coverPath":"/tmp/cover.jpg"}`))

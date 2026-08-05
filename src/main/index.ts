@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, session } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
 import type { ControlRequest, Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
@@ -29,6 +29,7 @@ async function runDesktop(): Promise<void> {
 
   // 为默认session配置反检测
   setupStealthSession(session.defaultSession);
+  if (process.platform === 'win32') Menu.setApplicationMenu(null);
 
   const window = new BrowserWindow({
     width: 1360,
@@ -36,6 +37,7 @@ async function runDesktop(): Promise<void> {
     minWidth: 920,
     minHeight: 640,
     title: 'GEO Publisher',
+    autoHideMenuBar: process.platform === 'win32',
     icon: join(__dirname, '..', 'renderer', 'logo.png'),
     backgroundColor: '#f5f6f8',
     webPreferences: {
@@ -46,6 +48,7 @@ async function runDesktop(): Promise<void> {
       webSecurity: true,
     },
   });
+  if (process.platform === 'win32') window.setMenuBarVisibility(false);
   const sessions = new PlatformSessions(window, packageJson.version);
   const updateManager = new UpdateManager(packageJson.version, () => sessions.isBusy(), (status) => {
     if (!window.isDestroyed()) window.webContents.send('geo:update-status-changed', status);

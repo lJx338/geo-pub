@@ -30,9 +30,17 @@ try {
     platformButtons: document.querySelectorAll('[data-platform]').length,
     connectVisible: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height),
     updateVisible: Boolean(document.querySelector('#check-update')?.getBoundingClientRect().height),
+    connectionState: document.querySelector('#connection')?.getAttribute('data-state'),
+    updateLabel: document.querySelector('#update-state')?.textContent,
   }));
   if (initial.platformButtons !== 6 || !initial.connectVisible || !initial.updateVisible) throw new Error(`initial controls missing: ${JSON.stringify(initial)}`);
   if (initial.scrollWidth > initial.width || initial.scrollHeight > initial.height) throw new Error(`initial layout overflows: ${JSON.stringify(initial)}`);
+  if (initial.connectionState !== 'ready' || initial.updateLabel !== '不可用') throw new Error(`initial status is unclear: ${JSON.stringify(initial)}`);
+
+  if (process.platform === 'win32') {
+    const menuVisible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible());
+    if (menuVisible) throw new Error('Windows menu bar should be hidden');
+  }
 
   await window.locator('#connect-workbuddy').click();
   await window.locator('#workbuddy-state', { hasText: '指令已复制' }).waitFor();
@@ -40,7 +48,9 @@ try {
   if (!prompt.includes('GEO Publisher Skill') || !prompt.includes('CLI 位置')) throw new Error('WorkBuddy prompt is incomplete');
 
   await window.locator('#check-update').click();
-  await window.locator('#update-state', { hasText: '开发模式不检查更新' }).waitFor();
+  await window.locator('#update-state', { hasText: '不可用' }).waitFor();
+  const updateDetail = await window.locator('#update-state').getAttribute('title');
+  if (updateDetail !== '开发模式不检查更新') throw new Error(`update detail is missing: ${updateDetail}`);
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(920, 640));
   await window.waitForTimeout(300);
