@@ -69,3 +69,52 @@ jobs:
             release/win-x64/*.exe
             release/win-x64/*.yml
             release/win-x64/*.blockmap
+
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run build:cli
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - name: Select channel
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "CHANNEL=${{ inputs.channel }}" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF_NAME" == *-alpha* || "$GITHUB_REF_NAME" == *-beta* ]]; then
+            echo "CHANNEL=beta" >> "$GITHUB_ENV"
+          else
+            echo "CHANNEL=stable" >> "$GITHUB_ENV"
+          fi
+      - name: Build and notarize Apple Silicon package
+        run: npx electron-builder --mac --arm64 --publish never --config.directories.output=release/mac-arm64
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - run: python -m pip install coscmd
+      - name: Upload macOS artifacts and update manifest
+        run: sh scripts/upload-release.sh release/mac-arm64 mac-arm64 "$CHANNEL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geo-publisher-macos-arm64
+          path: |
+            release/mac-arm64/*.dmg
+            release/mac-arm64/*.zip
+            release/mac-arm64/*.yml
+            release/mac-arm64/*.blockmap

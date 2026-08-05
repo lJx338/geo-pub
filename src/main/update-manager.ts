@@ -91,7 +91,7 @@ export class UpdateManager {
   install(): { accepted: boolean; message: string } {
     if (this.status.phase !== 'downloaded') return { accepted: false, message: '尚未下载可安装的更新' };
     if (this.isBusy()) return { accepted: false, message: '发布任务正在运行，任务完成后才能重启安装' };
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    setImmediate(() => autoUpdater.quitAndInstall(true, true));
     return { accepted: true, message: '正在重启并安装更新' };
   }
 
