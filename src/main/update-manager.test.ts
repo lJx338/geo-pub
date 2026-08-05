@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { updateChannelForVersion, updateFeedUrl, updatePlatformKey } from './update-manager.js';
+import { updateChannelForVersion, updateFeedUrl, updatePlatformKey, updaterManifestChannel } from './update-manager.js';
 
 describe('update feed platform selection', () => {
   it('supports Apple Silicon macOS and Windows x64 only', () => {
@@ -21,5 +21,10 @@ describe('update feed platform selection', () => {
   it('separates channel pointers from immutable version artifacts', () => {
     expect(updateFeedUrl('stable', 'darwin', 'arm64')).toContain('/releases/channels/stable/mac-arm64');
     expect(updateFeedUrl('beta', 'win32', 'x64')).toContain('/releases/channels/beta/win-x64');
+  });
+
+  it('uses the default latest manifest for stable releases', () => {
+    expect(updaterManifestChannel('stable')).toBeNull();
+    expect(updaterManifestChannel('beta')).toBe('beta');
   });
 });

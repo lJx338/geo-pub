@@ -26,6 +26,10 @@ export function updateChannelForVersion(version: string): 'stable' | 'beta' {
   return process.env.GEO_UPDATE_CHANNEL === 'beta' || /-(?:alpha|beta)\./.test(version) ? 'beta' : 'stable';
 }
 
+export function updaterManifestChannel(channel: 'stable' | 'beta'): 'beta' | null {
+  return channel === 'beta' ? 'beta' : null;
+}
+
 export class UpdateManager {
   private status: UpdateStatus;
   private timer: NodeJS.Timeout | null = null;
@@ -53,7 +57,8 @@ export class UpdateManager {
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowPrerelease = this.channel === 'beta';
-    autoUpdater.channel = this.channel;
+    const manifestChannel = updaterManifestChannel(this.channel);
+    if (manifestChannel) autoUpdater.channel = manifestChannel;
     autoUpdater.setFeedURL({ provider: 'generic', url: updateFeedUrl(this.channel)! });
 
     autoUpdater.on('checking-for-update', () => this.patch({ phase: 'checking', message: '正在检查更新', progress: null }));

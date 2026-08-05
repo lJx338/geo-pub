@@ -67,10 +67,25 @@ coscmd -c "$CONFIG" upload -f -y \
   "$rendered_manifest" "$PREFIX/releases/channels/$CHANNEL/$TARGET/$manifest_name"
 
 if [ "$CHANNEL" = "stable" ]; then
+  if [ "$TARGET" = "mac-arm64" ]; then
+    compatibility_manifest=stable-mac.yml
+  else
+    compatibility_manifest=stable.yml
+  fi
+
+  # 0.2.0 set electron-updater's channel to "stable" and requests this name.
+  coscmd -c "$CONFIG" upload -f -y \
+    -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
+    "$rendered_manifest" "$PREFIX/releases/channels/stable/$TARGET/$compatibility_manifest"
+
   # 0.2.0 and older stable clients use this legacy feed path.
   coscmd -c "$CONFIG" upload -f -y \
     -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
     "$rendered_manifest" "$PREFIX/releases/stable/$TARGET/$manifest_name"
+
+  coscmd -c "$CONFIG" upload -f -y \
+    -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
+    "$rendered_manifest" "$PREFIX/releases/stable/$TARGET/$compatibility_manifest"
 
   # One-way migration for historical beta clients. New beta builds use channels/beta.
   if [ "$TARGET" = "mac-arm64" ]; then

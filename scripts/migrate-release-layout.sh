@@ -27,9 +27,11 @@ coscmd -c "$CONFIG" config \
 for target in win-x64 mac-arm64; do
   if [ "$target" = "mac-arm64" ]; then
     stable_manifest=latest-mac.yml
+    compatibility_manifest=stable-mac.yml
     legacy_beta_manifest=beta-mac.yml
   else
     stable_manifest=latest.yml
+    compatibility_manifest=stable.yml
     legacy_beta_manifest=beta.yml
   fi
 
@@ -64,7 +66,13 @@ for target in win-x64 mac-arm64; do
     "$rendered_manifest" "$PREFIX/releases/channels/stable/$target/$stable_manifest"
   coscmd -c "$CONFIG" upload -f -y \
     -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
+    "$rendered_manifest" "$PREFIX/releases/channels/stable/$target/$compatibility_manifest"
+  coscmd -c "$CONFIG" upload -f -y \
+    -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
     "$rendered_manifest" "$PREFIX/releases/stable/$target/$stable_manifest"
+  coscmd -c "$CONFIG" upload -f -y \
+    -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
+    "$rendered_manifest" "$PREFIX/releases/stable/$target/$compatibility_manifest"
   coscmd -c "$CONFIG" upload -f -y \
     -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' \
     "$rendered_manifest" "$PREFIX/releases/beta/$target/$legacy_beta_manifest"
