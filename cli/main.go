@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.3.4"
+var version = "0.3.5"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
@@ -529,6 +529,9 @@ func controlEndpoint() string {
 	if override := os.Getenv("GEO_PUBLISHER_CONTROL_ENDPOINT"); override != "" {
 		return override
 	}
+	if endpoint := controlEndpointFromDiscovery(discoveryPath()); endpoint != "" {
+		return endpoint
+	}
 	home, _ := os.UserHomeDir()
 	sum := sha256.Sum256([]byte(home))
 	key := hex.EncodeToString(sum[:])[:12]
@@ -536,6 +539,48 @@ func controlEndpoint() string {
 		return `\\.\pipe\geo-publisher-` + key
 	}
 	return "/tmp/geo-publisher-" + key + ".sock"
+}
+
+func controlEndpointFromDiscovery(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var record struct {
+		ControlEndpoint string `json:"controlEndpoint"`
+	}
+	if json.Unmarshal(data, &record) != nil || !validDiscoveredControlEndpoint(record.ControlEndpoint) {
+		return ""
+	}
+	return record.ControlEndpoint
+}
+
+func validDiscoveredControlEndpoint(endpoint string) bool {
+	return validDiscoveredControlEndpointForOS(endpoint, runtime.GOOS)
+}
+
+func validDiscoveredControlEndpointForOS(endpoint string, goos string) bool {
+	var key string
+	if goos == "windows" {
+		key = strings.TrimPrefix(endpoint, `\\.\pipe\geo-publisher-`)
+		if key == endpoint {
+			return false
+		}
+	} else {
+		key = strings.TrimSuffix(strings.TrimPrefix(endpoint, "/tmp/geo-publisher-"), ".sock")
+		if "/tmp/geo-publisher-"+key+".sock" != endpoint {
+			return false
+		}
+	}
+	if len(key) != 12 {
+		return false
+	}
+	for _, character := range key {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return false
+		}
+	}
+	return true
 }
 
 func randomID() string {

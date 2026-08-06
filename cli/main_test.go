@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -115,5 +116,43 @@ func TestControlEndpointMatchesDesktopConvention(t *testing.T) {
 	endpoint := controlEndpoint()
 	if endpoint == "" || (!strings.Contains(endpoint, "geo-publisher-") && !strings.Contains(endpoint, `geo-publisher-`)) {
 		t.Fatalf("unexpected endpoint: %s", endpoint)
+	}
+}
+
+func TestControlEndpointUsesDesktopDiscoveryInsteadOfShellHome(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", directory)
+	t.Setenv("GEO_PUBLISHER_CONTROL_ENDPOINT", "")
+	expected := "/tmp/geo-publisher-a1b2c3d4e5f6.sock"
+	if runtime.GOOS == "windows" {
+		expected = `\\.\pipe\geo-publisher-a1b2c3d4e5f6`
+	}
+	record := []byte(`{"controlEndpoint":"` + strings.ReplaceAll(expected, `\`, `\\`) + `"}`)
+	if err := os.WriteFile(filepath.Join(directory, "discovery.json"), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := controlEndpoint(); got != expected {
+		t.Fatalf("CLI ignored desktop discovery endpoint: got %q, want %q", got, expected)
+	}
+}
+
+func TestControlEndpointRejectsInvalidDiscoveryValue(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", directory)
+	t.Setenv("GEO_PUBLISHER_CONTROL_ENDPOINT", "")
+	if err := os.WriteFile(filepath.Join(directory, "discovery.json"), []byte(`{"controlEndpoint":"malicious-endpoint"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := controlEndpoint(); got == "malicious-endpoint" {
+		t.Fatal("CLI accepted an invalid discovery endpoint")
+	}
+}
+
+func TestDiscoveredEndpointValidationCoversWindowsPipe(t *testing.T) {
+	if !validDiscoveredControlEndpointForOS(`\\.\pipe\geo-publisher-a1b2c3d4e5f6`, "windows") {
+		t.Fatal("valid Windows discovery pipe was rejected")
+	}
+	if validDiscoveredControlEndpointForOS(`\\.\pipe\geo-publisher-invalid`, "windows") {
+		t.Fatal("invalid Windows discovery pipe was accepted")
 	}
 }

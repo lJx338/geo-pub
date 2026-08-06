@@ -125,6 +125,9 @@ async function runDesktop(): Promise<void> {
     if (!result.accepted) closingForUpdate = false;
     return result;
   });
+  ipcMain.handle('geo:ui-overlay', (_event, open: boolean) => {
+    sessions.setUiOverlayOpen(Boolean(open));
+  });
   ipcMain.handle('geo:beta-activate', async (_event, code: string) => await updateManager.activateBeta(String(code || '')));
   ipcMain.handle('geo:beta-deactivate', () => updateManager.deactivateBeta());
   ipcMain.handle('geo:launch-at-login-status', () => ({ available: app.isPackaged, enabled: app.isPackaged && app.getLoginItemSettings().openAtLogin }));

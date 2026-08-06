@@ -10,6 +10,7 @@ declare global {
       updateStatus(): Promise<UpdateStatus>;
       checkForUpdates(): Promise<UpdateStatus>;
       installUpdate(): Promise<{ accepted: boolean; message: string }>;
+      setUiOverlayOpen(open: boolean): Promise<void>;
       activateBeta(code: string): Promise<BetaActivationResult>;
       deactivateBeta(): Promise<BetaActivationResult>;
       launchAtLoginStatus(): Promise<LaunchAtLoginStatus>;

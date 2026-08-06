@@ -163,6 +163,7 @@ export class PlatformSessions {
   private attentionRequired: AttentionRequired | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private pendingOperations = 0;
+  private uiOverlayOpen = false;
 
   constructor(
     private readonly window: BrowserWindow,
@@ -199,6 +200,15 @@ export class PlatformSessions {
     if (!this.activePlatform) return;
     const managed = this.views.get(this.activePlatform);
     if (managed) this.restoreManagedView(managed);
+  }
+
+  setUiOverlayOpen(open: boolean): void {
+    this.uiOverlayOpen = open;
+    if (!this.activePlatform) return;
+    const managed = this.views.get(this.activePlatform);
+    if (!managed) return;
+    managed.view.setVisible(!open);
+    if (!open) managed.view.setBounds(this.interactiveViewBounds());
   }
 
   async fillDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
@@ -381,7 +391,7 @@ export class PlatformSessions {
     managed.host = 'interactive';
     managed.lastUsedAt = Date.now();
     managed.view.webContents.setBackgroundThrottling(false);
-    managed.view.setVisible(true);
+    managed.view.setVisible(!this.uiOverlayOpen);
     managed.view.setBounds(this.interactiveViewBounds());
     this.activePlatform = managed.platform;
   }
@@ -532,7 +542,7 @@ export class PlatformSessions {
   private restoreManagedView(managed: ManagedView): void {
     if (managed.host === 'background' && this.background === managed) this.executionHost.restore(managed.view);
     if (managed.host === 'interactive' && this.activePlatform === managed.platform) {
-      managed.view.setVisible(true);
+      managed.view.setVisible(!this.uiOverlayOpen);
       managed.view.setBounds(this.interactiveViewBounds());
     }
   }

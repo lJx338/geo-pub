@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OperationTimeoutError, pickEvictionCandidate, platformRuntimeState, withOperationDeadline } from './platform-sessions.js';
+import { OperationTimeoutError, PlatformSessions, pickEvictionCandidate, platformRuntimeState, withOperationDeadline } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -24,6 +24,39 @@ describe('platform runtime status', () => {
     expect(platformRuntimeState(true, false)).toBe('resident');
     expect(platformRuntimeState(true, false, true)).toBe('background');
     expect(platformRuntimeState(true, true)).toBe('active');
+  });
+
+  it('keeps the active platform hidden while an app dialog is open', () => {
+    const visibility: boolean[] = [];
+    const bounds: unknown[] = [];
+    const managed = {
+      platform: 'baijia',
+      host: 'interactive',
+      view: {
+        setVisible: (visible: boolean) => visibility.push(visible),
+        setBounds: (value: unknown) => bounds.push(value),
+      },
+    };
+    const sessions = Object.create(PlatformSessions.prototype) as PlatformSessions;
+    const internals = sessions as unknown as {
+      activePlatform: 'baijia';
+      views: Map<string, typeof managed>;
+      window: { getContentSize(): [number, number] };
+      uiOverlayOpen: boolean;
+      restoreManagedView(value: typeof managed): void;
+    };
+    internals.window = { getContentSize: () => [1360, 900] };
+    internals.uiOverlayOpen = false;
+    internals.activePlatform = 'baijia';
+    internals.views = new Map([['baijia', managed]]);
+
+    sessions.setUiOverlayOpen(true);
+    internals.restoreManagedView(managed);
+    expect(visibility).toEqual([false, false]);
+
+    sessions.setUiOverlayOpen(false);
+    expect(visibility.at(-1)).toBe(true);
+    expect(bounds.at(-1)).toEqual({ x: 220, y: 56, width: 1140, height: 844 });
   });
 });
 

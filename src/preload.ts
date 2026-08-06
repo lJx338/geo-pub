@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   updateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('geo:update-status'),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('geo:update-check'),
   installUpdate: (): Promise<{ accepted: boolean; message: string }> => ipcRenderer.invoke('geo:update-install'),
+  setUiOverlayOpen: (open: boolean): Promise<void> => ipcRenderer.invoke('geo:ui-overlay', open),
   activateBeta: (code: string): Promise<BetaActivationResult> => ipcRenderer.invoke('geo:beta-activate', code),
   deactivateBeta: (): Promise<BetaActivationResult> => ipcRenderer.invoke('geo:beta-deactivate'),
   launchAtLoginStatus: (): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:launch-at-login-status'),

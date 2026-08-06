@@ -100,10 +100,20 @@ installUpdateButton.addEventListener('click', async () => {
   showMessage(result.message, !result.accepted);
 });
 
-betaAccess.addEventListener('click', () => {
+betaAccess.addEventListener('click', async () => {
   betaCode.value = '';
-  betaDialog.showModal();
-  betaCode.focus();
+  await window.geoPublisher.setUiOverlayOpen(true);
+  try {
+    betaDialog.showModal();
+    betaCode.focus();
+  } catch (error) {
+    await window.geoPublisher.setUiOverlayOpen(false);
+    showMessage(`无法打开灰度设置：${error.message}`, true);
+  }
+});
+
+betaDialog.addEventListener('close', () => {
+  void window.geoPublisher.setUiOverlayOpen(false);
 });
 
 betaSubmit.addEventListener('click', async (event) => {
