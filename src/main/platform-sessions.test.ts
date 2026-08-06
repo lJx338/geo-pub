@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pickEvictionCandidate, platformRuntimeState, withOperationDeadline } from './platform-sessions.js';
+import { OperationTimeoutError, pickEvictionCandidate, platformRuntimeState, withOperationDeadline } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -30,7 +30,10 @@ describe('platform runtime status', () => {
 describe('operation deadline', () => {
   it('closes a stalled background page before returning a timeout', async () => {
     let closed = false;
-    await expect(withOperationDeadline(new Promise<never>(() => undefined), 5, async () => { closed = true; })).rejects.toThrow('PLATFORM_OPERATION_TIMEOUT');
+    await expect(withOperationDeadline(new Promise<never>(() => undefined), 5, async () => { closed = true; return { screenshotPath: '/tmp/timeout.png' }; })).rejects.toMatchObject({
+      message: expect.stringContaining('PLATFORM_OPERATION_TIMEOUT'),
+      details: { screenshotPath: '/tmp/timeout.png' },
+    } satisfies Partial<OperationTimeoutError>);
     expect(closed).toBe(true);
   });
 });

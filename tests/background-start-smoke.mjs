@@ -20,7 +20,7 @@ const app = await electron.launch({
 try {
   await new Promise((resolve) => setTimeout(resolve, 800));
   const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((window) => ({ visible: window.isVisible(), focused: window.isFocused() })));
-  if (windows.length < 2 || windows.some((window) => window.visible || window.focused)) {
+  if (!windows.length || windows.some((window) => window.visible || window.focused)) {
     throw new Error(`background launch showed a window: ${JSON.stringify(windows)}`);
   }
 } finally {

@@ -72,17 +72,27 @@ function originalErrorCode(error: unknown): string | null {
   return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] ?? null;
 }
 
+export class OperationTimeoutError extends Error {
+  readonly details: unknown;
+
+  constructor(details: unknown) {
+    super('PLATFORM_OPERATION_TIMEOUT: 平台页面在 4 分钟内没有完成，请检查网络或重新登录后再试');
+    this.details = details;
+  }
+}
+
 export async function withOperationDeadline<T>(
   task: Promise<T>,
   timeoutMs: number,
-  onTimeout: () => Promise<void>,
+  onTimeout: () => Promise<unknown>,
 ): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
-      void onTimeout().finally(() => {
-        reject(new Error('PLATFORM_OPERATION_TIMEOUT: 平台页面在 4 分钟内没有完成，请检查网络或重新登录后再试'));
-      });
+      void onTimeout().then(
+        (details) => reject(new OperationTimeoutError(details)),
+        () => reject(new OperationTimeoutError(null)),
+      );
     }, timeoutMs);
   });
   try {
@@ -390,6 +400,28 @@ export class PlatformSessions {
     if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close({ waitForBeforeUnload: false });
   }
 
+  private async abortTimedOutBackgroundOperation(): Promise<{ platform: Platform | null; url: string | null; screenshotPath: string | null }> {
+    const managed = this.background;
+    const details = {
+      platform: managed?.platform ?? null,
+      url: managed?.view.webContents.getURL() ?? null,
+      screenshotPath: managed ? await this.captureTimedOutEvidence(managed) : null,
+    };
+    await this.closeBackground();
+    return details;
+  }
+
+  private async captureTimedOutEvidence(managed: ManagedView): Promise<string | null> {
+    let timeout: NodeJS.Timeout | undefined;
+    const evidence = this.captureEvidence(managed, 'operation-timeout').catch(() => null);
+    const fallback = new Promise<null>((resolve) => { timeout = setTimeout(() => resolve(null), 1_500); });
+    try {
+      return await Promise.race([evidence, fallback]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
   private closeInteractiveView(managed: ManagedView): void {
     if (this.activePlatform === managed.platform) {
       this.window.contentView.removeChildView(managed.view);
@@ -514,7 +546,7 @@ export class PlatformSessions {
     try {
       // Closing the hidden WebContents stops a stalled renderer from acting
       // after the CLI caller has already received its timeout result.
-      return await withOperationDeadline(task, OPERATION_TIMEOUT_MS, () => this.closeBackground());
+      return await withOperationDeadline(task, OPERATION_TIMEOUT_MS, () => this.abortTimedOutBackgroundOperation());
     } finally {
       this.pendingOperations -= 1;
       this.executingPlatform = null;

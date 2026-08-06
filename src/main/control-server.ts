@@ -68,10 +68,13 @@ export class ControlServer {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const attention = error instanceof AttentionRequiredError ? error : null;
+      const details = attention?.details || (error && typeof error === 'object' && 'details' in error
+        ? (error as { details?: unknown }).details
+        : undefined);
       this.reply(socket, {
         id,
         ok: false,
-        error: { code: attention?.code || errorCodeForMessage(message), message, details: attention?.details },
+        error: { code: attention?.code || errorCodeForMessage(message), message, details },
       });
     }
   }
