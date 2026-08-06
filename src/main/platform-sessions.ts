@@ -72,6 +72,20 @@ function originalErrorCode(error: unknown): string | null {
   return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] ?? null;
 }
 
+async function withEvidenceTimeout<T>(operation: Promise<T>, timeoutMs = 1_500): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('EVIDENCE_CAPTURE_TIMEOUT')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export class OperationTimeoutError extends Error {
   readonly details: unknown;
 
@@ -528,13 +542,44 @@ export class PlatformSessions {
     return { x: 220, y: 56, width: Math.max(320, width - 220), height: Math.max(240, height - 56) };
   }
 
-  private async captureEvidence(managed: ManagedView, stage: string): Promise<string> {
+  private async captureEvidence(managed: ManagedView, stage: string): Promise<string | null> {
     const directory = join(evidenceDirectory(), new Date().toISOString().slice(0, 10));
     await mkdir(directory, { recursive: true });
     const path = join(directory, `${Date.now()}-${managed.platform}-${stage}.png`);
-    const image = await managed.view.webContents.capturePage();
-    await writeFile(path, image.toPNG());
-    return path;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const image = await withEvidenceTimeout(managed.view.webContents.capturePage());
+        await writeFile(path, image.toPNG());
+        return path;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+
+    // Hidden BrowserWindow surfaces can reject capturePage. CDP captures the
+    // renderer without requiring a foreground display surface.
+    const debuggerApi = managed.view.webContents.debugger;
+    const attachedHere = !debuggerApi.isAttached();
+    try {
+      if (attachedHere) debuggerApi.attach('1.3');
+      const response = await withEvidenceTimeout(debuggerApi.sendCommand('Page.captureScreenshot', {
+        format: 'png', fromSurface: true, captureBeyondViewport: true,
+      })) as { data?: string };
+      if (response.data) {
+        await writeFile(path, Buffer.from(response.data, 'base64'));
+        return path;
+      }
+    } catch (error) {
+      lastError = error;
+    } finally {
+      if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
+    }
+
+    // Evidence is diagnostic only; it must never prevent a valid publish.
+    void lastError;
+    return null;
   }
 
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
