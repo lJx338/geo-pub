@@ -60,6 +60,7 @@ jobs:
           else
             echo "CHANNEL=stable" >> "$GITHUB_ENV"
           fi
+      - run: node scripts/prepare-release-output.mjs release/win-x64
       - run: npx electron-builder --win --x64 --publish never --config.directories.output=release/win-x64
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
@@ -107,7 +108,9 @@ jobs:
             echo "CHANNEL=stable" >> "$GITHUB_ENV"
           fi
       - name: Build and notarize Apple Silicon package
-        run: npx electron-builder --mac --arm64 --publish never --config.directories.output=release/mac-arm64
+        run: |
+          node scripts/prepare-release-output.mjs release/mac-arm64
+          npx electron-builder --mac --arm64 --publish never --config.directories.output=release/mac-arm64
         env:
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}

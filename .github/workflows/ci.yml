@@ -44,6 +44,7 @@ jobs:
       - run: npm run build
       - shell: bash
         run: npm run build:cli
+      - run: node scripts/prepare-release-output.mjs release/win-smoke
       - run: npx electron-builder --win --x64 --publish never --config.directories.output=release/win-smoke
       - shell: pwsh
         run: ./tests/windows-install-smoke.ps1 -ReleaseDirectory release/win-smoke
