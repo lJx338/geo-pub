@@ -199,11 +199,11 @@ export class PlatformSessions {
     });
   }
 
-  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[]; attentionRequired: AttentionRequired | null }> {
+  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storageEntryCount: number; attentionRequired: AttentionRequired | null }> {
     return await this.runExclusive(() => this.inspectInternal(platform));
   }
 
-  private async inspectInternal(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[]; attentionRequired: AttentionRequired | null }> {
+  private async inspectInternal(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storageEntryCount: number; attentionRequired: AttentionRequired | null }> {
     const managed = await this.openBackground(platform);
     const details = await managed.view.webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
