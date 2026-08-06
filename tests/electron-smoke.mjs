@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,7 +11,9 @@ const isolatedControlEndpoint = join(isolatedUserDataDirectory, 'control.sock');
 const fixtureUrl = pathToFileURL(join(process.cwd(), 'tests', 'fixtures', 'silent-platform.html')).toString();
 const userDataDirectory = isolatedUserDataDirectory;
 const execFileAsync = promisify(execFile);
+await rm(isolatedUserDataDirectory, { recursive: true, force: true });
 await mkdir(evidenceDirectory, { recursive: true });
+await mkdir(isolatedUserDataDirectory, { recursive: true });
 
 const app = await electron.launch({
   args: ['.'],
@@ -19,6 +21,7 @@ const app = await electron.launch({
   env: {
     ...process.env,
     GEO_DISABLE_OPEN_WORKBUDDY: '1',
+    GEO_BETA_INVITE_ALLOW_LOCAL: '1',
     GEO_PUBLISHER_USER_DATA_DIR: isolatedUserDataDirectory,
     GEO_PUBLISHER_CONTROL_ENDPOINT: isolatedControlEndpoint,
     GEO_PUBLISHER_TEST_PLATFORM_URL: fixtureUrl,
@@ -38,10 +41,11 @@ try {
     platformButtons: document.querySelectorAll('[data-platform]').length,
     connectVisible: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height),
     updateVisible: Boolean(document.querySelector('#check-update')?.getBoundingClientRect().height),
+    betaVisible: Boolean(document.querySelector('#beta-access')?.getBoundingClientRect().height),
     connectionState: document.querySelector('#connection')?.getAttribute('data-state'),
     updateLabel: document.querySelector('#update-state')?.textContent,
   }));
-  if (initial.platformButtons !== 6 || !initial.connectVisible || !initial.updateVisible) throw new Error(`initial controls missing: ${JSON.stringify(initial)}`);
+  if (initial.platformButtons !== 6 || !initial.connectVisible || !initial.updateVisible || !initial.betaVisible) throw new Error(`initial controls missing: ${JSON.stringify(initial)}`);
   if (initial.scrollWidth > initial.width || initial.scrollHeight > initial.height) throw new Error(`initial layout overflows: ${JSON.stringify(initial)}`);
   if (initial.connectionState !== 'ready' || initial.updateLabel !== '不可用') throw new Error(`initial status is unclear: ${JSON.stringify(initial)}`);
 
@@ -60,6 +64,16 @@ try {
   const updateDetail = await window.locator('#update-state').getAttribute('title');
   if (updateDetail !== '开发模式不检查更新') throw new Error(`update detail is missing: ${updateDetail}`);
 
+  await window.locator('#beta-access').click();
+  await window.locator('#beta-dialog').waitFor({ state: 'visible' });
+  await window.locator('#beta-code').fill('invalid');
+  await window.locator('#beta-submit').click();
+  await window.locator('#action-message', { hasText: '邀请码格式不正确' }).waitFor();
+  await window.locator('#beta-code').fill('BETA-SMOKE01');
+  await window.locator('#beta-submit').click();
+  await window.locator('#beta-dialog').waitFor({ state: 'hidden' });
+  if (await window.locator('#beta-disable').isHidden()) throw new Error('beta channel did not persist in the UI');
+
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.setSize(920, 640));
   await window.waitForTimeout(300);
   const compact = await window.evaluate(() => ({
@@ -69,9 +83,11 @@ try {
     scrollHeight: document.documentElement.scrollHeight,
     connectBottom: document.querySelector('#connect-workbuddy')?.getBoundingClientRect().bottom,
     updateBottom: document.querySelector('#check-update')?.getBoundingClientRect().bottom,
+    betaBottom: document.querySelector('#beta-disable')?.getBoundingClientRect().bottom,
   }));
   if (compact.scrollWidth > compact.width || compact.scrollHeight > compact.height) throw new Error(`compact layout overflows: ${JSON.stringify(compact)}`);
   if ((compact.updateBottom || Infinity) > compact.height) throw new Error(`compact controls clipped: ${JSON.stringify(compact)}`);
+  if ((compact.betaBottom || Infinity) > compact.height) throw new Error(`compact beta controls clipped: ${JSON.stringify(compact)}`);
 
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-home.png') });
   const cliPath = process.platform === 'win32'

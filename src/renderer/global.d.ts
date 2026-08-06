@@ -1,4 +1,4 @@
-import type { DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from '../shared/protocol.js';
+import type { BetaActivationResult, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from '../shared/protocol.js';
 
 declare global {
   interface Window {
@@ -10,6 +10,8 @@ declare global {
       updateStatus(): Promise<UpdateStatus>;
       checkForUpdates(): Promise<UpdateStatus>;
       installUpdate(): Promise<{ accepted: boolean; message: string }>;
+      activateBeta(code: string): Promise<BetaActivationResult>;
+      deactivateBeta(): Promise<BetaActivationResult>;
       launchAtLoginStatus(): Promise<LaunchAtLoginStatus>;
       setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginStatus>;
       onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;

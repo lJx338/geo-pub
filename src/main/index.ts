@@ -114,6 +114,8 @@ async function runDesktop(): Promise<void> {
   ipcMain.handle('geo:update-status', () => updateManager.getStatus());
   ipcMain.handle('geo:update-check', () => updateManager.check());
   ipcMain.handle('geo:update-install', () => updateManager.install());
+  ipcMain.handle('geo:beta-activate', async (_event, code: string) => await updateManager.activateBeta(String(code || '')));
+  ipcMain.handle('geo:beta-deactivate', () => updateManager.deactivateBeta());
   ipcMain.handle('geo:launch-at-login-status', () => ({ available: app.isPackaged, enabled: app.isPackaged && app.getLoginItemSettings().openAtLogin }));
   ipcMain.handle('geo:set-launch-at-login', (_event, enabled: boolean) => {
     if (!app.isPackaged) return { available: false, enabled: false };

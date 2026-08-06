@@ -5,6 +5,11 @@ const workBuddyState = document.querySelector('#workbuddy-state');
 const updateState = document.querySelector('#update-state');
 const installUpdateButton = document.querySelector('#install-update');
 const launchAtLogin = document.querySelector('#launch-at-login');
+const betaAccess = document.querySelector('#beta-access');
+const betaDisable = document.querySelector('#beta-disable');
+const betaDialog = document.querySelector('#beta-dialog');
+const betaCode = document.querySelector('#beta-code');
+const betaSubmit = document.querySelector('#beta-submit');
 
 function showMessage(message, error = false) {
   actionMessage.textContent = message;
@@ -26,6 +31,8 @@ function renderUpdate(status) {
   updateState.textContent = labels[status.phase] || '检查';
   updateState.title = status.message;
   installUpdateButton.hidden = !status.canRestart;
+  betaAccess.hidden = status.channel === 'beta';
+  betaDisable.hidden = status.channel !== 'beta';
   if (!['idle', 'disabled'].includes(status.phase)) showMessage(status.message, status.phase === 'error');
 }
 
@@ -91,6 +98,38 @@ document.querySelector('#check-update').addEventListener('click', async () => {
 installUpdateButton.addEventListener('click', async () => {
   const result = await window.geoPublisher.installUpdate();
   showMessage(result.message, !result.accepted);
+});
+
+betaAccess.addEventListener('click', () => {
+  betaCode.value = '';
+  betaDialog.showModal();
+  betaCode.focus();
+});
+
+betaSubmit.addEventListener('click', async (event) => {
+  event.preventDefault();
+  betaSubmit.disabled = true;
+  try {
+    const result = await window.geoPublisher.activateBeta(betaCode.value);
+    showMessage(result.message, !result.accepted);
+    renderUpdate(result.update);
+    betaDisable.hidden = !result.enabled;
+    if (result.accepted) betaDialog.close();
+  } finally {
+    betaSubmit.disabled = false;
+  }
+});
+
+betaDisable.addEventListener('click', async () => {
+  betaDisable.disabled = true;
+  try {
+    const result = await window.geoPublisher.deactivateBeta();
+    showMessage(result.message, !result.accepted);
+    renderUpdate(result.update);
+    betaDisable.hidden = true;
+  } finally {
+    betaDisable.disabled = false;
+  }
 });
 
 launchAtLogin.addEventListener('change', async () => {

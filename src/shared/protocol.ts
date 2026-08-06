@@ -91,6 +91,7 @@ export type UpdatePhase = 'disabled' | 'idle' | 'checking' | 'current' | 'availa
 export interface UpdateStatus {
   phase: UpdatePhase;
   currentVersion: string;
+  channel: 'stable' | 'beta';
   availableVersion: string | null;
   progress: number | null;
   message: string;
@@ -108,4 +109,11 @@ export interface WorkBuddyIntegrationStatus {
 export interface LaunchAtLoginStatus {
   available: boolean;
   enabled: boolean;
+}
+
+export interface BetaActivationResult {
+  accepted: boolean;
+  enabled: boolean;
+  message: string;
+  update: UpdateStatus;
 }

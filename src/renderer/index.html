@@ -26,8 +26,19 @@
       <button id="connect-workbuddy" class="command-button"><span>连接 WorkBuddy</span><span id="workbuddy-state">未准备</span></button>
       <button id="check-update" class="command-button"><span>检查更新</span><span id="update-state">检查</span></button>
       <button id="install-update" class="primary-command" hidden>重启并安装更新</button>
+      <button id="beta-access" class="command-button"><span>获取 Beta 灰度版</span><span>邀请码</span></button>
+      <button id="beta-disable" class="command-button" hidden><span>恢复正式版</span><span>stable</span></button>
       <label class="setting-toggle"><input id="launch-at-login" type="checkbox" /><span>开机自动启动</span></label>
     </aside>
+    <dialog id="beta-dialog">
+      <form method="dialog" class="beta-form">
+        <h2>获取 Beta 灰度版</h2>
+        <p>输入收到的灰度邀请码，应用会切换到 Beta 更新通道。</p>
+        <label for="beta-code">邀请码</label>
+        <input id="beta-code" autocomplete="off" placeholder="BETA-XXXXXX" />
+        <div class="beta-actions"><button value="cancel">取消</button><button id="beta-submit" class="primary-command" value="default">检查 Beta 更新</button></div>
+      </form>
+    </dialog>
     <main id="empty">
       <div class="setup">
         <h1>开始使用</h1>
