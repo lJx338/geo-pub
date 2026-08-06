@@ -223,7 +223,9 @@ export class PlatformSessions {
         }),
         buttons: [...document.querySelectorAll('button,[role="button"]')].filter(visible).slice(0, 100).map((element) => ({ text: normalize(element.textContent).slice(0, 80), className: String(element.className || '').slice(0, 180), ariaLabel: element.getAttribute('aria-label'), title: element.getAttribute('title'), dataAttrs: [...element.attributes].filter((attribute) => attribute.name.startsWith('data-')).slice(0, 8).map((attribute) => [attribute.name, attribute.value]), outerHTML: element.outerHTML.slice(0, 1200), disabled: element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' })),
         dialogs: [...document.querySelectorAll('[role="dialog"],[class*="message"],[class*="Message"],[class*="modal"],[class*="Modal"]')].filter(visible).slice(0, 20).map((element) => ({ text: normalize(element.textContent).slice(0, 300), className: String(element.className || '').slice(0, 200), outerHTML: element.outerHTML.slice(0, 2000) })),
-        storage: Object.keys(localStorage).slice(0, 100).map((key) => ({ key, length: String(localStorage.getItem(key) || '').length, valueStart: String(localStorage.getItem(key) || '').slice(0, 300) })),
+        // Diagnostics must never return cookie-like or session data to a CLI/agent log.
+        // Storage count preserves a basic page-health signal without exposing names or values.
+        storageEntryCount: Object.keys(localStorage).length,
       };
     })()`);
     const attention = await detectVisibleAttention(managed.view.webContents, platform);

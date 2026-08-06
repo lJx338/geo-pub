@@ -12,6 +12,9 @@ export class BackgroundExecutionHost {
       height: BACKGROUND_VIEWPORT.height,
       show: false,
       skipTaskbar: true,
+      // This host owns automation web contents only. It must never become the
+      // macOS/Windows key window while a customer is using another app.
+      focusable: false,
       paintWhenInitiallyHidden: true,
       backgroundColor: '#ffffff',
       webPreferences: {

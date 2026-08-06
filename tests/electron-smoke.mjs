@@ -88,6 +88,9 @@ try {
   if (!visibleBefore.some((state) => state.visible && state.focused)) throw new Error(`could not focus main window: ${JSON.stringify(visibleBefore)}`);
   const visibleInspect = await runInspect();
   if (!visibleInspect.ok || visibleInspect.data?.runtimeState !== 'background') throw new Error(`visible background inspect failed: ${JSON.stringify(visibleInspect)}`);
+  if ('storage' in (visibleInspect.data || {}) || 'valueStart' in (visibleInspect.data || {})) {
+    throw new Error('inspect leaked local storage values');
+  }
   const visibleAfter = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
   if (!visibleAfter.some((state) => state.visible && state.focused) || visibleAfter.some((state) => state.visible && !state.focused)) throw new Error(`background inspect changed focus: ${JSON.stringify(visibleAfter)}`);
 
