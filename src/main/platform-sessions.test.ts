@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pickEvictionCandidate, platformRuntimeState } from './platform-sessions.js';
+import { pickEvictionCandidate, platformRuntimeState, withOperationDeadline } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -24,5 +24,13 @@ describe('platform runtime status', () => {
     expect(platformRuntimeState(true, false)).toBe('resident');
     expect(platformRuntimeState(true, false, true)).toBe('background');
     expect(platformRuntimeState(true, true)).toBe('active');
+  });
+});
+
+describe('operation deadline', () => {
+  it('closes a stalled background page before returning a timeout', async () => {
+    let closed = false;
+    await expect(withOperationDeadline(new Promise<never>(() => undefined), 5, async () => { closed = true; })).rejects.toThrow('PLATFORM_OPERATION_TIMEOUT');
+    expect(closed).toBe(true);
   });
 });

@@ -41,6 +41,7 @@ interface ManagedView {
 }
 
 const MAX_RESIDENT_INTERACTIVE_VIEWS = 1;
+const OPERATION_TIMEOUT_MS = 4 * 60 * 1000;
 
 export function pickEvictionCandidate(
   views: Array<{ platform: Platform; lastUsedAt: number }>,
@@ -69,6 +70,26 @@ export function platformRuntimeState(
 function originalErrorCode(error: unknown): string | null {
   const message = error instanceof Error ? error.message : String(error);
   return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] ?? null;
+}
+
+export async function withOperationDeadline<T>(
+  task: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => Promise<void>,
+): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      void onTimeout().finally(() => {
+        reject(new Error('PLATFORM_OPERATION_TIMEOUT: 平台页面在 4 分钟内没有完成，请检查网络或重新登录后再试'));
+      });
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([task, deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function attentionFromError(platform: Platform, error: unknown, url: string): AttentionRequired | null {
@@ -489,8 +510,11 @@ export class PlatformSessions {
     let release: () => void = () => {};
     this.operationTail = new Promise<void>((resolve) => { release = resolve; });
     await previous;
+    const task = operation();
     try {
-      return await operation();
+      // Closing the hidden WebContents stops a stalled renderer from acting
+      // after the CLI caller has already received its timeout result.
+      return await withOperationDeadline(task, OPERATION_TIMEOUT_MS, () => this.closeBackground());
     } finally {
       this.pendingOperations -= 1;
       this.executingPlatform = null;
