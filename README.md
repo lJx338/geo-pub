@@ -60,6 +60,8 @@ npm run package:mac
 
 客户端启动 30 秒后检查更新，之后每 4 小时检查一次。更新在后台下载，发布任务运行时不允许重启安装。GitHub Actions 构建安装包并上传腾讯云 COS，版本化安装包先上传，更新清单最后上传。
 
+Beta 灰度发布见 [`docs/BETA-ROLLOUT.md`](docs/BETA-ROLLOUT.md)。正式版用户只有输入有效邀请码后才会切换到 Beta 更新通道。
+
 发布新版本：
 
 1. 更新 `package.json`、Go CLI 和内置 Skill 的版本。
