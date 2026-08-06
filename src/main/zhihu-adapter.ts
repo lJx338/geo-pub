@@ -9,6 +9,7 @@ export interface ZhihuDraftFillResult {
   bodyFilled: boolean;
   title: string;
   bodyTextLength: number;
+  bodyExpectedLength: number;
   publishSettingsOpened: boolean;
   aiDeclarationFound: boolean;
   aiDeclarationSelected: boolean;
@@ -72,9 +73,10 @@ async function fillContent(webContents: WebContents, title: string, html: string
   bodyFilled: boolean;
   title: string;
   bodyTextLength: number;
+  bodyExpectedLength: number;
 }> {
   let result = await webContents.executeJavaScript(`(async () => {
-    const normalize = (value) => String(value || '').replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const requestedTitle = ${JSON.stringify(title)};
     const sourceHtml = ${JSON.stringify(html)};
     const parser = document.createElement('div');
@@ -83,7 +85,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
     const titleElement = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
     const bodyElement = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
     if (!(titleElement instanceof HTMLTextAreaElement) || !(bodyElement instanceof HTMLElement)) {
-      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0 };
+      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: requestedBody.length };
     }
 
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -114,12 +116,14 @@ async function fillContent(webContents: WebContents, title: string, html: string
       bodyFilled: actualBody === requestedBody,
       title: actualTitle,
       bodyTextLength: actualBody.length,
+      bodyExpectedLength: requestedBody.length,
     };
   })()`);
-  for (let attempt = 0; attempt < 8 && (!result.titleFilled || !result.bodyFilled); attempt += 1) {
+  let stableStreak = 0;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     await delay(500 + attempt * 150);
     result = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+      const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
       const requestedTitle = ${JSON.stringify(title)};
       const parser = document.createElement('div');
       parser.innerHTML = ${JSON.stringify(html)};
@@ -130,13 +134,42 @@ async function fillContent(webContents: WebContents, title: string, html: string
       const actualBody = bodyElement instanceof HTMLElement ? normalize(bodyElement.innerText || bodyElement.textContent || '') : '';
       return {
         titleFilled: actualTitle === normalize(requestedTitle),
-        bodyFilled: actualBody.includes(requestedBody.slice(0, Math.min(24, requestedBody.length)))
-          && actualBody.includes(requestedBody.slice(-Math.min(24, requestedBody.length))),
+        bodyFilled: actualBody === requestedBody,
         title: actualTitle,
         bodyTextLength: actualBody.length,
+        bodyExpectedLength: requestedBody.length,
       };
     })()`);
+    stableStreak = result.titleFilled && result.bodyFilled ? stableStreak + 1 : 0;
+    if (stableStreak >= 3) return result;
+
+    if (attempt === 4 && !result.bodyFilled) {
+      await webContents.executeJavaScript(`(() => {
+        const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+        const parser = document.createElement('div');
+        parser.innerHTML = ${JSON.stringify(html)};
+        const requestedBody = normalize(parser.innerText || parser.textContent || '');
+        const bodyElement = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+        if (!(bodyElement instanceof HTMLElement)) return false;
+        bodyElement.scrollIntoView({ block: 'center', inline: 'nearest' });
+        bodyElement.focus({ preventScroll: true });
+        const range = document.createRange();
+        range.selectNodeContents(bodyElement);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        const inserted = document.execCommand('insertText', false, requestedBody);
+        if (!inserted) {
+          bodyElement.replaceChildren(document.createTextNode(requestedBody));
+          bodyElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: requestedBody }));
+        }
+        bodyElement.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()`);
+      stableStreak = 0;
+    }
   }
+  result.bodyFilled = false;
   return result;
 }
 
@@ -274,7 +307,7 @@ export async function fillZhihuDraft(
   await ensureZhihuEditor(webContents);
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) {
-    throw new Error(`ZHIHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
+    throw new Error(`ZHIHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}, expectedLength=${content.bodyExpectedLength}, actualLength=${content.bodyTextLength}`);
   }
   await delay(1000);
   const publishSettingsOpened = await openPublishSettings(webContents);
