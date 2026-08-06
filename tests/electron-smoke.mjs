@@ -142,6 +142,13 @@ try {
   if (!hiddenInspect.ok || hiddenInspect.data?.runtimeState !== 'background') throw new Error(`hidden background inspect failed: ${JSON.stringify(hiddenInspect)}`);
   const backgroundState = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
   if (backgroundState.some((state) => state.visible || state.focused)) throw new Error(`background task changed window state: ${JSON.stringify(backgroundState)}`);
+
+  // Finder/Dock activation must restore a deliberately hidden background app
+  // on macOS. This event is distinct from second-instance and is how users
+  // reopen an app that started through the login-item --background argument.
+  await app.evaluate(({ app }) => app.emit('activate'));
+  const activatedState = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
+  if (!activatedState.some((state) => state.visible)) throw new Error(`macOS activation did not restore the main window: ${JSON.stringify(activatedState)}`);
   process.stdout.write(`${JSON.stringify({ initial, compact, screenshot: join(evidenceDirectory, 'desktop-home.png') }, null, 2)}\n`);
 } finally {
   await app.close();

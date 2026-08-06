@@ -76,6 +76,10 @@ async function runDesktop(): Promise<void> {
   app.on('second-instance', (_event, commandLine) => {
     if (!commandLine.includes('--background')) showWindow();
   });
+  // Finder/Dock activation on macOS reuses the existing process instead of
+  // triggering second-instance. Without this handler an app launched at login
+  // with --background remains hidden when the customer clicks its icon.
+  app.on('activate', showWindow);
   window.on('close', (event) => {
     if (shuttingDown) return;
     event.preventDefault();
