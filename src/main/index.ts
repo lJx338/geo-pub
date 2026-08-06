@@ -39,6 +39,7 @@ async function runDesktop(): Promise<void> {
     minHeight: 640,
     title: 'GEO Publisher',
     show: !startsInBackground,
+    paintWhenInitiallyHidden: true,
     autoHideMenuBar: process.platform === 'win32',
     icon: join(__dirname, '..', 'renderer', 'logo.png'),
     backgroundColor: '#f5f6f8',

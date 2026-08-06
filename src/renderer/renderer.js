@@ -120,7 +120,12 @@ void Promise.all([
   window.geoPublisher.updateStatus(),
   window.geoPublisher.launchAtLoginStatus(),
 ]).then(([status, workBuddy, update, launchStatus]) => {
-  setConnection(status.busy ? '发布任务运行中' : '桌面端已就绪', status.busy ? 'busy' : 'ready');
+  if (status.attentionRequired) {
+    setConnection('需要人工处理', 'error');
+    showMessage(`${status.attentionRequired.platform}需要人工处理：${status.attentionRequired.message}`, true);
+  } else {
+    setConnection(status.busy ? '发布任务运行中' : '桌面端已就绪', status.busy ? 'busy' : 'ready');
+  }
   document.querySelector('#version').textContent = `v${status.version}`;
   workBuddyState.textContent = workBuddy.prepared ? '已准备' : '未连接';
   launchAtLogin.disabled = !launchStatus.available;

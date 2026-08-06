@@ -142,7 +142,7 @@ async function detectVisibleAttention(webContents: WebContents, platform: Platfo
 
 export class PlatformSessions {
   private readonly views = new Map<Platform, ManagedView>();
-  private readonly executionHost = new BackgroundExecutionHost();
+  private readonly executionHost: BackgroundExecutionHost;
   private background: ManagedView | null = null;
   private activePlatform: Platform | null = null;
   private executingPlatform: Platform | null = null;
@@ -154,7 +154,9 @@ export class PlatformSessions {
     private readonly window: BrowserWindow,
     private readonly version: string,
     private readonly onAttentionRequired: (attention: AttentionRequired) => void = () => undefined,
-  ) {}
+  ) {
+    this.executionHost = new BackgroundExecutionHost();
+  }
 
   async open(platform: Platform): Promise<PlatformStatus> {
     if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，请等待任务完成后再打开平台页面');
@@ -260,7 +262,7 @@ export class PlatformSessions {
       };
     })()`);
     const attention = await detectVisibleAttention(managed.view.webContents, platform);
-    if (attention) await this.promoteBackgroundForAttention(managed, attention);
+    if (attention) this.recordAttention(attention);
     return { ...this.platformStatus(platform), ...details, attentionRequired: attention };
   }
 
@@ -441,24 +443,23 @@ export class PlatformSessions {
 
   private async promoteForAttention(managed: ManagedView, error: unknown): Promise<AttentionRequired | null> {
     const attention = attentionFromError(managed.platform, error, managed.view.webContents.getURL()) || await detectVisibleAttention(managed.view.webContents, managed.platform);
-    if (attention) await this.promoteBackgroundForAttention(managed, attention);
+    if (attention) this.recordAttention(attention);
     return attention;
   }
 
   private async promoteForVisibleAttention(managed: ManagedView, result: PublishResult): Promise<void> {
     const attention = await detectVisibleAttention(managed.view.webContents, managed.platform);
-    if (attention) await this.promoteBackgroundForAttention(managed, attention);
+    if (attention) this.recordAttention(attention);
     else if (/验证码|验证|登录失效|重新登录|账号异常|风控/.test(result.message)) {
-      await this.promoteBackgroundForAttention(managed, { platform: managed.platform, code: 'RISK_CONTROL_REQUIRED', message: `RISK_CONTROL_REQUIRED: ${result.message}`, url: result.url });
+      this.recordAttention({ platform: managed.platform, code: 'RISK_CONTROL_REQUIRED', message: `RISK_CONTROL_REQUIRED: ${result.message}`, url: result.url });
     }
   }
 
-  private async promoteBackgroundForAttention(managed: ManagedView, attention: AttentionRequired): Promise<void> {
-    if (this.background === managed) await this.promoteBackground(managed.platform);
+  private recordAttention(attention: AttentionRequired): void {
+    // Background jobs must never activate the app. WorkBuddy receives the
+    // structured error immediately; the user can later open the platform
+    // page from GEO Publisher to complete any required login or verification.
     this.attentionRequired = attention;
-    if (this.window.isMinimized()) this.window.restore();
-    this.window.show();
-    this.window.focus();
     this.onAttentionRequired(attention);
   }
 

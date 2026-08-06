@@ -46,7 +46,7 @@ try {
   if (initial.connectionState !== 'ready' || initial.updateLabel !== '不可用') throw new Error(`initial status is unclear: ${JSON.stringify(initial)}`);
 
   if (process.platform === 'win32') {
-    const menuVisible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible());
+    const menuVisible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.isMenuBarVisible());
     if (menuVisible) throw new Error('Windows menu bar should be hidden');
   }
 
@@ -60,7 +60,7 @@ try {
   const updateDetail = await window.locator('#update-state').getAttribute('title');
   if (updateDetail !== '开发模式不检查更新') throw new Error(`update detail is missing: ${updateDetail}`);
 
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(920, 640));
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.setSize(920, 640));
   await window.waitForTimeout(300);
   const compact = await window.evaluate(() => ({
     width: innerWidth,
@@ -83,16 +83,59 @@ try {
     GEO_PUBLISHER_CONTROL_ENDPOINT: isolatedControlEndpoint,
   };
   const runInspect = async () => JSON.parse((await execFileAsync(cliPath, ['inspect', 'baijia'], { env: cliEnv })).stdout);
-  await window.bringToFront();
+  const runStatus = async () => JSON.parse((await execFileAsync(cliPath, ['status'], { env: cliEnv })).stdout);
   const visibleBefore = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
-  if (!visibleBefore.some((state) => state.visible && state.focused)) throw new Error(`could not focus main window: ${JSON.stringify(visibleBefore)}`);
   const visibleInspect = await runInspect();
   if (!visibleInspect.ok || visibleInspect.data?.runtimeState !== 'background') throw new Error(`visible background inspect failed: ${JSON.stringify(visibleInspect)}`);
   if ('storage' in (visibleInspect.data || {}) || 'valueStart' in (visibleInspect.data || {})) {
     throw new Error('inspect leaked local storage values');
   }
   const visibleAfter = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
-  if (!visibleAfter.some((state) => state.visible && state.focused) || visibleAfter.some((state) => state.visible && !state.focused)) throw new Error(`background inspect changed focus: ${JSON.stringify(visibleAfter)}`);
+  if (visibleAfter.filter((state) => state.visible).length !== visibleBefore.filter((state) => state.visible).length) {
+    throw new Error(`background inspect changed the customer's visible window state: before=${JSON.stringify(visibleBefore)}, after=${JSON.stringify(visibleAfter)}`);
+  }
+
+  // The detached view must retain a stable desktop viewport and receive real
+  // Chromium input events. Platform adapters rely on both facts for upload
+  // confirmations and controls that cannot be changed through DOM APIs.
+  const hiddenInput = await app.evaluate(async ({ webContents }) => {
+    const page = webContents.getAllWebContents().find((candidate) => candidate.getURL().includes('silent-platform.html'));
+    if (!page) throw new Error('background fixture WebContents missing');
+    const point = await page.executeJavaScript(`(() => {
+      const button = document.querySelector('button');
+      if (!(button instanceof HTMLButtonElement)) return null;
+      button.addEventListener('click', () => { button.dataset.geoClicks = String(Number(button.dataset.geoClicks || 0) + 1); });
+      const rect = button.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: innerWidth, height: innerHeight };
+    })()`);
+    if (!point) throw new Error('fixture button missing');
+    page.sendInputEvent({ type: 'mouseMove', x: Math.round(point.x), y: Math.round(point.y) });
+    page.sendInputEvent({ type: 'mouseDown', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
+    page.sendInputEvent({ type: 'mouseUp', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const clicks = await page.executeJavaScript(`document.querySelector('button')?.dataset.geoClicks || '0'`);
+    return { ...point, clicks };
+  });
+  if (hiddenInput.width !== 1440 || hiddenInput.height !== 1000 || hiddenInput.clicks !== '1') {
+    throw new Error(`detached background view did not accept stable input: ${JSON.stringify(hiddenInput)}`);
+  }
+
+  // A login requirement must be reported through the control response while
+  // keeping the automation page in the background. It must never surface the
+  // desktop window or replace it with the platform page.
+  await app.evaluate(({ webContents }) => {
+    const page = webContents.getAllWebContents().find((candidate) => candidate.getURL().includes('silent-platform.html'));
+    if (!page) throw new Error('background fixture WebContents missing');
+    return page.executeJavaScript(`(() => { const input = document.createElement('input'); input.type = 'password'; input.id = 'silent-login-check'; document.body.append(input); })()`);
+  });
+  const attentionInspect = await runInspect();
+  if (attentionInspect.data?.attentionRequired?.code !== 'LOGIN_REQUIRED' || attentionInspect.data?.runtimeState !== 'background') {
+    throw new Error(`background login detection was not reported silently: ${JSON.stringify(attentionInspect)}`);
+  }
+  const attentionStatus = await runStatus();
+  if (attentionStatus.data?.attentionRequired?.code !== 'LOGIN_REQUIRED' || attentionStatus.data?.windowState !== 'visible') {
+    throw new Error(`background login detection changed desktop visibility: ${JSON.stringify(attentionStatus)}`);
+  }
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.close());
   const hiddenInspect = await runInspect();
