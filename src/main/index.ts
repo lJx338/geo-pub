@@ -57,10 +57,12 @@ async function runDesktop(): Promise<void> {
     window.show();
     window.focus();
   };
+  let closingForUpdate = false;
   const sessions = new PlatformSessions(window, packageJson.version, (attention) => {
     if (!window.isDestroyed()) window.webContents.send('geo:attention-required', attention);
   });
   const updateManager = new UpdateManager(packageJson.version, () => sessions.isBusy(), (status) => {
+    if (status.phase === 'error') closingForUpdate = false;
     if (!window.isDestroyed()) window.webContents.send('geo:update-status-changed', status);
   });
   window.on('resize', () => sessions.resize());
@@ -81,7 +83,9 @@ async function runDesktop(): Promise<void> {
   // with --background remains hidden when the customer clicks its icon.
   app.on('activate', showWindow);
   window.on('close', (event) => {
-    if (shuttingDown) return;
+    // MacUpdater closes windows before it emits app.before-quit. Without this
+    // explicit path, the regular "hide on close" behavior blocks installation.
+    if (shuttingDown || closingForUpdate) return;
     event.preventDefault();
     window.hide();
   });
@@ -113,7 +117,14 @@ async function runDesktop(): Promise<void> {
   ipcMain.handle('geo:workbuddy-connect', () => prepareWorkBuddyIntegration(true, cliPath));
   ipcMain.handle('geo:update-status', () => updateManager.getStatus());
   ipcMain.handle('geo:update-check', () => updateManager.check());
-  ipcMain.handle('geo:update-install', () => updateManager.install());
+  ipcMain.handle('geo:update-install', () => {
+    // electron-updater closes all BrowserWindows before app.before-quit on macOS.
+    // Mark this before invoking it so our user-initiated close handler does not hide.
+    closingForUpdate = true;
+    const result = updateManager.install();
+    if (!result.accepted) closingForUpdate = false;
+    return result;
+  });
   ipcMain.handle('geo:beta-activate', async (_event, code: string) => await updateManager.activateBeta(String(code || '')));
   ipcMain.handle('geo:beta-deactivate', () => updateManager.deactivateBeta());
   ipcMain.handle('geo:launch-at-login-status', () => ({ available: app.isPackaged, enabled: app.isPackaged && app.getLoginItemSettings().openAtLogin }));

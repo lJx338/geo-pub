@@ -10,6 +10,10 @@ header strong { font-size: 17px; }
 .status-badge[data-state="busy"]::before { background: #f79009; }
 .status-badge[data-state="error"]::before { background: #f04438; }
 .header-meta { margin-left: auto; color: #7a8498; font-size: 12px; }
+.beta-icon-button { width: 28px; min-width: 28px; min-height: 28px; height: 28px; margin: 0 0 0 2px; padding: 0; justify-content: center; border: 1px solid #d6dbe5; border-radius: 50%; background: #fff; color: #667085; font-size: 12px; font-weight: 700; line-height: 1; text-align: center; }
+.beta-icon-button:hover { background: #edf3ff; border-color: #84adff; color: #175cd3; }
+.beta-icon-button.beta-active { background: #175cd3; border-color: #175cd3; color: #fff; }
+.beta-icon-button.beta-active:hover { background: #144cae; border-color: #144cae; color: #fff; }
 aside { position: fixed; inset: 56px auto 0 0; width: 220px; padding: 18px 14px; overflow-y: auto; background: #fff; border-right: 1px solid #e6e8ee; }
 .section-title { margin: 0 8px 12px; color: #7a8498; font-size: 12px; }
 .integration-title { margin-top: 24px; padding-top: 18px; border-top: 1px solid #eceef2; }

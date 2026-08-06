@@ -12,6 +12,8 @@
       <strong>GEO Publisher</strong>
       <span id="connection" class="status-badge" data-state="ready" aria-live="polite">桌面端已启动</span>
       <span id="version" class="header-meta"></span>
+      <button id="beta-access" class="beta-icon-button" type="button" aria-label="获取 Beta 灰度版" title="获取 Beta 灰度版">B</button>
+      <button id="beta-disable" class="beta-icon-button beta-active" type="button" aria-label="恢复正式版" title="当前使用 Beta，点击恢复正式版" hidden>S</button>
     </header>
     <aside>
       <p class="section-title">发布平台</p>
@@ -26,8 +28,6 @@
       <button id="connect-workbuddy" class="command-button"><span>连接 WorkBuddy</span><span id="workbuddy-state">未准备</span></button>
       <button id="check-update" class="command-button"><span>检查更新</span><span id="update-state">检查</span></button>
       <button id="install-update" class="primary-command" hidden>重启并安装更新</button>
-      <button id="beta-access" class="command-button"><span>获取 Beta 灰度版</span><span>邀请码</span></button>
-      <button id="beta-disable" class="command-button" hidden><span>恢复正式版</span><span>stable</span></button>
       <label class="setting-toggle"><input id="launch-at-login" type="checkbox" /><span>开机自动启动</span></label>
     </aside>
     <dialog id="beta-dialog">

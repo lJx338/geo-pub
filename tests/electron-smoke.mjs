@@ -42,10 +42,11 @@ try {
     connectVisible: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height),
     updateVisible: Boolean(document.querySelector('#check-update')?.getBoundingClientRect().height),
     betaVisible: Boolean(document.querySelector('#beta-access')?.getBoundingClientRect().height),
+    betaInHeader: document.querySelector('#beta-access')?.parentElement?.tagName === 'HEADER',
     connectionState: document.querySelector('#connection')?.getAttribute('data-state'),
     updateLabel: document.querySelector('#update-state')?.textContent,
   }));
-  if (initial.platformButtons !== 6 || !initial.connectVisible || !initial.updateVisible || !initial.betaVisible) throw new Error(`initial controls missing: ${JSON.stringify(initial)}`);
+  if (initial.platformButtons !== 6 || !initial.connectVisible || !initial.updateVisible || !initial.betaVisible || !initial.betaInHeader) throw new Error(`initial controls missing: ${JSON.stringify(initial)}`);
   if (initial.scrollWidth > initial.width || initial.scrollHeight > initial.height) throw new Error(`initial layout overflows: ${JSON.stringify(initial)}`);
   if (initial.connectionState !== 'ready' || initial.updateLabel !== '不可用') throw new Error(`initial status is unclear: ${JSON.stringify(initial)}`);
 
