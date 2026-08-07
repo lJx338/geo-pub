@@ -229,11 +229,14 @@ async function coverApplied(webContents: WebContents): Promise<boolean> {
     let section = coverLabel?.parentElement;
     for (let depth = 0; section && depth < 8; depth += 1, section = section.parentElement) {
       const text = normalize(section.textContent);
-      if (!text.includes('单图') || !text.includes('选择封面')) continue;
+      if (!text.includes('单图')) continue;
+      // Baijia replaces "选择封面" with these controls after applying the image.
+      if ((text.includes('编辑') && text.includes('更换')) || /更换封面|重新选择/.test(text)) return true;
+      if (!text.includes('选择封面')) continue;
       return [...section.querySelectorAll('img')].some((image) => {
         const source = String(image.currentSrc || image.src || '');
         return visible(image) && /^(https?:|blob:|data:image\\/)/i.test(source);
-      }) || (text.includes('编辑') && text.includes('更换')) || /更换封面|重新选择/.test(text);
+      });
     }
     return false;
   })()`);

@@ -24,9 +24,10 @@ const compactContent = (value: string): string => normalizeContent(value).replac
 
 export function draftContentMatches(expectedTitle: string, expectedBody: string, actual: DraftContentState): boolean {
   const normalizedExpectedBody = compactContent(expectedBody);
+  const normalizedActualBody = compactContent(actual.body.replace(/点击输入图片描述[（(]最多30字[）)]/g, ''));
   return normalizeContent(actual.title) === normalizeContent(expectedTitle)
     && normalizedExpectedBody.length > 0
-    && compactContent(actual.body) === normalizedExpectedBody;
+    && normalizedActualBody === normalizedExpectedBody;
 }
 
 export function isNeteasePreflightRunning(text: string): boolean {
@@ -216,7 +217,7 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
         await delay(1000);
         state = await pageState(webContents);
         if (isPublishSuccess('toutiao', state, title)) return { status: 'success', platform: 'toutiao', title, stage: 'success', message: '文章已提交并在作品管理页确认', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
-        const blocked = blocker(state);
+        const blocked = await blocker(webContents, state);
         if (blocked) return { status: 'action_required', platform: 'toutiao', title, stage: 'publish_blocked', message: `平台阻止发布：${blocked}`, url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
       }
       return { status: 'result_uncertain', platform: 'toutiao', title, stage: 'result_check', message: '确认发布后 30 秒内未进入作品管理页，已停止操作', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
@@ -239,14 +240,34 @@ export function isPublishSuccess(platform: Platform, state: PageState, title: st
   return !state.url.includes('article-publish') && hasTitle && positive;
 }
 
-function blocker(state: PageState): string | null {
-  const patterns = [
+async function blocker(webContents: WebContents, state: PageState): Promise<string | null> {
+  if (/(?:login|passport|signin)/i.test(state.url)) return '登录失效';
+
+  const quota = [
     /今日[^。]{0,24}(?:次数已用完|达到上限|不能再发|剩余\s*0)/,
     /发布[^。]{0,24}(?:次数已用完|达到上限|超过上限)/,
-    /(?:验证码|安全验证|滑块验证|扫码验证|账号异常|登录失效|请重新登录)/,
-    /(?:标题不能为空|正文不能为空|请选择封面|请上传封面|内容不符合规范|审核未通过|发布失败|提交失败)/,
-  ];
-  return patterns.map((pattern) => state.text.match(pattern)?.[0]).find(Boolean) || null;
+  ].map((pattern) => state.text.match(pattern)?.[0]).find(Boolean);
+  if (quota) return quota;
+
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => {
+      const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    })();
+    const pattern = /验证码|安全验证|滑块验证|扫码验证|账号异常|登录失效|请重新登录|标题不能为空|正文不能为空|请选择封面|请上传封面|内容不符合规范|发布失败|提交失败/;
+    const selectors = [
+      '[role="dialog"]', '[role="alert"]', '[role="status"]',
+      '[class*="toast"]', '[class*="Toast"]', '[class*="message"]', '[class*="Message"]',
+      '[class*="notice"]', '[class*="Notice"]', '[class*="error"]', '[class*="Error"]'
+    ].join(',');
+    const candidate = [...document.querySelectorAll(selectors)].filter(visible).find((element) => {
+      if (element.closest('[contenteditable="true"],.ProseMirror,.ql-editor,.public-DraftEditor-content')) return false;
+      const text = normalize(element.textContent);
+      return text.length > 0 && text.length <= 300 && pattern.test(text);
+    });
+    return candidate ? normalize(candidate.textContent).slice(0, 160) : null;
+  })()`);
 }
 
 export async function publishFilledDraft(webContents: WebContents, platform: Platform, title: string, html = ''): Promise<PublishResult> {
@@ -280,7 +301,7 @@ export async function publishFilledDraft(webContents: WebContents, platform: Pla
     if (isPublishSuccess(platform, state, title)) {
       return { status: 'success', platform, title, stage: 'success', message: '文章已提交并在发布结果页确认', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked, confirmationClicked };
     }
-    const blocked = blocker(state);
+    const blocked = await blocker(webContents, state);
     if (blocked) {
       return { status: 'action_required', platform, title, stage: 'publish_blocked', message: `平台阻止发布：${blocked}`, url: state.url, pageText: state.text.slice(0, 1000), primaryClicked, confirmationClicked };
     }

@@ -15,6 +15,13 @@ describe('pre-publish content verification', () => {
   it('accepts matching content after whitespace normalization', () => {
     expect(draftContentMatches('标题', '第一段\n第二段', { title: '标题', body: '第一段  第二段' })).toBe(true);
   });
+
+  it('ignores the NetEase image description placeholder added by the editor', () => {
+    expect(draftContentMatches('标题', '第一段第二段', {
+      title: '标题',
+      body: '第一段点击输入图片描述（最多30字）第二段',
+    })).toBe(true);
+  });
 });
 
 describe('publish result reconciliation', () => {
