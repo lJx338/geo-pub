@@ -1,0 +1,45 @@
+name: Publish Beta Invite
+
+on:
+  workflow_dispatch:
+    inputs:
+      invite_hash:
+        description: SHA-256 hash printed by create-beta-invite.mjs
+        required: true
+        type: string
+      expires_at:
+        description: Optional ISO-8601 expiry time
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  TENCENT_COS_BUCKET: ${{ vars.TENCENT_COS_BUCKET }}
+  TENCENT_COS_REGION: ${{ vars.TENCENT_COS_REGION }}
+  TENCENT_COS_PREFIX: ${{ vars.TENCENT_COS_PREFIX }}
+  TENCENT_CLOUD_SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
+  TENCENT_CLOUD_SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate invite hash
+        env:
+          INVITE_HASH: ${{ inputs.invite_hash }}
+        run: test "$(printf '%s' "$INVITE_HASH" | sed -E 's/^[0-9a-f]{64}$//')" = ""
+      - name: Create invite record
+        env:
+          EXPIRES_AT: ${{ inputs.expires_at }}
+        run: |
+          node -e 'const fs=require("fs"); const expires=process.env.EXPIRES_AT.trim(); const value={channel:"beta",createdAt:new Date().toISOString()}; if(expires){if(Number.isNaN(Date.parse(expires))) throw new Error("invalid expires_at"); value.expiresAt=new Date(expires).toISOString();} fs.writeFileSync(process.env.RUNNER_TEMP+"/invite.json",JSON.stringify(value,null,2)+"\n",{mode:0o600});'
+      - name: Upload invite record to COS
+        env:
+          INVITE_HASH: ${{ inputs.invite_hash }}
+        run: |
+          python -m pip install coscmd
+          config="$RUNNER_TEMP/geo-publisher-invite-cos.conf"
+          coscmd -c "$config" config -a "$TENCENT_CLOUD_SECRET_ID" -s "$TENCENT_CLOUD_SECRET_KEY" -b "$TENCENT_COS_BUCKET" -r "$TENCENT_COS_REGION" --retry 5 --timeout 120
+          coscmd -c "$config" upload -f -y -H '{"Cache-Control":"no-cache, no-store, must-revalidate"}' "$RUNNER_TEMP/invite.json" "${TENCENT_COS_PREFIX:-geo-publisher}/invites/$INVITE_HASH.json"

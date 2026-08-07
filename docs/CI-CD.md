@@ -23,7 +23,7 @@ geo-publisher/releases/
 2. 更新版本号，例如：
 
    ```bash
-   npm run version:set -- 0.1.0-beta.6
+   npm run version:set -- 0.3.6-beta.1
    ```
 
 3. 本地验证：
@@ -36,7 +36,7 @@ geo-publisher/releases/
 5. 创建并推送同名标签：
 
    ```bash
-   git tag v0.1.0-beta.6
+   git tag v0.3.6-beta.1
    git push origin main --tags
    ```
 
@@ -63,3 +63,5 @@ macOS 公证所需的 App 专用密码只存 GitHub Secrets，不写入仓库或
 如果 macOS 公证服务临时不可用，保留 `upload-mac-release.yml` 手动补传入口。它只负责上传已经公证的 macOS 文件，不会覆盖 Windows 版本。
 
 已经安装的新版本不会自动降级。发现正式版问题时应发布更高的补丁版本；通道清单切回旧版本只用于阻止尚未升级的客户端继续下载问题版本。
+
+完整发版规则见 [`RELEASE-POLICY.md`](RELEASE-POLICY.md)。

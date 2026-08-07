@@ -6,5 +6,6 @@ release/
 .env.*
 !.env.example
 coverage/
+beta-invites/
 *.log
 .DS_Store
