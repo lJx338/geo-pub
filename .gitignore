@@ -5,6 +5,8 @@ release/
 .env
 .env.*
 !.env.example
+!.env.cos.example
+.cos.conf
 coverage/
 beta-invites/
 *.log
