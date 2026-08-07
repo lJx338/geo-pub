@@ -58,7 +58,7 @@ npm run package:mac
 
 ## 自动更新
 
-客户端启动 30 秒后检查更新，之后每 4 小时检查一次。更新在后台下载，发布任务运行时不允许重启安装。GitHub Actions 构建安装包并上传腾讯云 COS，版本化安装包先上传，更新清单最后上传。
+客户端启动 30 秒后检查更新，之后每 4 小时检查一次。更新在后台下载，发布任务运行时不允许重启安装。GitHub Actions 只负责构建、签名、公证和保存 Artifact；开发者电脑通过本地脚本上传腾讯云 COS，版本化安装包先上传，更新清单最后上传。
 
 Beta 灰度发布见 [`docs/BETA-ROLLOUT.md`](docs/BETA-ROLLOUT.md)。正式版用户只有输入有效邀请码后才会切换到 Beta 更新通道。
 统一版本命名、验收、回退和清理规则见 [`docs/RELEASE-POLICY.md`](docs/RELEASE-POLICY.md)。
@@ -68,6 +68,7 @@ Beta 灰度发布见 [`docs/BETA-ROLLOUT.md`](docs/BETA-ROLLOUT.md)。正式版�
 1. 更新 `package.json`、Go CLI 和内置 Skill 的版本。
 2. 完成测试和 Windows 打包验证。
 3. 创建与版本完全一致的 Git 标签，例如 `v0.1.0-beta.1`。
-4. Release workflow 自动上传到 beta 或 stable 更新目录。
+4. 等待 Release workflow 生成 Windows 和 macOS Artifact。
+5. 在开发机执行 `./scripts/publish-cos-local.sh <Run ID> beta`；正式版使用 `stable`。
 
-腾讯云密钥只能保存在 GitHub Actions Secrets，禁止写入源码、日志或安装包。
+腾讯云密钥只能保存在被 Git 忽略的 `.env.cos`，禁止写入源码、日志或安装包。

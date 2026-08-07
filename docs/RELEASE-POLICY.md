@@ -20,12 +20,19 @@
 3. 运行 `npm run verify` 和 `cd cli && go test ./...`。
 4. 提交并推送 `main`。
 5. 创建与版本完全一致且不可复用的标签，例如 `v0.3.6-beta.1`。
-6. 推送标签，等待 Windows 与 macOS 构建、签名、公证和 COS 上传全部成功。
-7. 检查版本目录中的安装包和对应通道清单，再安排用户更新。
+6. 推送标签，等待 GitHub 完成 Windows 与 macOS 构建、签名、公证，并生成两个 Artifact。
+7. 在开发机执行本地 COS 发布命令。Beta 示例：
+
+   ```bash
+   ./scripts/publish-cos-local.sh <GitHub Actions Run ID> beta
+   ```
+
+   正式版把最后一个参数改为 `stable`。该命令会下载本次 Artifact，并从开发机分片上传 COS。
+8. 检查版本目录中的安装包和对应通道清单，再安排用户更新。
 
 ## Beta 灰度规则
 
-- Beta 标签包含 `-beta.N`，CI 只更新 `channels/beta`，不会影响 stable 用户。
+- Beta 标签包含 `-beta.N`；本地上传时必须使用 `beta` 参数，只更新 `channels/beta`，不会影响 stable 用户。
 - 正式用户只有输入有效邀请码后才会切换到 beta 通道。
 - 邀请码明文只发给用户；仓库、GitHub Actions 和 COS 只接触 SHA-256 哈希。
 - 同一批用户发现问题后发布更高的 `beta.N`，不要修改或覆盖已经发布的 beta 安装包。
@@ -33,7 +40,7 @@
 
 ## Stable 正式版规则
 
-- 正式标签不包含 `alpha` 或 `beta`，CI 只更新 `channels/stable`，并维护旧客户端兼容清单。
+- 正式标签不包含 `alpha` 或 `beta`；本地上传时必须使用 `stable` 参数，更新 `channels/stable` 并维护旧客户端兼容清单。
 - 每次 Windows 和 macOS 必须使用同一个版本号一起发布。
 - 正式发布前至少完成自动测试、安装升级验证和六个平台关键流程抽查。
 - 已经发布的问题版本不从用户电脑降级；通过更高版本修复。
@@ -42,5 +49,7 @@
 
 - COS `versions/<version>` 是不可变审计记录，不覆盖同名文件。
 - 通道清单只有在安装包可访问后才更新。
+- GitHub Actions 禁止直接上传安装包和更新清单到 COS；这些文件只允许通过开发机的 `publish-cos-local.sh` 发布。
+- COS 密钥只保存在被 Git 忽略的 `.env.cos`，禁止写入仓库、日志或安装包。
 - 构建失败时不手动修改通道清单；修复后重新运行同一未发布标签，或创建更高版本。
 - 本地安装包上传完成后运行 `npm run clean:release`，避免占用开发机磁盘。
