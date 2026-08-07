@@ -380,21 +380,23 @@ export async function ensureToutiaoEditor(webContents: WebContents, timeoutMs = 
   throw new Error('TOUTIAO_EDITOR_NOT_READY: 请检查是否已登录头条号，或在桌面端完成验证码');
 }
 
-export async function fillToutiaoDraft(
+async function writeToutiaoContent(
   webContents: WebContents,
   title: string,
   html: string,
-  coverPath: string,
-): Promise<DraftFillResult> {
-  await ensureToutiaoEditor(webContents);
-  const result = await webContents.executeJavaScript(`(() => {
+): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'url'>> {
+  return await webContents.executeJavaScript(`(() => {
     const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
     const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
     if (!(title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement) || !(body instanceof HTMLElement)) {
       return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, url: location.href };
     }
+    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
     const requestedTitle = ${JSON.stringify(title)};
     const requestedHtml = ${JSON.stringify(html)};
+    const parser = document.createElement('div');
+    parser.innerHTML = requestedHtml;
+    const expectedBody = normalize(parser.innerText || parser.textContent);
     const descriptor = Object.getOwnPropertyDescriptor(
       title instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
       'value',
@@ -404,19 +406,65 @@ export async function fillToutiaoDraft(
     title.dispatchEvent(new Event('change', { bubbles: true }));
 
     body.focus();
-    body.innerHTML = requestedHtml;
-    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    let inserted = false;
+    try { inserted = document.execCommand('insertHTML', false, requestedHtml); } catch { inserted = false; }
+    if (!inserted || normalize(body.innerText || body.textContent) !== expectedBody) {
+      body.replaceChildren();
+      body.insertAdjacentHTML('afterbegin', requestedHtml);
+    }
+    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: null }));
     body.dispatchEvent(new Event('change', { bubbles: true }));
-    const actualTitle = title.value.trim();
-    const bodyTextLength = (body.innerText || body.textContent || '').trim().length;
+    body.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+    const actualTitle = normalize(title.value);
+    const actualBody = normalize(body.innerText || body.textContent);
     return {
-      titleFilled: actualTitle === requestedTitle,
-      bodyFilled: bodyTextLength > 0,
+      titleFilled: actualTitle === normalize(requestedTitle),
+      bodyFilled: expectedBody.length > 0 && actualBody === expectedBody,
       title: actualTitle,
-      bodyTextLength,
+      bodyTextLength: actualBody.length,
       url: location.href,
     };
   })()`);
+}
+
+async function verifyToutiaoContent(
+  webContents: WebContents,
+  title: string,
+  html: string,
+): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'url'>> {
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
+    const expectedBody = normalize(parser.innerText || parser.textContent);
+    const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    const actualTitle = title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement ? normalize(title.value) : '';
+    const actualBody = body instanceof HTMLElement ? normalize(body.innerText || body.textContent) : '';
+    return {
+      titleFilled: actualTitle === normalize(${JSON.stringify(title)}),
+      bodyFilled: expectedBody.length > 0 && actualBody === expectedBody,
+      title: actualTitle,
+      bodyTextLength: actualBody.length,
+      url: location.href,
+    };
+  })()`);
+}
+
+export async function fillToutiaoDraft(
+  webContents: WebContents,
+  title: string,
+  html: string,
+  coverPath: string,
+): Promise<DraftFillResult> {
+  await ensureToutiaoEditor(webContents);
+  let result = await writeToutiaoContent(webContents, title, html);
+  await delay(1_200);
+  result = await verifyToutiaoContent(webContents, title, html);
   if (!result.titleFilled || !result.bodyFilled) {
     throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}`);
   }
@@ -447,6 +495,15 @@ export async function fillToutiaoDraft(
     if (draftSaveState === 'saved' || draftSaveState === 'failed') break;
     await delay(500);
   }
+  let stableContent = await verifyToutiaoContent(webContents, title, html);
+  for (let attempt = 0; (!stableContent.titleFilled || !stableContent.bodyFilled) && attempt < 2; attempt += 1) {
+    await writeToutiaoContent(webContents, title, html);
+    await delay(1_500 + attempt * 500);
+    stableContent = await verifyToutiaoContent(webContents, title, html);
+  }
+  if (!stableContent.titleFilled || !stableContent.bodyFilled) {
+    throw new Error(`TOUTIAO_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}, actualLength=${stableContent.bodyTextLength}`);
+  }
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     return {
@@ -464,7 +521,7 @@ export async function fillToutiaoDraft(
   })()`);
   await delay(500);
   return {
-    ...result,
+    ...stableContent,
     coverUploaded,
     noAdsSelected: finalNoAdsSelected ?? noAdsSelected,
     aiDeclarationSelected: finalAiDeclarationSelected || aiDeclarationSelected,

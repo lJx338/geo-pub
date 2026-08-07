@@ -243,7 +243,7 @@ export class PlatformSessions {
       const managed = this.background;
       if (!managed || managed.platform !== platform) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
       try {
-        const result = await publishFilledDraft(managed.view.webContents, platform, title);
+        const result = await publishFilledDraft(managed.view.webContents, platform, title, html);
         const screenshotPath = await this.captureEvidence(managed, `publish-${result.status}`);
         if (result.status === 'action_required') await this.promoteForVisibleAttention(managed, result);
         if (result.status === 'success') await this.closeBackground();

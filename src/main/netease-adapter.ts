@@ -115,9 +115,27 @@ async function fillText(webContents: WebContents, title: string, html: string): 
     await delay(900);
     return await webContents.executeJavaScript(`(() => { const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim(); const element=document.querySelector('.public-DraftEditor-content[contenteditable="true"]'); return element instanceof HTMLElement&&normalize(element.innerText||element.textContent)===normalize(${JSON.stringify(bodyText)}); })()`);
   };
-  if (!await setTitle()) return { titleFilled: false, bodyFilled: false };
+  let titleWritten = false;
+  for (let attempt = 0; attempt < 3 && !titleWritten; attempt += 1) {
+    try {
+      titleWritten = await setTitle();
+    } catch (error) {
+      if (!isTransientPageError(error)) throw error;
+    }
+    if (!titleWritten) await delay(700 + attempt * 500);
+  }
+  if (!titleWritten) return { titleFilled: false, bodyFilled: false };
   await delay(700);
-  if (!await setBody()) return { titleFilled: false, bodyFilled: false };
+  let bodyWritten = false;
+  for (let attempt = 0; attempt < 3 && !bodyWritten; attempt += 1) {
+    try {
+      bodyWritten = await setBody();
+    } catch (error) {
+      if (!isTransientPageError(error)) throw error;
+    }
+    if (!bodyWritten) await delay(900 + attempt * 600);
+  }
+  if (!bodyWritten) return { titleFilled: true, bodyFilled: false };
   await delay(1200);
   // 网易号的受控标题会在正文触发自动保存时偶发回写旧值。正文完成后重新核验，
   // 最多补写两次；每次都以页面真实 value 为准，避免把成功误判为失败。
@@ -131,7 +149,7 @@ async function fillText(webContents: WebContents, title: string, html: string): 
     await setTitle();
     await delay(900);
   }
-  return await webContents.executeJavaScript(`(() => {
+  let verified = await webContents.executeJavaScript(`(() => {
     const normalize=(v)=>String(v||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
     const parser=document.createElement('div'); parser.innerHTML=${JSON.stringify(html)}; const expected=normalize(parser.innerText||parser.textContent||'');
     const titleEl=document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
@@ -139,6 +157,20 @@ async function fillText(webContents: WebContents, title: string, html: string): 
     const actualTitle=titleEl instanceof HTMLTextAreaElement?normalize(titleEl.value):''; const actualBody=bodyEl instanceof HTMLElement?normalize(bodyEl.innerText||bodyEl.textContent):'';
     return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&actualBody===expected};
   })()`);
+  for (let attempt = 0; (!verified.titleFilled || !verified.bodyFilled) && attempt < 2; attempt += 1) {
+    if (!verified.bodyFilled) await setBody();
+    if (!verified.titleFilled) await setTitle();
+    await delay(1_200 + attempt * 600);
+    verified = await webContents.executeJavaScript(`(() => {
+      const normalize=(v)=>String(v||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      const parser=document.createElement('div'); parser.innerHTML=${JSON.stringify(html)}; const expected=normalize(parser.innerText||parser.textContent||'');
+      const titleEl=document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
+      const bodyEl=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+      const actualTitle=titleEl instanceof HTMLTextAreaElement?normalize(titleEl.value):''; const actualBody=bodyEl instanceof HTMLElement?normalize(bodyEl.innerText||bodyEl.textContent):'';
+      return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&expected.length>0&&actualBody===expected};
+    })()`);
+  }
+  return verified;
 }
 
 async function setFileInput(webContents: WebContents, filePath: string): Promise<boolean> {

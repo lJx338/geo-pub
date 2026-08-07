@@ -186,7 +186,18 @@ async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
     const button = buttons.find((element) => {
       let owner = element.parentElement;
       for (let depth = 0; owner && depth < 10; depth += 1, owner = owner.parentElement) {
-        if (/封面预览|正文\\/本地上传|本地上传|AI封图|免费正版图库/.test(normalize(owner.textContent))) return true;
+        const ownerText = normalize(owner.textContent);
+        if (!/封面预览|正文\\/本地上传|本地上传|AI封图|免费正版图库/.test(ownerText)) continue;
+        if (/上传中|处理中|正在上传/.test(ownerText)) return false;
+        const buttonText = normalize(element.textContent);
+        const count = buttonText.match(/\\((\\d+)\\)$/);
+        if (count) return Number(count[1]) > 0;
+        return [...owner.querySelectorAll('img')].some((image) => {
+          const rect = image.getBoundingClientRect();
+          const source = String(image.currentSrc || image.src || '');
+          return visible(image) && rect.width >= 60 && rect.height >= 40
+            && /^(https?:|blob:|data:image\\/)/i.test(source);
+        });
       }
       return false;
     });
@@ -271,6 +282,7 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
   }
   if (!selector) return false;
   await setFileInput(webContents, selector, absolutePath);
+  await delay(800);
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (await coverApplied(webContents)) return true;

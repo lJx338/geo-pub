@@ -17,6 +17,17 @@ export interface PublishResult {
 
 interface PageState { url: string; text: string; pageTitle: string }
 
+interface DraftContentState { title: string; body: string }
+
+const normalizeContent = (value: string): string => value.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+
+export function draftContentMatches(expectedTitle: string, expectedBody: string, actual: DraftContentState): boolean {
+  const normalizedExpectedBody = normalizeContent(expectedBody);
+  return normalizeContent(actual.title) === normalizeContent(expectedTitle)
+    && normalizedExpectedBody.length > 0
+    && normalizeContent(actual.body) === normalizedExpectedBody;
+}
+
 export function isNeteasePreflightRunning(text: string): boolean {
   return /正在.{0,12}发文前检测|发文前检测中|正在检测|正在为您进行发文前检测/.test(text);
 }
@@ -80,6 +91,45 @@ async function pageStateWithRetry(webContents: WebContents): Promise<PageState> 
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function verifyDraftContent(
+  webContents: WebContents,
+  platform: Platform,
+  title: string,
+  html: string,
+): Promise<{ matches: boolean; actual: DraftContentState; expectedBodyLength: number }> {
+  const content = await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
+    const expectedBody = normalize(parser.innerText || parser.textContent || '');
+    const platform = ${JSON.stringify(platform)};
+    let title = '';
+    let body = '';
+    if (platform === 'toutiao') {
+      const titleElement = document.querySelector('textarea[placeholder*="标题"],input[placeholder*="标题"]');
+      const bodyElement = document.querySelector('.ProseMirror[contenteditable="true"],.ql-editor[contenteditable="true"],[data-editor="content"] [contenteditable="true"]');
+      title = titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement ? titleElement.value : '';
+      body = bodyElement instanceof HTMLElement ? bodyElement.innerText || bodyElement.textContent || '' : '';
+    } else if (platform === 'netease') {
+      const titleElement = document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
+      const bodyElement = document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+      title = titleElement instanceof HTMLTextAreaElement ? titleElement.value : '';
+      body = bodyElement instanceof HTMLElement ? bodyElement.innerText || bodyElement.textContent || '' : '';
+    } else if (platform === 'baijia') {
+      const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+      const titleElement = [...document.querySelectorAll('[contenteditable="true"],input,textarea')]
+        .filter(visible).filter((element) => !String(element.getAttribute('placeholder') || '').includes('关键词'))
+        .sort((left, right) => Number(String(right.getAttribute('placeholder') || '').includes('标题')) - Number(String(left.getAttribute('placeholder') || '').includes('标题')))[0];
+      title = titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement
+        ? titleElement.value : titleElement instanceof HTMLElement ? titleElement.innerText || titleElement.textContent || '' : '';
+      const editor = window.UE_V2?.instants?.ueditorInstant0;
+      const iframe = [...document.querySelectorAll('iframe')].find((element) => element instanceof HTMLIFrameElement && visible(element) && element.contentDocument?.body);
+      body = typeof editor?.getContentTxt === 'function' ? editor.getContentTxt() : iframe instanceof HTMLIFrameElement ? iframe.contentDocument?.body?.innerText || iframe.contentDocument?.body?.textContent || '' : '';
+    }
+    return { title: normalize(title), body: normalize(body), expectedBody, expectedBodyLength: expectedBody.length };
+  })()`);
+  return { matches: draftContentMatches(title, content.expectedBody, content), actual: content, expectedBodyLength: content.expectedBodyLength };
 }
 
 async function clickVisible(
@@ -198,7 +248,18 @@ function blocker(state: PageState): string | null {
   return patterns.map((pattern) => state.text.match(pattern)?.[0]).find(Boolean) || null;
 }
 
-export async function publishFilledDraft(webContents: WebContents, platform: Platform, title: string): Promise<PublishResult> {
+export async function publishFilledDraft(webContents: WebContents, platform: Platform, title: string, html = ''): Promise<PublishResult> {
+  if (html && ['baijia', 'toutiao', 'netease'].includes(platform)) {
+    const verification = await verifyDraftContent(webContents, platform, title, html);
+    if (!verification.matches) {
+      const state = await pageStateWithRetry(webContents);
+      return {
+        status: 'action_required', platform, title, stage: 'draft_verify',
+        message: `DRAFT_CONTENT_NOT_STABLE: 发布前页面内容校验失败（标题=${normalizeContent(verification.actual.title) === normalizeContent(title)}，正文长度=${verification.actual.body.length}/${verification.expectedBodyLength}），已停止发布`,
+        url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: false, confirmationClicked: false,
+      };
+    }
+  }
   const config = primaryConfig[platform];
   const primaryClicked = await clickVisible(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li');
   if (!primaryClicked) {
