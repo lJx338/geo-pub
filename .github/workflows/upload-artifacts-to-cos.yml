@@ -1,0 +1,61 @@
+name: Upload Existing Artifacts To COS
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Release Desktop workflow run ID
+        required: true
+        type: string
+      channel:
+        description: Update channel
+        required: true
+        default: beta
+        type: choice
+        options: [beta, stable]
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  TENCENT_COS_BUCKET: ${{ vars.TENCENT_COS_BUCKET }}
+  TENCENT_COS_REGION: ${{ vars.TENCENT_COS_REGION }}
+  TENCENT_COS_PREFIX: ${{ vars.TENCENT_COS_PREFIX }}
+  TENCENT_CLOUD_SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
+  TENCENT_CLOUD_SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo-publisher-windows
+          path: release/win-x64
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - run: node scripts/upload-release.mjs release/win-x64 win-x64 "${{ inputs.channel }}"
+
+  mac:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo-publisher-macos-arm64
+          path: release/mac-arm64
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - run: node scripts/upload-release.mjs release/mac-arm64 mac-arm64 "${{ inputs.channel }}"

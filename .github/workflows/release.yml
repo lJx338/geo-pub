@@ -65,11 +65,9 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-      - if: github.event_name != 'workflow_dispatch' || inputs.upload_to_cos
-        run: python -m pip install coscmd
       - shell: bash
         if: github.event_name != 'workflow_dispatch' || inputs.upload_to_cos
-        run: sh scripts/upload-release.sh release/win-x64 win-x64 "$CHANNEL"
+        run: node scripts/upload-release.mjs release/win-x64 win-x64 "$CHANNEL"
       - uses: actions/upload-artifact@v4
         with:
           name: geo-publisher-windows
@@ -117,11 +115,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - if: github.event_name != 'workflow_dispatch' || inputs.upload_to_cos
-        run: python -m pip install coscmd
       - name: Upload macOS artifacts and update manifest
         if: github.event_name != 'workflow_dispatch' || inputs.upload_to_cos
-        run: sh scripts/upload-release.sh release/mac-arm64 mac-arm64 "$CHANNEL"
+        run: node scripts/upload-release.mjs release/mac-arm64 mac-arm64 "$CHANNEL"
       - uses: actions/upload-artifact@v4
         with:
           name: geo-publisher-macos-arm64

@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
+    "cos-nodejs-sdk-v5": "^2.15.4",
     "electron": "43.1.1",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.28.1",
