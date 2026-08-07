@@ -20,12 +20,13 @@ interface PageState { url: string; text: string; pageTitle: string }
 interface DraftContentState { title: string; body: string }
 
 const normalizeContent = (value: string): string => value.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+const compactContent = (value: string): string => normalizeContent(value).replace(/[\s\u200b-\u200d\ufeff]/g, '');
 
 export function draftContentMatches(expectedTitle: string, expectedBody: string, actual: DraftContentState): boolean {
-  const normalizedExpectedBody = normalizeContent(expectedBody);
+  const normalizedExpectedBody = compactContent(expectedBody);
   return normalizeContent(actual.title) === normalizeContent(expectedTitle)
     && normalizedExpectedBody.length > 0
-    && normalizeContent(actual.body) === normalizedExpectedBody;
+    && compactContent(actual.body) === normalizedExpectedBody;
 }
 
 export function isNeteasePreflightRunning(text: string): boolean {

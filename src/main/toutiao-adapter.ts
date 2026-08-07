@@ -392,6 +392,7 @@ async function writeToutiaoContent(
       return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, url: location.href };
     }
     const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const compact = (value) => normalize(value).replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
     const requestedTitle = ${JSON.stringify(title)};
     const requestedHtml = ${JSON.stringify(html)};
     const parser = document.createElement('div');
@@ -413,7 +414,7 @@ async function writeToutiaoContent(
     selection?.addRange(range);
     let inserted = false;
     try { inserted = document.execCommand('insertHTML', false, requestedHtml); } catch { inserted = false; }
-    if (!inserted || normalize(body.innerText || body.textContent) !== expectedBody) {
+    if (!inserted || compact(body.innerText || body.textContent) !== compact(expectedBody)) {
       body.replaceChildren();
       body.insertAdjacentHTML('afterbegin', requestedHtml);
     }
@@ -424,7 +425,7 @@ async function writeToutiaoContent(
     const actualBody = normalize(body.innerText || body.textContent);
     return {
       titleFilled: actualTitle === normalize(requestedTitle),
-      bodyFilled: expectedBody.length > 0 && actualBody === expectedBody,
+      bodyFilled: compact(expectedBody).length > 0 && compact(actualBody) === compact(expectedBody),
       title: actualTitle,
       bodyTextLength: actualBody.length,
       url: location.href,
@@ -439,6 +440,7 @@ async function verifyToutiaoContent(
 ): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'url'>> {
   return await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const compact = (value) => normalize(value).replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
     const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
     const expectedBody = normalize(parser.innerText || parser.textContent);
     const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
@@ -447,7 +449,7 @@ async function verifyToutiaoContent(
     const actualBody = body instanceof HTMLElement ? normalize(body.innerText || body.textContent) : '';
     return {
       titleFilled: actualTitle === normalize(${JSON.stringify(title)}),
-      bodyFilled: expectedBody.length > 0 && actualBody === expectedBody,
+      bodyFilled: compact(expectedBody).length > 0 && compact(actualBody) === compact(expectedBody),
       title: actualTitle,
       bodyTextLength: actualBody.length,
       url: location.href,
@@ -466,7 +468,7 @@ export async function fillToutiaoDraft(
   await delay(1_200);
   result = await verifyToutiaoContent(webContents, title, html);
   if (!result.titleFilled || !result.bodyFilled) {
-    throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}`);
+    throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}, actualLength=${result.bodyTextLength}`);
   }
   let noAdsSelected: boolean | null;
   try {

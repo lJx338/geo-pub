@@ -220,9 +220,6 @@ async function coverApplied(webContents: WebContents): Promise<boolean> {
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     })();
-    const pageText = normalize(document.body?.innerText);
-    if (pageText.includes('设置封面') && pageText.includes('编辑') && pageText.includes('更换')
-      && !pageText.includes('封面预览')) return true;
     const modalOpen = [...document.querySelectorAll('[role="dialog"],.cheetah-modal,.cheetah-modal-content')]
       .filter(visible)
       .some((element) => /封面预览|正文\\/本地上传|AI封图|免费正版图库/.test(normalize(element.textContent)));
