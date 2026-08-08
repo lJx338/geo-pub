@@ -9,6 +9,12 @@ export interface SohuDraftFillResult {
   bodyVerificationSource: 'editor' | 'page' | 'none';
   title: string;
   bodyTextLength: number;
+  formatVerification: {
+    expected: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    actual: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    preserved: boolean;
+    degradedBlocks: string[];
+  };
   summaryClicked: boolean;
   summaryGenerated: boolean;
   summaryUnavailable: boolean;
@@ -65,6 +71,8 @@ function contentScript(title: string, html: string, write: boolean): string {
       .sort((left, right) => right.score - left.score)[0]?.element || null;
     const holder = document.createElement('div'); holder.innerHTML = ${JSON.stringify(html)};
     const expectedBody = normalize(holder.innerText || holder.textContent || '');
+    const countStructure = (root) => ({ headings: root.querySelectorAll('h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
+    const expectedStructure = countStructure(holder);
     const readValues = (element) => {
       const values = isInput(element) || isTextarea(element) ? [element.value] : [element.innerText, element.textContent];
       const container = element.closest?.('.ql-container'); const view = element.ownerDocument?.defaultView || window;
@@ -123,7 +131,11 @@ function contentScript(title: string, html: string, write: boolean): string {
     const pageMatch = pageBodies.some((body) => contentMatchesExpected(body, expectedBody));
     const bodyVerificationSource = editorMatch ? 'editor' : pageMatch ? 'page' : 'none';
     const actualBody = [...actualBodies].sort((left, right) => right.length - left.length)[0] || '';
-    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource !== 'none', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, editorFound: Boolean(titleElement && bodyElement), documentCount: documents.length, bodyCandidateCount: bodyCandidates.length };
+    const actualStructure = isElement(bodyElement) ? countStructure(bodyElement) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
+    if (bodyVerificationSource !== 'editor' && degradedBlocks.length === 0 && Object.values(expectedStructure).some(Boolean)) degradedBlocks.push('编辑器结构无法确认');
+    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource !== 'none', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks }, editorFound: Boolean(titleElement && bodyElement), documentCount: documents.length, bodyCandidateCount: bodyCandidates.length };
   })()`;
 }
 
@@ -154,11 +166,11 @@ export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120
   throw new Error('SOHU_EDITOR_NOT_READY: 搜狐号编辑器 120 秒内未就绪');
 }
 
-async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'page' | 'none'; title: string; bodyTextLength: number }> {
+async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'page' | 'none'; title: string; bodyTextLength: number; formatVerification: SohuDraftFillResult['formatVerification'] }> {
   await webContents.executeJavaScript(contentScript(title, html, true));
   await delay(900);
   let result = await webContents.executeJavaScript(contentScript(title, html, false));
-  for (let attempt = 0; attempt < 15 && (!result.titleFilled || !result.bodyFilled); attempt += 1) {
+  for (let attempt = 0; attempt < 15 && (!result.titleFilled || !result.bodyFilled || !result.formatVerification.preserved); attempt += 1) {
     await delay(600 + Math.min(attempt, 6) * 150);
     result = await webContents.executeJavaScript(contentScript(title, html, false));
   }
@@ -200,12 +212,15 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
   await ensureSohuEditor(webContents);
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`SOHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
+  if (!content.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   await delay(1_000);
   const beforeSettings = await webContents.executeJavaScript(contentScript(title, html, false));
   if (!beforeSettings.titleFilled || !beforeSettings.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE_BEFORE_SETTINGS: title=${beforeSettings.titleFilled}, body=${beforeSettings.bodyFilled}`);
+  if (!beforeSettings.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${beforeSettings.formatVerification.degradedBlocks.join('、')}`);
   const optional = await applyOptionalSettings(webContents);
   const stableContent = await webContents.executeJavaScript(contentScript(title, html, false));
   if (!stableContent.titleFilled || !stableContent.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}`);
+  if (!stableContent.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${stableContent.formatVerification.degradedBlocks.join('、')}`);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim(); const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     const publishButtonDetected = [...document.querySelectorAll('li.publish-report-btn,li[report-attr],button,[role="button"]')].filter(visible).some((element) => { const text = normalize(element.textContent); return text === '发布' && !text.includes('定时发布') && !element.hasAttribute('disabled'); });

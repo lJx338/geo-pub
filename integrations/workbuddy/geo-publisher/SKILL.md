@@ -26,6 +26,37 @@ Never copy a path or user name from another computer. If discovery is missing, a
 6. Process multiple platforms serially in this order unless the user specifies another order: `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`.
 7. Report the structured result for every platform.
 
+## Build the article input
+
+Run `geo-publisher schema --json` before assembling the first request in a task. The desktop version is authoritative for the exact input contract.
+
+- Send one `document` object, not top-level `title`、`html` or `tags` fields.
+- `document.title` is the published title. `document.blocks` must use semantic blocks: `paragraph`、`heading`（only level 2 or 3）、`list`、`quote`、`divider`、`image`.
+- Keep text natural. Do not put raw Markdown markers (`##`、`-`、`>`) or raw HTML into block text.
+- `document.summary` and `document.tags` are optional platform metadata. Tags are plain topic strings such as `#企业AI`.
+- An `image` block needs a real http(s) URL. A local image path belongs only in `coverPath`.
+- Do not rewrite an article to fit a platform after it has been produced. Let GEO Publisher render the same structured content for that platform and return a format-verification result.
+
+Example input for `validate` or `fill`:
+
+```json
+{
+  "platform": "zhihu",
+  "document": {
+    "title": "企业部署 AI 工具前，先把哪三类流程理清？",
+    "blocks": [
+      { "type": "paragraph", "text": "很多团队并不缺工具，缺的是先后顺序。" },
+      { "type": "heading", "level": 2, "text": "先识别重复决策" },
+      { "type": "list", "ordered": false, "items": ["收集需求", "整理资料"] },
+      { "type": "quote", "text": "先明确边界，再讨论工具。" }
+    ],
+    "summary": "用三类流程判断 AI 工具的部署优先级。",
+    "tags": ["#企业AI", "#流程优化", "#数字化"]
+  },
+  "coverPath": ""
+}
+```
+
 ## Interpret platform status correctly
 
 - `created` means the platform page currently has an in-memory WebView. `created=false` does not mean logged out.
@@ -48,5 +79,6 @@ Use these platform mappings:
 - For `LOGIN_REQUIRED`, `VERIFICATION_REQUIRED`, or `RISK_CONTROL_REQUIRED`, GEO Publisher has already opened the exact affected page. Ask the user to complete that visible action, then retry the same command once. Do not wait on the original command or issue `publish` again automatically.
 - For quota exhaustion, stop that platform and report the platform message.
 - For `result_uncertain`, query status or reconcile the management page. Never click publish again automatically.
+- For `ZHIHU_FORMAT_DEGRADED` or `NETEASE_FORMAT_DEGRADED`, do not publish. The desktop has detected that the editor removed required article structure; preserve the complete error and ask for an adapter update.
 - Never weaken required input validation to force a task through.
 - Preserve complete JSON errors when asking WorkBuddy or technical support for help.

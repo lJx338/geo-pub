@@ -9,6 +9,12 @@ export interface BaijiaDraftFillResult {
   bodyFilled: boolean;
   title: string;
   bodyTextLength: number;
+  formatVerification: {
+    expected: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    actual: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    preserved: boolean;
+    degradedBlocks: string[];
+  };
   coverUploaded: boolean;
   aiDeclarationSelected: boolean;
   publishButtonDetected: boolean;
@@ -73,6 +79,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
     try {
     const requestedTitle = ${JSON.stringify(title)};
     const requestedHtml = ${JSON.stringify(html)};
+    const countStructure = (source) => {
+      const root = document.createElement('div'); root.innerHTML = String(source || '');
+      return { headings: root.querySelectorAll('h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length };
+    };
+    const expectedStructure = countStructure(requestedHtml);
     const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect();
@@ -91,7 +102,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
         };
         return score(right) - score(left);
       })[0];
-    if (!(titleEditor instanceof HTMLElement)) return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, publishButtonDetected: false, url: location.href };
+    if (!(titleEditor instanceof HTMLElement)) return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, formatVerification: { expected: expectedStructure, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] }, publishButtonDetected: false, url: location.href };
 
     if (titleEditor instanceof HTMLInputElement || titleEditor instanceof HTMLTextAreaElement) {
       const prototype = titleEditor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -126,11 +137,15 @@ async function fillContent(webContents: WebContents, title: string, html: string
     const actualTitle = normalize(titleEditor instanceof HTMLInputElement || titleEditor instanceof HTMLTextAreaElement
       ? titleEditor.value : titleEditor.innerText || titleEditor.textContent);
     const bodyText = normalize(typeof ueEditor?.getContentTxt === 'function' ? ueEditor.getContentTxt() : body?.innerText || body?.textContent);
+    const actualStructure = countStructure(typeof ueEditor?.getContent === 'function' ? ueEditor.getContent() : body?.innerHTML);
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
     return {
       titleFilled: actualTitle === normalize(requestedTitle),
       bodyFilled: bodyText.length > 0,
       title: actualTitle,
       bodyTextLength: bodyText.length,
+      formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks },
       publishButtonDetected: [...document.querySelectorAll('button,[role="button"]')]
         .filter(visible).some((element) => normalize(element.textContent) === '发布'),
       url: location.href,
@@ -311,6 +326,9 @@ export async function fillBaijiaDraft(
   }
   if (!content.titleFilled || !content.bodyFilled) {
     throw new Error(`BAIJIA_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
+  }
+  if (!content.formatVerification.preserved) {
+    throw new Error(`BAIJIA_FORMAT_DEGRADED: 百家号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   }
   let aiDeclarationSelected: boolean;
   try {

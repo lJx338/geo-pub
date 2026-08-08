@@ -11,6 +11,12 @@ export interface PenguinDraftFillResult {
   bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none';
   title: string;
   bodyTextLength: number;
+  formatVerification: {
+    expected: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    actual: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    preserved: boolean;
+    degradedBlocks: string[];
+  };
   tagsRequested: string[];
   tagsApplied: string[];
   recommendedTagsDetected: boolean;
@@ -69,12 +75,14 @@ export async function ensurePenguinEditor(webContents: WebContents, timeoutMs = 
   throw new Error('PENGUIN_EDITOR_NOT_READY: 企鹅号编辑器 120 秒内未就绪');
 }
 
-async function readContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none'; title: string; bodyTextLength: number }> {
+async function readContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none'; title: string; bodyTextLength: number; formatVerification: PenguinDraftFillResult['formatVerification'] }> {
   return await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const contentMatchesExpected = ${contentMatchesExpected.toString()};
     const holder = document.createElement('div'); holder.innerHTML = ${JSON.stringify(html)};
     const expected = normalize(holder.innerText || holder.textContent || '');
+    const countStructure = (root) => ({ headings: root.querySelectorAll('h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
+    const expectedStructure = countStructure(holder);
     const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     const titleElement = ${JSON.stringify(TITLE_SELECTORS)}.flatMap((selector) => [...document.querySelectorAll(selector)]).find(visible);
     const bodyTargets = [...new Set(${JSON.stringify(BODY_SELECTORS)}.flatMap((selector) => [...document.querySelectorAll(selector)]))]
@@ -91,11 +99,15 @@ async function readContent(webContents: WebContents, title: string, html: string
     const pageMatch = contentMatchesExpected(pageBody, expected);
     const bodyVerificationSource = editorMatch ? 'editor' : cacheMatch ? 'draft_cache' : pageMatch ? 'page' : 'none';
     const actualBody = [...bodies, ...cacheBodies].sort((left, right) => right.length - left.length)[0] || '';
-    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource !== 'none', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length };
+    const actualStructure = bodyTargets.map((target) => countStructure(target)).sort((left, right) => (right.headings + right.lists + right.quotes + right.dividers + right.images) - (left.headings + left.lists + left.quotes + left.dividers + left.images))[0] || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
+    if (bodyVerificationSource !== 'editor' && degradedBlocks.length === 0 && Object.values(expectedStructure).some(Boolean)) degradedBlocks.push('编辑器结构无法确认');
+    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource !== 'none', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks } };
   })()`);
 }
 
-async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none'; title: string; bodyTextLength: number }> {
+async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none'; title: string; bodyTextLength: number; formatVerification: PenguinDraftFillResult['formatVerification'] }> {
   await webContents.executeJavaScript(`(() => {
     const requestedTitle = ${JSON.stringify(title)}; const requestedHtml = ${JSON.stringify(html)};
     const holder = document.createElement('div'); holder.innerHTML = requestedHtml;
@@ -123,7 +135,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
     }
   })()`);
   let result = await readContent(webContents, title, html);
-  for (let attempt = 0; attempt < 8 && (!result.titleFilled || !result.bodyFilled); attempt += 1) {
+  for (let attempt = 0; attempt < 8 && (!result.titleFilled || !result.bodyFilled || !result.formatVerification.preserved); attempt += 1) {
     await delay(500 + attempt * 150);
     result = await readContent(webContents, title, html);
   }
@@ -253,6 +265,7 @@ export async function fillPenguinDraft(webContents: WebContents, title: string, 
   await ensurePenguinEditor(webContents);
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`PENGUIN_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
+  if (!content.formatVerification.preserved) throw new Error(`PENGUIN_FORMAT_DEGRADED: 企鹅号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   const tagState = await applyTags(webContents, tags);
   const aiDeclarationSelected = await ensureAiDeclaration(webContents);
   const finalState = await webContents.executeJavaScript(`(() => {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { articleDocumentSchema } from './article-document.js';
 
 export const PLATFORMS = ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease'] as const;
 export type Platform = (typeof PLATFORMS)[number];
@@ -12,15 +13,13 @@ const requestBase = z.object({
 
 const articleRequest = {
   platform: z.enum(['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease']),
-  title: z.string().trim().min(2).max(64),
-  html: z.string().min(1),
-  coverPath: z.string(),
-  tags: z.array(z.string()).max(20).default([]),
+  document: articleDocumentSchema,
+  coverPath: z.string().default(''),
 } as const;
 
-const articleRefinements = <T extends { platform: string; title: string; coverPath: string }>(request: T, context: z.RefinementCtx) => {
-  if (request.platform === 'toutiao' && request.title.length > 30) {
-    context.addIssue({ code: 'custom', path: ['title'], message: '头条号标题不能超过 30 个字符' });
+const articleRefinements = <T extends { platform: string; document: { title: string }; coverPath: string }>(request: T, context: z.RefinementCtx) => {
+  if (request.platform === 'toutiao' && request.document.title.length > 30) {
+    context.addIssue({ code: 'custom', path: ['document', 'title'], message: '头条号标题不能超过 30 个字符' });
   }
   if (!['zhihu', 'penguin', 'sohu'].includes(request.platform) && !request.coverPath.trim()) {
     context.addIssue({ code: 'custom', path: ['coverPath'], message: '百家号、头条号和网易号必须提供封面路径' });

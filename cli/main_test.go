@@ -22,11 +22,11 @@ func TestPlatformTimeoutCoversSlowPublisherPages(t *testing.T) {
 }
 
 func TestReadFillInputFromStdin(t *testing.T) {
-	input, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","title":"标题","html":"<p>正文</p>","coverPath":"/tmp/cover.jpg"}`))
+	input, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","document":{"title":"标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if input.Platform != "toutiao" || input.Title != "标题" || input.HTML != "<p>正文</p>" {
+	if input.Platform != "toutiao" || input.Document.Title != "标题" || len(input.Document.Blocks) != 1 {
 		t.Fatalf("unexpected input: %#v", input)
 	}
 }
@@ -34,7 +34,7 @@ func TestReadFillInputFromStdin(t *testing.T) {
 func TestReadFillInputFromFile(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "request.json")
-	if err := os.WriteFile(path, []byte(`{"platform":"toutiao","title":"标题","html":"<p>正文</p>","coverPath":"/tmp/cover.jpg"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"platform":"toutiao","document":{"title":"标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	input, err := readFillInput([]string{"--input", path}, strings.NewReader(""))
@@ -47,14 +47,14 @@ func TestReadFillInputFromFile(t *testing.T) {
 }
 
 func TestReadFillInputRejectsUnknownFields(t *testing.T) {
-	_, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","title":"标题","html":"x","coverPath":"/tmp/a.jpg","extra":true}`))
+	_, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","document":{"title":"标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/a.jpg","extra":true}`))
 	if err == nil {
 		t.Fatal("expected unknown field error")
 	}
 }
 
 func TestReadPublishConfirmation(t *testing.T) {
-	input, err := readFillInput(nil, strings.NewReader(`{"platform":"sohu","title":"正常文章标题","html":"<p>正文</p>","coverPath":"","confirmPublish":true}`))
+	input, err := readFillInput(nil, strings.NewReader(`{"platform":"sohu","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"","confirmPublish":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestValidateDoesNotContactDesktop(t *testing.T) {
 	if err := os.WriteFile(cover, []byte("image"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	input, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","title":"正常标题","html":"<p>正文</p>","coverPath":"`+cover+`"}`))
+	input, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","document":{"title":"正常标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"`+cover+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestValidateDoesNotContactDesktop(t *testing.T) {
 }
 
 func TestValidateZhihuDoesNotRequireCover(t *testing.T) {
-	err := validateFill(fillInput{Platform: "zhihu", Title: "知乎标题", HTML: "<p>正文</p>"})
+	err := validateFill(fillInput{Platform: "zhihu", Document: articleDocument{Title: "知乎标题", Blocks: []articleBlock{{Type: "paragraph", Text: "正文"}}}})
 	if err != nil {
 		t.Fatalf("validateFill returned error: %v", err)
 	}

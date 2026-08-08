@@ -14,6 +14,7 @@ import { evidenceDirectory } from './runtime-paths.js';
 import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
+import { renderArticleDocument, type ArticleDocument } from '../shared/article-document.js';
 import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
 
 const defaultPlatformUrls: Record<Platform, string> = {
@@ -211,25 +212,26 @@ export class PlatformSessions {
     if (!open) managed.view.setBounds(this.interactiveViewBounds());
   }
 
-  async fillDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
-    return await this.runExclusive(() => this.fillDraftInternal(platform, title, html, coverPath, tags));
+  async fillDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
+    return await this.runExclusive(() => this.fillDraftInternal(platform, document, coverPath));
   }
 
-  private async fillDraftInternal(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+  private async fillDraftInternal(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
     const managed = await this.openBackground(platform);
+    const rendered = renderArticleDocument(document, platform);
     try {
       const result = platform === 'baijia'
-        ? await fillBaijiaDraft(managed.view.webContents, title, html, coverPath)
+        ? await fillBaijiaDraft(managed.view.webContents, document.title, rendered.html, coverPath)
         : platform === 'toutiao'
-          ? await fillToutiaoDraft(managed.view.webContents, title, html, coverPath)
+          ? await fillToutiaoDraft(managed.view.webContents, document.title, rendered.html, coverPath)
           : platform === 'zhihu'
-            ? await fillZhihuDraft(managed.view.webContents, title, html)
+            ? await fillZhihuDraft(managed.view.webContents, document.title, rendered.html)
             : platform === 'penguin'
-              ? await fillPenguinDraft(managed.view.webContents, title, html, tags)
+              ? await fillPenguinDraft(managed.view.webContents, document.title, rendered.html, document.tags)
               : platform === 'sohu'
-                ? await fillSohuDraft(managed.view.webContents, title, html)
-                : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath);
-      return await this.captureFillEvidence(managed, result);
+                ? await fillSohuDraft(managed.view.webContents, document.title, rendered.html)
+                : await fillNeteaseDraft(managed.view.webContents, document.title, rendered.html, coverPath);
+      return await this.captureFillEvidence(managed, { ...result, structure: rendered.structuralExpectations });
     } catch (error) {
       const attention = await this.promoteForAttention(managed, error);
       if (attention) throw new AttentionRequiredError(attention, originalErrorCode(error));
@@ -237,13 +239,13 @@ export class PlatformSessions {
     }
   }
 
-  async publishDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+  async publishDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
     return await this.runExclusive(async () => {
-      const fill = await this.fillDraftInternal(platform, title, html, coverPath, tags);
+      const fill = await this.fillDraftInternal(platform, document, coverPath);
       const managed = this.background;
       if (!managed || managed.platform !== platform) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
       try {
-        const result = await publishFilledDraft(managed.view.webContents, platform, title, html);
+        const result = await publishFilledDraft(managed.view.webContents, platform, document.title, renderArticleDocument(document, platform).html);
         const screenshotPath = await this.captureEvidence(managed, `publish-${result.status}`);
         if (result.status === 'action_required') await this.promoteForVisibleAttention(managed, result);
         if (result.status === 'success') await this.closeBackground();

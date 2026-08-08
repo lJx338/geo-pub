@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.3.6-beta.2"
+var version = "0.4.1-beta.1"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
@@ -35,15 +35,13 @@ var platforms = map[string]bool{
 }
 
 type controlRequest struct {
-	ID             string   `json:"id"`
-	Token          string   `json:"token"`
-	Action         string   `json:"action"`
-	Platform       string   `json:"platform,omitempty"`
-	Title          string   `json:"title,omitempty"`
-	HTML           string   `json:"html,omitempty"`
-	CoverPath      string   `json:"coverPath"`
-	Tags           []string `json:"tags"`
-	ConfirmPublish bool     `json:"confirmPublish,omitempty"`
+	ID             string          `json:"id"`
+	Token          string          `json:"token"`
+	Action         string          `json:"action"`
+	Platform       string          `json:"platform,omitempty"`
+	Document       articleDocument `json:"document,omitempty"`
+	CoverPath      string          `json:"coverPath"`
+	ConfirmPublish bool            `json:"confirmPublish,omitempty"`
 }
 
 type controlResponse struct {
@@ -58,12 +56,27 @@ type controlResponse struct {
 }
 
 type fillInput struct {
-	Platform       string   `json:"platform"`
-	Title          string   `json:"title"`
-	HTML           string   `json:"html"`
-	CoverPath      string   `json:"coverPath"`
-	Tags           []string `json:"tags"`
-	ConfirmPublish bool     `json:"confirmPublish,omitempty"`
+	Platform       string          `json:"platform"`
+	Document       articleDocument `json:"document"`
+	CoverPath      string          `json:"coverPath"`
+	ConfirmPublish bool            `json:"confirmPublish,omitempty"`
+}
+
+type articleDocument struct {
+	Title   string         `json:"title"`
+	Blocks  []articleBlock `json:"blocks"`
+	Summary string         `json:"summary,omitempty"`
+	Tags    []string       `json:"tags,omitempty"`
+}
+
+type articleBlock struct {
+	Type    string   `json:"type"`
+	Level   int      `json:"level,omitempty"`
+	Text    string   `json:"text,omitempty"`
+	Ordered bool     `json:"ordered,omitempty"`
+	Items   []string `json:"items,omitempty"`
+	Src     string   `json:"src,omitempty"`
+	Alt     string   `json:"alt,omitempty"`
 }
 
 type cliOutput struct {
@@ -152,8 +165,8 @@ func run(args []string) (string, json.RawMessage, error) {
 		}
 		if command == "validate" {
 			return command, mustJSON(map[string]any{
-				"valid": true, "platform": input.Platform, "title": input.Title,
-				"titleLength": len([]rune(input.Title)), "htmlLength": len(input.HTML),
+				"valid": true, "platform": input.Platform, "title": input.Document.Title,
+				"titleLength": len([]rune(input.Document.Title)), "blockCount": len(input.Document.Blocks),
 				"coverRequired": input.Platform == "baijia" || input.Platform == "toutiao" || input.Platform == "netease",
 			}), nil
 		}
@@ -165,8 +178,8 @@ func run(args []string) (string, json.RawMessage, error) {
 			action = "draft.publish"
 		}
 		return call(command, controlRequest{
-			Action: action, Platform: input.Platform, Title: input.Title,
-			HTML: input.HTML, CoverPath: input.CoverPath, Tags: input.Tags, ConfirmPublish: input.ConfirmPublish,
+			Action: action, Platform: input.Platform, Document: input.Document,
+			CoverPath: input.CoverPath, ConfirmPublish: input.ConfirmPublish,
 		}, publishTimeout)
 	case "doctor":
 		return command, doctor(), nil
@@ -274,10 +287,10 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 platform、title、html、coverPath、tags（可选）、confirmPublish（publish 必须为 true）"}
+		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 platform、document、coverPath（可选）、confirmPublish（publish 必须为 true）"}
 	}
-	if input.Tags == nil {
-		input.Tags = []string{}
+	if input.Document.Tags == nil {
+		input.Document.Tags = []string{}
 	}
 	return input, nil
 }
@@ -286,14 +299,21 @@ func validateFill(input fillInput) error {
 	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && input.Platform != "netease" {
 		return usageError("当前 alpha 版 fill 支持 platform=toutiao、baijia、zhihu、penguin、sohu 或 netease")
 	}
-	if len([]rune(strings.TrimSpace(input.Title))) < 2 || len([]rune(input.Title)) > 64 {
-		return usageError("title 必须为 2-64 个字符")
+	if err := validateDocument(input.Document); err != nil {
+		return err
 	}
-	if input.Platform == "toutiao" && len([]rune(input.Title)) > 30 {
-		return usageError("头条号 title 不能超过 30 个字符")
+	titleLength := len([]rune(strings.TrimSpace(input.Document.Title)))
+	if input.Platform == "toutiao" && titleLength > 30 {
+		return usageError("头条号 document.title 不能超过 30 个字符")
 	}
-	if strings.TrimSpace(input.HTML) == "" {
-		return usageError("html 必填")
+	if input.Platform == "baijia" && titleLength > 64 {
+		return usageError("百家号 document.title 不能超过 64 个字符")
+	}
+	if input.Platform == "sohu" && (titleLength < 5 || titleLength > 72) {
+		return usageError("搜狐号 document.title 必须为 5-72 个字符")
+	}
+	if input.Platform == "netease" && (titleLength < 5 || titleLength > 64) {
+		return usageError("网易号 document.title 必须为 5-64 个字符")
 	}
 	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && !filepath.IsAbs(input.CoverPath) {
 		return usageError("coverPath 必须是绝对路径")
@@ -302,6 +322,50 @@ func validateFill(input fillInput) error {
 		info, err := os.Stat(input.CoverPath)
 		if err != nil || info.IsDir() {
 			return &cliError{code: "COVER_NOT_FOUND", message: "找不到封面文件：" + input.CoverPath, suggestion: "传入当前电脑上的封面绝对路径"}
+		}
+	}
+	return nil
+}
+
+func validateDocument(document articleDocument) error {
+	if len([]rune(strings.TrimSpace(document.Title))) < 2 || len([]rune(document.Title)) > 100 {
+		return usageError("document.title 必须为 2-100 个字符")
+	}
+	if len(document.Blocks) == 0 || len(document.Blocks) > 120 {
+		return usageError("document.blocks 必须包含 1-120 个正文块")
+	}
+	if len([]rune(document.Summary)) > 120 {
+		return usageError("document.summary 不能超过 120 个字符")
+	}
+	if len(document.Tags) > 9 {
+		return usageError("document.tags 最多 9 个")
+	}
+	for index, block := range document.Blocks {
+		switch block.Type {
+		case "paragraph", "quote":
+			if strings.TrimSpace(block.Text) == "" {
+				return usageError(fmt.Sprintf("document.blocks[%d].text 不能为空", index))
+			}
+		case "heading":
+			if strings.TrimSpace(block.Text) == "" || (block.Level != 2 && block.Level != 3) {
+				return usageError(fmt.Sprintf("document.blocks[%d] 只能使用 level=2 或 level=3 的小标题", index))
+			}
+		case "list":
+			if len(block.Items) == 0 || len(block.Items) > 30 {
+				return usageError(fmt.Sprintf("document.blocks[%d].items 必须包含 1-30 项", index))
+			}
+			for _, item := range block.Items {
+				if strings.TrimSpace(item) == "" {
+					return usageError(fmt.Sprintf("document.blocks[%d].items 不能包含空项", index))
+				}
+			}
+		case "divider":
+		case "image":
+			if !strings.HasPrefix(block.Src, "https://") && !strings.HasPrefix(block.Src, "http://") {
+				return usageError(fmt.Sprintf("document.blocks[%d].src 必须是 http(s) 图片地址", index))
+			}
+		default:
+			return usageError(fmt.Sprintf("document.blocks[%d].type 不支持：%s", index, block.Type))
 		}
 	}
 	return nil
@@ -460,11 +524,21 @@ func commandSchema() json.RawMessage {
 			"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},
 		},
 		"article": map[string]any{
-			"platform":       []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
-			"title":          "string, 2-64 characters; Toutiao maximum 30",
-			"html":           "non-empty HTML string",
+			"platform": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
+			"document": map[string]any{
+				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64",
+				"blocks": []map[string]any{
+					{"type": "paragraph", "text": "string"},
+					{"type": "heading", "level": "2 or 3", "text": "string"},
+					{"type": "list", "ordered": "boolean", "items": "string[]"},
+					{"type": "quote", "text": "string"},
+					{"type": "divider"},
+					{"type": "image", "src": "https:// image URL", "alt": "optional string"},
+				},
+				"summary": "optional string, maximum 120 characters",
+				"tags":    "optional array, maximum 9",
+			},
 			"coverPath":      "absolute local path; required for baijia, toutiao, netease",
-			"tags":           "optional array, maximum 20",
 			"confirmPublish": "must be true for publish",
 		},
 	})

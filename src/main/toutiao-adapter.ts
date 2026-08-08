@@ -11,6 +11,12 @@ export interface DraftFillResult {
   bodyFilled: boolean;
   title: string;
   bodyTextLength: number;
+  formatVerification: {
+    expected: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    actual: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    preserved: boolean;
+    degradedBlocks: string[];
+  };
   coverUploaded: boolean;
   noAdsSelected: boolean | null;
   aiDeclarationSelected: boolean;
@@ -384,12 +390,12 @@ async function writeToutiaoContent(
   webContents: WebContents,
   title: string,
   html: string,
-): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'url'>> {
+): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'formatVerification' | 'url'>> {
   return await webContents.executeJavaScript(`(() => {
     const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
     const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
     if (!(title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement) || !(body instanceof HTMLElement)) {
-      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, url: location.href };
+      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, formatVerification: { expected: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] }, url: location.href };
     }
     const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
     const compact = (value) => normalize(value).replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
@@ -397,6 +403,9 @@ async function writeToutiaoContent(
     const requestedHtml = ${JSON.stringify(html)};
     const parser = document.createElement('div');
     parser.innerHTML = requestedHtml;
+    // Toutiao's editor normalizes imported h2/h3 blocks to its own h1 heading node.
+    const countStructure = (root) => ({ headings: root.querySelectorAll('h1,h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
+    const expectedStructure = countStructure(parser);
     const expectedBody = normalize(parser.innerText || parser.textContent);
     const descriptor = Object.getOwnPropertyDescriptor(
       title instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
@@ -423,11 +432,15 @@ async function writeToutiaoContent(
     body.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
     const actualTitle = normalize(title.value);
     const actualBody = normalize(body.innerText || body.textContent);
+    const actualStructure = countStructure(body);
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
     return {
       titleFilled: actualTitle === normalize(requestedTitle),
       bodyFilled: compact(expectedBody).length > 0 && compact(actualBody) === compact(expectedBody),
       title: actualTitle,
       bodyTextLength: actualBody.length,
+      formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks },
       url: location.href,
     };
   })()`);
@@ -437,21 +450,27 @@ async function verifyToutiaoContent(
   webContents: WebContents,
   title: string,
   html: string,
-): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'url'>> {
+): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'formatVerification' | 'url'>> {
   return await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
     const compact = (value) => normalize(value).replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
     const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
     const expectedBody = normalize(parser.innerText || parser.textContent);
+    const countStructure = (root) => ({ headings: root.querySelectorAll('h1,h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
+    const expectedStructure = countStructure(parser);
     const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
     const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
     const actualTitle = title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement ? normalize(title.value) : '';
     const actualBody = body instanceof HTMLElement ? normalize(body.innerText || body.textContent) : '';
+    const actualStructure = body instanceof HTMLElement ? countStructure(body) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
     return {
       titleFilled: actualTitle === normalize(${JSON.stringify(title)}),
       bodyFilled: compact(expectedBody).length > 0 && compact(actualBody) === compact(expectedBody),
       title: actualTitle,
       bodyTextLength: actualBody.length,
+      formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks },
       url: location.href,
     };
   })()`);
@@ -470,6 +489,7 @@ export async function fillToutiaoDraft(
   if (!result.titleFilled || !result.bodyFilled) {
     throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}, actualLength=${result.bodyTextLength}`);
   }
+  if (!result.formatVerification.preserved) throw new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${result.formatVerification.degradedBlocks.join('、')}`);
   let noAdsSelected: boolean | null;
   try {
     noAdsSelected = await ensureNoAds(webContents);
@@ -498,7 +518,7 @@ export async function fillToutiaoDraft(
     await delay(500);
   }
   let stableContent = await verifyToutiaoContent(webContents, title, html);
-  for (let attempt = 0; (!stableContent.titleFilled || !stableContent.bodyFilled) && attempt < 2; attempt += 1) {
+  for (let attempt = 0; (!stableContent.titleFilled || !stableContent.bodyFilled || !stableContent.formatVerification.preserved) && attempt < 2; attempt += 1) {
     await writeToutiaoContent(webContents, title, html);
     await delay(1_500 + attempt * 500);
     stableContent = await verifyToutiaoContent(webContents, title, html);
@@ -506,6 +526,7 @@ export async function fillToutiaoDraft(
   if (!stableContent.titleFilled || !stableContent.bodyFilled) {
     throw new Error(`TOUTIAO_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}, actualLength=${stableContent.bodyTextLength}`);
   }
+  if (!stableContent.formatVerification.preserved) throw new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${stableContent.formatVerification.degradedBlocks.join('、')}`);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     return {

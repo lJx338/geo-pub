@@ -14,5 +14,7 @@ describe('Sohu editor compatibility', () => {
     expect(script).toContain('dangerouslyPasteHTML');
     expect(script).toContain('setEditorContent');
     expect(script).toContain('bodyElement.innerHTML');
+    expect(script).toContain('countStructure');
+    expect(script).toContain('formatVerification');
   });
 });

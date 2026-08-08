@@ -36,6 +36,8 @@ geo-publisher publish --input article.json
 
 真实发布必须在 JSON 中显式设置 `"confirmPublish": true`。当结果为 `result_uncertain` 时禁止自动重发，应先在管理页对账。
 
+文章输入使用结构化 `document`：标题、段落、小标题、列表、引用、分隔线和正文图片分别作为独立内容块传入。桌面端会按平台编辑器写入并回读结构；若页面把要求的小标题、列表、引用、分隔线或正文图片降级为纯文本，会停止发布并返回 `*_FORMAT_DEGRADED`，避免格式混乱的文章进入平台。
+
 ## 开发
 
 ```bash

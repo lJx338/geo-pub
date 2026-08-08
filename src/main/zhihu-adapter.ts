@@ -10,12 +10,22 @@ export interface ZhihuDraftFillResult {
   title: string;
   bodyTextLength: number;
   bodyExpectedLength: number;
+  formatVerification: FormatVerification;
   publishSettingsOpened: boolean;
   aiDeclarationFound: boolean;
   aiDeclarationSelected: boolean;
   publishButtonDetected: boolean;
   url: string;
 }
+
+type FormatVerification = {
+  expected: FormatCounts;
+  actual: FormatCounts;
+  preserved: boolean;
+  degradedBlocks: string[];
+};
+
+type FormatCounts = { headings: number; lists: number; quotes: number; dividers: number; images: number };
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
@@ -74,18 +84,34 @@ async function fillContent(webContents: WebContents, title: string, html: string
   title: string;
   bodyTextLength: number;
   bodyExpectedLength: number;
+  formatVerification: FormatVerification;
 }> {
   let result = await webContents.executeJavaScript(`(async () => {
     const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
     const requestedTitle = ${JSON.stringify(title)};
     const sourceHtml = ${JSON.stringify(html)};
     const parser = document.createElement('div');
     parser.innerHTML = sourceHtml;
     const requestedBody = normalize(parser.innerText || parser.textContent || '');
+    const count = (root) => ({
+      headings: root.querySelectorAll('h2,h3').length,
+      lists: root.querySelectorAll('ul,ol').length,
+      quotes: root.querySelectorAll('blockquote').length,
+      dividers: root.querySelectorAll('hr').length,
+      images: root.querySelectorAll('img').length,
+    });
+    const expected = count(parser);
+    const verify = () => {
+      const actual = count(bodyElement);
+      const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+      const degradedBlocks = Object.keys(expected).filter((key) => actual[key] < expected[key]).map((key) => labels[key]);
+      return { expected, actual, preserved: degradedBlocks.length === 0, degradedBlocks };
+    };
     const titleElement = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
     const bodyElement = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
     if (!(titleElement instanceof HTMLTextAreaElement) || !(bodyElement instanceof HTMLElement)) {
-      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: requestedBody.length };
+      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: requestedBody.length, formatVerification: { expected, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
     }
 
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -101,10 +127,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
-    const inserted = document.execCommand('insertText', false, requestedBody);
+    const inserted = document.execCommand('insertHTML', false, sourceHtml);
     if (!inserted) {
-      bodyElement.replaceChildren(document.createTextNode(requestedBody));
-      bodyElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: requestedBody }));
+      bodyElement.replaceChildren();
+      bodyElement.insertAdjacentHTML('beforeend', sourceHtml);
+      bodyElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: requestedBody }));
     }
     bodyElement.dispatchEvent(new Event('change', { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -113,10 +140,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
     const actualBody = normalize(bodyElement.innerText || bodyElement.textContent || '');
     return {
       titleFilled: actualTitle === normalize(requestedTitle),
-      bodyFilled: actualBody === requestedBody,
+      bodyFilled: compact(actualBody) === compact(requestedBody),
       title: actualTitle,
       bodyTextLength: actualBody.length,
       bodyExpectedLength: requestedBody.length,
+      formatVerification: verify(),
     };
   })()`);
   let stableStreak = 0;
@@ -124,28 +152,36 @@ async function fillContent(webContents: WebContents, title: string, html: string
     await delay(500 + attempt * 150);
     result = await webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+      const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
       const requestedTitle = ${JSON.stringify(title)};
       const parser = document.createElement('div');
       parser.innerHTML = ${JSON.stringify(html)};
       const requestedBody = normalize(parser.innerText || parser.textContent || '');
+      const count = (root) => ({ headings: root.querySelectorAll('h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
+      const expected = count(parser);
       const titleElement = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
       const bodyElement = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
       const actualTitle = titleElement instanceof HTMLTextAreaElement ? normalize(titleElement.value) : '';
       const actualBody = bodyElement instanceof HTMLElement ? normalize(bodyElement.innerText || bodyElement.textContent || '') : '';
+      const actual = bodyElement instanceof HTMLElement ? count(bodyElement) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+      const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+      const degradedBlocks = Object.keys(expected).filter((key) => actual[key] < expected[key]).map((key) => labels[key]);
       return {
         titleFilled: actualTitle === normalize(requestedTitle),
-        bodyFilled: actualBody === requestedBody,
+        bodyFilled: compact(actualBody) === compact(requestedBody),
         title: actualTitle,
         bodyTextLength: actualBody.length,
         bodyExpectedLength: requestedBody.length,
+        formatVerification: { expected, actual, preserved: degradedBlocks.length === 0, degradedBlocks },
       };
     })()`);
-    stableStreak = result.titleFilled && result.bodyFilled ? stableStreak + 1 : 0;
+    stableStreak = result.titleFilled && result.bodyFilled && result.formatVerification.preserved ? stableStreak + 1 : 0;
     if (stableStreak >= 3) return result;
 
     if (attempt === 4 && !result.bodyFilled) {
       await webContents.executeJavaScript(`(() => {
         const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+        const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
         const parser = document.createElement('div');
         parser.innerHTML = ${JSON.stringify(html)};
         const requestedBody = normalize(parser.innerText || parser.textContent || '');
@@ -158,10 +194,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
         const selection = window.getSelection();
         selection?.removeAllRanges();
         selection?.addRange(range);
-        const inserted = document.execCommand('insertText', false, requestedBody);
+        const inserted = document.execCommand('insertHTML', false, ${JSON.stringify(html)});
         if (!inserted) {
-          bodyElement.replaceChildren(document.createTextNode(requestedBody));
-          bodyElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: requestedBody }));
+          bodyElement.replaceChildren();
+          bodyElement.insertAdjacentHTML('beforeend', ${JSON.stringify(html)});
+          bodyElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: requestedBody }));
         }
         bodyElement.dispatchEvent(new Event('change', { bubbles: true }));
         return true;
@@ -308,6 +345,9 @@ export async function fillZhihuDraft(
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) {
     throw new Error(`ZHIHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}, expectedLength=${content.bodyExpectedLength}, actualLength=${content.bodyTextLength}`);
+  }
+  if (!content.formatVerification.preserved) {
+    throw new Error(`ZHIHU_FORMAT_DEGRADED: 知乎编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   }
   await delay(1000);
   const publishSettingsOpened = await openPublishSettings(webContents);

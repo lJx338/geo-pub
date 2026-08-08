@@ -9,6 +9,12 @@ export function contentMatchesExpected(actualValue: unknown, expectedValue: unkn
   if (!actual || !expected) return false;
   if (actual.includes(expected)) return true;
 
+  // Rich editors often remove the line break between a paragraph and a list
+  // item when exposing innerText (for example "。下一步" instead of
+  // "。 下一步"). That is presentation normalization, not a lost paragraph.
+  const compact = (value: string) => value.replace(/[\s\-•·]/g, '');
+  if (compact(actual).includes(compact(expected))) return true;
+
   const sampleLength = Math.min(18, Math.max(8, Math.floor(expected.length / 8)));
   const lastStart = Math.max(0, expected.length - sampleLength);
   const starts = [
