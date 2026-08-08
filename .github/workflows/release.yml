@@ -82,3 +82,32 @@ jobs:
             release/mac-arm64/*.zip
             release/mac-arm64/*.yml
             release/mac-arm64/*.blockmap
+
+  publish:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    env:
+      TENCENT_CLOUD_SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
+      TENCENT_CLOUD_SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
+      TENCENT_COS_BUCKET: ${{ vars.TENCENT_COS_BUCKET }}
+      TENCENT_COS_REGION: ${{ vars.TENCENT_COS_REGION }}
+      TENCENT_COS_PREFIX: ${{ vars.TENCENT_COS_PREFIX }}
+      GEO_UPDATE_PUBLIC_BASE: ${{ vars.TENCENT_COS_BASE_URL }}/geo-publisher/releases
+      RELEASE_CHANNEL: ${{ contains(github.ref_name, '-beta.') && 'beta' || 'stable' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo-publisher-windows
+          path: release/win-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo-publisher-macos-arm64
+          path: release/mac-arm64
+      - run: node scripts/upload-release.mjs release/win-x64 win-x64 "$RELEASE_CHANNEL"
+      - run: node scripts/upload-release.mjs release/mac-arm64 mac-arm64 "$RELEASE_CHANNEL"

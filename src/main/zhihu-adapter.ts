@@ -249,17 +249,23 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
     const label = [...document.querySelectorAll('body *')]
       .filter(visible).find((element) => normalize(element.textContent) === '创作声明');
     if (!(label instanceof HTMLElement)) return { found: false, selected: false };
+    const labelRect = label.getBoundingClientRect();
     let container = label.parentElement;
     for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
-      const button = [...container.querySelectorAll('button,[role="button"],[role="combobox"]')]
-        .filter(visible).find((element) => /声明|AI|人工智能/.test(normalize(element.textContent)));
-      if (!(button instanceof HTMLElement)) continue;
-      const text = normalize(button.textContent);
-      return {
-        found: true,
-        selected: /(?:AI|人工智能)/i.test(text) && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(text)
-          && !/(?:不包含|未使用|无AI|非AI)/i.test(text),
-      };
+      const value = [...container.querySelectorAll('button,[role="button"],[role="combobox"],input,div')]
+        .filter(visible)
+        .filter((element) => element !== label && !element.contains(label))
+        .map((element) => ({ element, text: normalize(element.textContent), rect: element.getBoundingClientRect() }))
+        .filter(({ text }) => text === '无声明' || (text.length <= 32 && /(?:AI|人工智能)/i.test(text)
+          && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(text)))
+        .filter(({ rect }) => rect.width > 40 && rect.height > 18
+          && rect.left >= labelRect.right - 20
+          && rect.top <= labelRect.bottom + 40 && rect.bottom >= labelRect.top - 40)
+        .sort((left, right) => left.rect.width * left.rect.height - right.rect.width * right.rect.height)[0];
+      if (!value) continue;
+      return { found: true, selected: value.text.length <= 32 && /(?:AI|人工智能)/i.test(value.text)
+        && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(value.text)
+        && !/(?:不包含|未使用|无AI|非AI)/i.test(value.text) };
     }
     return { found: false, selected: false };
   })()`);
@@ -275,16 +281,25 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
     const label = [...document.querySelectorAll('body *')]
       .filter(visible).find((element) => normalize(element.textContent) === '创作声明');
     if (!(label instanceof HTMLElement)) return { found: false, selected: false, target: null };
+    const labelRect = label.getBoundingClientRect();
     let container = label.parentElement;
     for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
-      const button = [...container.querySelectorAll('button,[role="button"],[role="combobox"]')]
-        .filter(visible).find((element) => /声明|AI|人工智能/.test(normalize(element.textContent)));
-      if (!(button instanceof HTMLElement)) continue;
-      const text = normalize(button.textContent);
-      const selected = /(?:AI|人工智能)/i.test(text) && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(text)
-        && !/(?:不包含|未使用|无AI|非AI)/i.test(text);
-      button.scrollIntoView({ block: 'center', inline: 'nearest' });
-      const rect = button.getBoundingClientRect();
+      const value = [...container.querySelectorAll('button,[role="button"],[role="combobox"],input,div')]
+        .filter(visible)
+        .filter((element) => element !== label && !element.contains(label))
+        .map((element) => ({ element, text: normalize(element.textContent), rect: element.getBoundingClientRect() }))
+        .filter(({ text }) => text === '无声明' || (text.length <= 32 && /(?:AI|人工智能)/i.test(text)
+          && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(text)))
+        .filter(({ rect }) => rect.width > 40 && rect.height > 18
+          && rect.left >= labelRect.right - 20
+          && rect.top <= labelRect.bottom + 40 && rect.bottom >= labelRect.top - 40)
+        .sort((left, right) => left.rect.width * left.rect.height - right.rect.width * right.rect.height)[0];
+      if (!value) continue;
+      const selected = value.text.length <= 32 && /(?:AI|人工智能)/i.test(value.text)
+        && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(value.text)
+        && !/(?:不包含|未使用|无AI|非AI)/i.test(value.text);
+      value.element.scrollIntoView({ block: 'center', inline: 'nearest' });
+      const rect = value.element.getBoundingClientRect();
       return { found: true, selected, target: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } };
     }
     return { found: false, selected: false, target: null };
@@ -366,7 +381,8 @@ export async function fillZhihuDraft(
     if (declarationLabel instanceof HTMLElement) declarationLabel.scrollIntoView({ block: 'center', inline: 'nearest' });
     return { publishButtonDetected: publish, url: location.href };
   })()`);
-  await delay(500);
+  // 知乎声明下拉框会在 React 状态提交后再绘制，等待稳定后再由调用方采集证据截图。
+  await delay(1_500);
   return {
     ...content,
     publishSettingsOpened,

@@ -18,19 +18,23 @@ function showMessage(message, error = false) {
 }
 
 function renderUpdate(status) {
+  const targetVersion = status.availableVersion ? `v${status.availableVersion}` : '';
   const labels = {
     disabled: '不可用',
     idle: '检查',
     checking: '检查中',
     current: '已是最新',
-    available: '有新版本',
-    downloading: status.progress === null ? '下载中' : `${status.progress}%`,
-    downloaded: '可安装',
+    available: targetVersion ? `更新至 ${targetVersion}` : '有新版本',
+    downloading: targetVersion
+      ? (status.progress === null ? `下载 ${targetVersion}` : `${targetVersion} ${status.progress}%`)
+      : (status.progress === null ? '下载中' : `${status.progress}%`),
+    downloaded: targetVersion ? `可安装 ${targetVersion}` : '可安装',
     error: '重试',
   };
   updateState.textContent = labels[status.phase] || '检查';
   updateState.title = status.message;
   installUpdateButton.hidden = !status.canRestart;
+  installUpdateButton.textContent = targetVersion ? `重启并安装 ${targetVersion}` : '重启并安装更新';
   betaAccess.hidden = status.channel === 'beta';
   betaDisable.hidden = status.channel !== 'beta';
   if (!['idle', 'disabled'].includes(status.phase)) showMessage(status.message, status.phase === 'error');
