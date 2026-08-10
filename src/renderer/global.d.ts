@@ -17,6 +17,7 @@ declare global {
       setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginStatus>;
       onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
       onAttentionRequired(listener: (attention: DesktopStatus['attentionRequired']) => void): () => void;
+      onStatusChanged(listener: (status: DesktopStatus) => void): () => void;
     };
   }
 }

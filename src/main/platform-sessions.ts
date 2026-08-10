@@ -170,12 +170,19 @@ export class PlatformSessions {
     private readonly window: BrowserWindow,
     private readonly version: string,
     private readonly onAttentionRequired: (attention: AttentionRequired) => void = () => undefined,
+    private readonly onBusyChanged: (busy: boolean) => void = () => undefined,
   ) {
     this.executionHost = new BackgroundExecutionHost();
   }
 
   async open(platform: Platform): Promise<PlatformStatus> {
-    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，请等待任务完成后再打开平台页面');
+    if (this.isBusy()) {
+      if (this.executingPlatform === platform && this.background) {
+        this.showRunningPlatform(this.background);
+        return this.platformStatus(platform);
+      }
+      throw new Error('PUBLISHER_BUSY: 发布任务运行中，请等待任务完成后再打开平台页面');
+    }
     if (this.background?.platform === platform) {
       await this.promoteBackground(platform);
       return this.platformStatus(platform);
@@ -217,7 +224,17 @@ export class PlatformSessions {
   }
 
   private async fillDraftInternal(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
-    const managed = await this.openBackground(platform);
+    const keepVisible = this.window.isVisible() && !this.window.isMinimized();
+    let managed = await this.openBackground(platform);
+    // If GEO Publisher is already open, show the platform that is running.
+    // Hidden or minimized jobs stay on the private execution host so they do
+    // not activate the customer's foreground application.
+    if (keepVisible) {
+      await this.promoteBackground(platform);
+      managed = this.views.get(platform) || managed;
+      this.executingPlatform = platform;
+      managed.view.webContents.focus();
+    }
     const rendered = renderArticleDocument(document, platform);
     try {
       const result = platform === 'baijia'
@@ -242,13 +259,13 @@ export class PlatformSessions {
   async publishDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
     return await this.runExclusive(async () => {
       const fill = await this.fillDraftInternal(platform, document, coverPath);
-      const managed = this.background;
+      const managed = this.background || this.views.get(platform);
       if (!managed || managed.platform !== platform) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
       try {
         const result = await publishFilledDraft(managed.view.webContents, platform, document.title, renderArticleDocument(document, platform).html);
         const screenshotPath = await this.captureEvidence(managed, `publish-${result.status}`);
         if (result.status === 'action_required') await this.promoteForVisibleAttention(managed, result);
-        if (result.status === 'success') await this.closeBackground();
+        if (result.status === 'success' && this.background) await this.closeBackground();
         return { fill, ...result, screenshotPath };
       } catch (error) {
         const attention = await this.promoteForAttention(managed, error);
@@ -368,9 +385,20 @@ export class PlatformSessions {
   private async openBackground(platform: Platform): Promise<ManagedView> {
     if (this.background && this.background.platform !== platform) await this.closeBackground();
     if (!this.background) {
-      this.background = await this.createView(platform, 'background');
-      this.attachBackground(this.background);
-      await this.loadUrl(this.background, PLATFORM_URLS[platform]);
+      const interactive = this.views.get(platform);
+      if (interactive) {
+        if (this.activePlatform === platform) {
+          this.window.contentView.removeChildView(interactive.view);
+          this.activePlatform = null;
+        }
+        this.views.delete(platform);
+        this.background = interactive;
+        this.attachBackground(interactive);
+      } else {
+        this.background = await this.createView(platform, 'background');
+        this.attachBackground(this.background);
+        await this.loadUrl(this.background, PLATFORM_URLS[platform]);
+      }
       await this.executionHost.prepare(this.background.view.webContents);
     } else {
       this.attachBackground(this.background);
@@ -392,6 +420,17 @@ export class PlatformSessions {
     this.window.contentView.addChildView(managed.view);
     managed.host = 'interactive';
     managed.lastUsedAt = Date.now();
+    managed.view.webContents.setBackgroundThrottling(false);
+    managed.view.setVisible(!this.uiOverlayOpen);
+    managed.view.setBounds(this.interactiveViewBounds());
+    this.activePlatform = managed.platform;
+  }
+
+  private showRunningPlatform(managed: ManagedView): void {
+    if (managed.host === 'interactive' && this.activePlatform === managed.platform) return;
+    this.executionHost.detach(managed.view);
+    this.window.contentView.addChildView(managed.view);
+    managed.host = 'interactive';
     managed.view.webContents.setBackgroundThrottling(false);
     managed.view.setVisible(!this.uiOverlayOpen);
     managed.view.setBounds(this.interactiveViewBounds());
@@ -421,6 +460,10 @@ export class PlatformSessions {
     const managed = this.background;
     if (!managed) return;
     this.executionHost.detach(managed.view);
+    if (managed.host === 'interactive' && this.activePlatform === managed.platform) {
+      this.window.contentView.removeChildView(managed.view);
+      this.activePlatform = null;
+    }
     this.background = null;
     this.executingPlatform = null;
     await managed.partition.flushStorageData();
@@ -490,6 +533,18 @@ export class PlatformSessions {
   }
 
   private async captureFillEvidence(managed: ManagedView, result: any): Promise<unknown> {
+    if (managed.platform === 'baijia') {
+      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => {
+        const title = document.querySelector('[data-testid="news-title-input"] [contenteditable="true"],.FeEditorApp-_9ddb7e475b559749-editor[contenteditable="true"]');
+        if (!(title instanceof HTMLElement)) return false;
+        title.scrollIntoView({ block: 'start', inline: 'nearest' });
+        window.scrollBy({ top: -100, behavior: 'instant' });
+        return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
+    }
     if (managed.platform === 'sohu') {
       const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
       await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
@@ -508,6 +563,50 @@ export class PlatformSessions {
       })()`);
       await new Promise((resolve) => setTimeout(resolve, 500));
       return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-cover'), settingsScreenshotPath };
+    }
+    if (managed.platform === 'zhihu') {
+      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => {
+        const title = document.querySelector('textarea[placeholder*="请输入标题"]');
+        const editor = document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+        const target = title instanceof HTMLElement ? title : editor;
+        if (!(target instanceof HTMLElement)) return false;
+        target.scrollIntoView({ block: 'start', inline: 'nearest' });
+        window.scrollBy({ top: -120, behavior: 'instant' });
+        return true;
+      })()`);
+      // Close any toolbar popover left open by block formatting so the
+      // evidence image reflects the actual article instead of covering it.
+      managed.view.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+      managed.view.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
+    }
+    if (managed.platform === 'penguin') {
+      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => {
+        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+        const title = [...document.querySelectorAll('input,textarea,[contenteditable="true"]')]
+          .filter(visible).find((element) => String(element.getAttribute('placeholder') || element.getAttribute('data-placeholder') || '').includes('标题'));
+        if (!(title instanceof HTMLElement)) return false;
+        title.scrollIntoView({ block: 'start', inline: 'nearest' });
+        window.scrollBy({ top: -100, behavior: 'instant' });
+        return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
+    }
+    if (managed.platform === 'netease') {
+      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => {
+        const title = document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
+        if (!(title instanceof HTMLElement)) return false;
+        title.scrollIntoView({ block: 'start', inline: 'nearest' });
+        window.scrollBy({ top: -100, behavior: 'instant' });
+        return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
     }
     return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill') };
   }
@@ -596,6 +695,7 @@ export class PlatformSessions {
 
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     this.pendingOperations += 1;
+    this.onBusyChanged(true);
     const previous = this.operationTail;
     let release: () => void = () => {};
     this.operationTail = new Promise<void>((resolve) => { release = resolve; });
@@ -608,6 +708,7 @@ export class PlatformSessions {
     } finally {
       this.pendingOperations -= 1;
       this.executingPlatform = null;
+      this.onBusyChanged(this.pendingOperations > 0);
       release();
     }
   }

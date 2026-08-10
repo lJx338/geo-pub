@@ -60,6 +60,8 @@ async function runDesktop(): Promise<void> {
   let closingForUpdate = false;
   const sessions = new PlatformSessions(window, packageJson.version, (attention) => {
     if (!window.isDestroyed()) window.webContents.send('geo:attention-required', attention);
+  }, () => {
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', sessions.status());
   });
   const updateManager = new UpdateManager(packageJson.version, () => sessions.isBusy(), (status) => {
     if (status.phase === 'error') closingForUpdate = false;

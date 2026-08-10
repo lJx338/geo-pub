@@ -257,9 +257,39 @@ async function coverApplied(webContents: WebContents): Promise<boolean> {
   })()`);
 }
 
+async function coverSignature(webContents: WebContents): Promise<string> {
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    })();
+    const coverLabel = [...document.querySelectorAll('div,span,label')]
+      .filter(visible).find((element) => normalize(element.textContent) === '设置封面');
+    let section = coverLabel?.parentElement;
+    for (let depth = 0; section && depth < 8; depth += 1, section = section.parentElement) {
+      const text = normalize(section.textContent);
+      if (!text.includes('单图')) continue;
+      const image = [...section.querySelectorAll('img')].find((candidate) => {
+        const source = String(candidate.currentSrc || candidate.src || '');
+        const lowerSource = source.toLowerCase();
+        return visible(candidate) && (lowerSource.startsWith('http:')
+          || lowerSource.startsWith('https:')
+          || lowerSource.startsWith('blob:')
+          || lowerSource.startsWith('data:image/'));
+      });
+      if (!(image instanceof HTMLImageElement)) return '';
+      return [image.currentSrc || image.src, image.naturalWidth, image.naturalHeight].join('|');
+    }
+    return '';
+  })()`);
+}
+
 async function uploadCover(webContents: WebContents, coverPath: string): Promise<boolean> {
   const absolutePath = resolve(coverPath);
   await access(absolutePath);
+  const previousSignature = await coverSignature(webContents);
   const opened = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
@@ -267,10 +297,16 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     })();
-    const target = [...document.querySelectorAll('button,[role="button"],div,span')]
+    const candidates = [...document.querySelectorAll('button,[role="button"],div,span')]
       .filter(visible)
-      .filter((element) => normalize(element.textContent) === '选择封面')
-      .sort((left, right) => {
+      .filter((element) => normalize(element.textContent) === '选择封面'
+        || element.getAttribute('aria-label') === '更换封面'
+        || (element.matches('button,[role="button"]') && normalize(element.textContent) === '更换'));
+    const target = candidates.sort((left, right) => {
+        const priority = (element) => element.getAttribute('aria-label') === '更换封面' ? 2
+          : normalize(element.textContent) === '选择封面' ? 1 : 0;
+        const priorityDiff = priority(right) - priority(left);
+        if (priorityDiff) return priorityDiff;
         const a = left.getBoundingClientRect();
         const b = right.getBoundingClientRect();
         return a.width * a.height - b.width * b.height;
@@ -300,11 +336,17 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
   await delay(800);
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (await coverApplied(webContents)) return true;
+    const currentSignature = await coverSignature(webContents);
+    if (await coverApplied(webContents)
+      && currentSignature
+      && (!previousSignature || currentSignature !== previousSignature)) return true;
     const clicked = await confirmCoverDialog(webContents);
     await delay(clicked ? 1_200 : 600);
   }
-  return await coverApplied(webContents);
+  const currentSignature = await coverSignature(webContents);
+  return Boolean(await coverApplied(webContents)
+    && currentSignature
+    && (!previousSignature || currentSignature !== previousSignature));
 }
 
 export async function fillBaijiaDraft(

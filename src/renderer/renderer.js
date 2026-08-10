@@ -10,6 +10,24 @@ const betaDisable = document.querySelector('#beta-disable');
 const betaDialog = document.querySelector('#beta-dialog');
 const betaCode = document.querySelector('#beta-code');
 const betaSubmit = document.querySelector('#beta-submit');
+let taskBusy = false;
+
+function renderTaskStatus(status) {
+  taskBusy = Boolean(status.busy);
+  const platformLabels = { baijia: '百家号', toutiao: '头条号', zhihu: '知乎', penguin: '企鹅号', sohu: '搜狐号', netease: '网易号' };
+  const executingName = platformLabels[status.executingPlatform] || '平台';
+  for (const button of platformButtons) {
+    button.classList.toggle('task-locked', taskBusy);
+    button.setAttribute('aria-disabled', String(taskBusy));
+  }
+  if (taskBusy) {
+    setConnection(`${executingName}任务运行中`, 'busy');
+    showMessage(`正在执行${executingName}任务，完成前不能切换平台`);
+  } else if (!status.attentionRequired) {
+    setConnection('桌面端已就绪', 'ready');
+    showMessage('桌面端已就绪');
+  }
+}
 
 function showMessage(message, error = false) {
   actionMessage.textContent = message;
@@ -47,6 +65,10 @@ function setConnection(message, state = 'ready') {
 
 for (const button of platformButtons) {
   button.addEventListener('click', async () => {
+    if (taskBusy) {
+      showMessage('发布任务正在执行，完成前不能切换平台', true);
+      return;
+    }
     if (button.disabled) return;
     platformButtons.forEach((candidate) => candidate.classList.remove('active'));
     button.classList.add('active');
@@ -166,6 +188,7 @@ window.geoPublisher.onAttentionRequired((attention) => {
   setConnection('需要人工处理', 'error');
   showMessage(`${attention.platform}需要人工处理：${attention.message}`, true);
 });
+window.geoPublisher.onStatusChanged(renderTaskStatus);
 
 void Promise.all([
   window.geoPublisher.status(),
@@ -177,7 +200,7 @@ void Promise.all([
     setConnection('需要人工处理', 'error');
     showMessage(`${status.attentionRequired.platform}需要人工处理：${status.attentionRequired.message}`, true);
   } else {
-    setConnection(status.busy ? '发布任务运行中' : '桌面端已就绪', status.busy ? 'busy' : 'ready');
+    renderTaskStatus(status);
   }
   document.querySelector('#version').textContent = `v${status.version}`;
   workBuddyState.textContent = workBuddy.prepared ? '已准备' : '未连接';

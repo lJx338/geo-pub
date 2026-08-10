@@ -39,4 +39,9 @@ contextBridge.exposeInMainWorld('geoPublisher', {
     ipcRenderer.on('geo:attention-required', handler);
     return () => ipcRenderer.removeListener('geo:attention-required', handler);
   },
+  onStatusChanged: (listener: (status: DesktopStatus) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: DesktopStatus) => listener(status);
+    ipcRenderer.on('geo:status-changed', handler);
+    return () => ipcRenderer.removeListener('geo:status-changed', handler);
+  },
 });

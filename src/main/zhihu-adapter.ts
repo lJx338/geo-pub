@@ -10,6 +10,8 @@ export interface ZhihuDraftFillResult {
   title: string;
   bodyTextLength: number;
   bodyExpectedLength: number;
+  draftWordCount: number;
+  draftStateVerified: boolean;
   formatVerification: FormatVerification;
   publishSettingsOpened: boolean;
   aiDeclarationFound: boolean;
@@ -26,9 +28,57 @@ type FormatVerification = {
 };
 
 type FormatCounts = { headings: number; lists: number; quotes: number; dividers: number; images: number };
+type ZhihuInputBlock =
+  | { type: 'paragraph'; text: string }
+  | { type: 'heading'; text: string; level: 2 | 3 }
+  | { type: 'list'; items: string[]; ordered: boolean }
+  | { type: 'quote'; text: string }
+  | { type: 'divider' };
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+async function clickEditorControl(webContents: WebContents, labels: string[], scope: 'toolbar' | 'menu' = 'toolbar'): Promise<boolean> {
+  const point = await webContents.executeJavaScript(`(() => {
+    const labels = ${JSON.stringify(labels)};
+    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => {
+      const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.pointerEvents !== 'none';
+    })();
+    const menuOnly = ${JSON.stringify(scope)} === 'menu';
+    const candidates = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],li,div,span')]
+      .filter(visible).map((element) => ({ element, text: normalize(element.textContent), rect: element.getBoundingClientRect() }))
+      .filter(({ element, text }) => labels.includes(text)
+        && (!menuOnly || Boolean(element.closest('[role="menu"],[role="listbox"],[class*="Menu"],[class*="menu"],[class*="Popover"],[class*="popover"]'))))
+      .sort((left, right) => left.rect.width * left.rect.height - right.rect.width * right.rect.height);
+    const target = candidates[0];
+    if (!target) return null;
+    target.element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const rect = target.element.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  if (!point) return false;
+  webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(point.x), y: Math.round(point.y) });
+  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
+  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
+  await delay(350);
+  return true;
+}
+
+async function setHeadingLevel(webContents: WebContents, level: 2 | 3): Promise<boolean> {
+  if (!await clickEditorControl(webContents, ['标题'])) return false;
+  const labels = level === 2
+    ? ['二级标题', '标题 2', '标题2', 'H2', '标题二']
+    : ['三级标题', '标题 3', '标题3', 'H3', '标题三'];
+  return await clickEditorControl(webContents, labels, 'menu');
+}
+
+async function setListStyle(webContents: WebContents, ordered: boolean): Promise<boolean> {
+  if (!await clickEditorControl(webContents, ['列表'])) return false;
+  return await clickEditorControl(webContents, ordered ? ['有序列表', '编号列表'] : ['无序列表', '项目列表'], 'menu');
 }
 
 export async function ensureZhihuEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
@@ -84,9 +134,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
   title: string;
   bodyTextLength: number;
   bodyExpectedLength: number;
+  draftWordCount: number;
+  draftStateVerified: boolean;
   formatVerification: FormatVerification;
 }> {
-  let result = await webContents.executeJavaScript(`(async () => {
+  const prepared = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
     const requestedTitle = ${JSON.stringify(title)};
@@ -102,16 +154,20 @@ async function fillContent(webContents: WebContents, title: string, html: string
       images: root.querySelectorAll('img').length,
     });
     const expected = count(parser);
-    const verify = () => {
-      const actual = count(bodyElement);
-      const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
-      const degradedBlocks = Object.keys(expected).filter((key) => actual[key] < expected[key]).map((key) => labels[key]);
-      return { expected, actual, preserved: degradedBlocks.length === 0, degradedBlocks };
-    };
+    const blocks = [...parser.children].flatMap((element) => {
+      const tag = element.tagName.toLowerCase();
+      const text = normalize(element.innerText || element.textContent || '');
+      if (tag === 'p') return text ? [{ type: 'paragraph', text }] : [];
+      if (tag === 'h2' || tag === 'h3') return text ? [{ type: 'heading', text, level: Number(tag.slice(1)) }] : [];
+      if (tag === 'ul' || tag === 'ol') return [{ type: 'list', ordered: tag === 'ol', items: [...element.querySelectorAll(':scope > li')].map((item) => normalize(item.innerText || item.textContent || '')).filter(Boolean) }];
+      if (tag === 'blockquote') return text ? [{ type: 'quote', text }] : [];
+      if (tag === 'hr') return [{ type: 'divider' }];
+      return text ? [{ type: 'paragraph', text }] : [];
+    });
     const titleElement = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
     const bodyElement = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
     if (!(titleElement instanceof HTMLTextAreaElement) || !(bodyElement instanceof HTMLElement)) {
-      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: requestedBody.length, formatVerification: { expected, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
+      return { ready: false, expected, requestedBody, blocks, point: null };
     }
 
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -121,34 +177,101 @@ async function fillContent(webContents: WebContents, title: string, html: string
     titleElement.dispatchEvent(new Event('change', { bubbles: true }));
 
     bodyElement.scrollIntoView({ block: 'center', inline: 'nearest' });
-    bodyElement.focus({ preventScroll: true });
-    const range = document.createRange();
-    range.selectNodeContents(bodyElement);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    const inserted = document.execCommand('insertHTML', false, sourceHtml);
-    if (!inserted) {
-      bodyElement.replaceChildren();
-      bodyElement.insertAdjacentHTML('beforeend', sourceHtml);
-      bodyElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: requestedBody }));
-    }
-    bodyElement.dispatchEvent(new Event('change', { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-
-    const actualTitle = normalize(titleElement.value);
-    const actualBody = normalize(bodyElement.innerText || bodyElement.textContent || '');
-    return {
-      titleFilled: actualTitle === normalize(requestedTitle),
-      bodyFilled: compact(actualBody) === compact(requestedBody),
-      title: actualTitle,
-      bodyTextLength: actualBody.length,
-      bodyExpectedLength: requestedBody.length,
-      formatVerification: verify(),
-    };
+    const rect = bodyElement.getBoundingClientRect();
+    return { ready: true, expected, requestedBody, blocks, point: { x: rect.left + Math.min(rect.width / 2, 320), y: rect.top + Math.min(rect.height / 2, 120) } };
   })()`);
+  if (!prepared.ready || !prepared.point) {
+    return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
+  }
+
+  // Draft.js only persists its React ContentState. Directly replacing the DOM
+  // can look correct while the server saves only the final block. Electron's
+  // native paste command follows the same editor pipeline as a user paste.
+  webContents.focus();
+  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(prepared.point.x), y: Math.round(prepared.point.y), button: 'left', clickCount: 1 });
+  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(prepared.point.x), y: Math.round(prepared.point.y), button: 'left', clickCount: 1 });
+  await delay(250);
+  await webContents.executeJavaScript(`(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!(body instanceof HTMLElement)) return false;
+    body.focus({ preventScroll: true });
+    const range = document.createRange(); range.selectNodeContents(body);
+    const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    return true;
+  })()`);
+  await delay(150);
+  const debuggerApi = webContents.debugger;
+  const attachedHere = !debuggerApi.isAttached();
+  try {
+    if (attachedHere) debuggerApi.attach('1.3');
+    await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: prepared.point.x, y: prepared.point.y, button: 'left', clickCount: 1 });
+    await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: prepared.point.x, y: prepared.point.y, button: 'left', clickCount: 1 });
+    const modifiers = process.platform === 'darwin' ? 4 : 2;
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers, commands: ['selectAll'] });
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers });
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, commands: ['deleteBackward'] });
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
+    await delay(400);
+    let cleared = await webContents.executeJavaScript(`(() => {
+      const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+      return body instanceof HTMLElement && !String(body.innerText || body.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+    })()`);
+    if (!cleared) {
+      webContents.selectAll();
+      await delay(120);
+      webContents.delete();
+      await delay(400);
+      cleared = await webContents.executeJavaScript(`(() => {
+        const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+        return body instanceof HTMLElement && !String(body.innerText || body.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
+      })()`);
+    }
+    if (!cleared) throw new Error('ZHIHU_CLEAR_FAILED: 旧正文未清空，已停止以避免内容追加');
+    const enter = async () => {
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await delay(120);
+    };
+    const insert = async (text: string) => {
+      await debuggerApi.sendCommand('Input.insertText', { text });
+      await delay(120);
+    };
+    const blocks = prepared.blocks as ZhihuInputBlock[];
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index];
+      if (!block) continue;
+      if (block.type === 'heading') {
+        if (!await setHeadingLevel(webContents, block.level)) throw new Error(`ZHIHU_HEADING_CONTROL_NOT_FOUND: H${block.level}`);
+        await insert(block.text);
+        await enter();
+      } else if (block.type === 'list') {
+        if (!await setListStyle(webContents, block.ordered)) throw new Error(`ZHIHU_LIST_CONTROL_NOT_FOUND: ordered=${block.ordered}`);
+        for (const item of block.items) {
+          await insert(item);
+          await enter();
+        }
+        await enter();
+      } else if (block.type === 'quote') {
+        if (!await clickEditorControl(webContents, ['引用'])) throw new Error('ZHIHU_QUOTE_CONTROL_NOT_FOUND');
+        await insert(block.text);
+        await enter();
+        await clickEditorControl(webContents, ['引用']);
+      } else if (block.type === 'divider') {
+        if (!await clickEditorControl(webContents, ['分割线', '分隔线'])) throw new Error('ZHIHU_DIVIDER_CONTROL_NOT_FOUND');
+        await enter();
+      } else {
+        await insert(block.text);
+        if (index < blocks.length - 1) await enter();
+      }
+    }
+    await delay(1_800);
+  } finally {
+    if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
+  }
+
+  let result: any = null;
   let stableStreak = 0;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
     await delay(500 + attempt * 150);
     result = await webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
@@ -164,6 +287,10 @@ async function fillContent(webContents: WebContents, title: string, html: string
       const actualTitle = titleElement instanceof HTMLTextAreaElement ? normalize(titleElement.value) : '';
       const actualBody = bodyElement instanceof HTMLElement ? normalize(bodyElement.innerText || bodyElement.textContent || '') : '';
       const actual = bodyElement instanceof HTMLElement ? count(bodyElement) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+      const pageText = normalize(document.body?.innerText || '');
+      const wordCount = Number(pageText.match(/字数[：:]\\s*(\\d+)/)?.[1] || 0);
+      const expectedCompactLength = compact(requestedBody).length;
+      const draftStateVerified = wordCount >= Math.max(1, Math.floor(expectedCompactLength * 0.6));
       const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
       const degradedBlocks = Object.keys(expected).filter((key) => actual[key] < expected[key]).map((key) => labels[key]);
       return {
@@ -172,39 +299,13 @@ async function fillContent(webContents: WebContents, title: string, html: string
         title: actualTitle,
         bodyTextLength: actualBody.length,
         bodyExpectedLength: requestedBody.length,
+        draftWordCount: wordCount,
+        draftStateVerified,
         formatVerification: { expected, actual, preserved: degradedBlocks.length === 0, degradedBlocks },
       };
     })()`);
     stableStreak = result.titleFilled && result.bodyFilled && result.formatVerification.preserved ? stableStreak + 1 : 0;
     if (stableStreak >= 3) return result;
-
-    if (attempt === 4 && !result.bodyFilled) {
-      await webContents.executeJavaScript(`(() => {
-        const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
-        const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
-        const parser = document.createElement('div');
-        parser.innerHTML = ${JSON.stringify(html)};
-        const requestedBody = normalize(parser.innerText || parser.textContent || '');
-        const bodyElement = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-        if (!(bodyElement instanceof HTMLElement)) return false;
-        bodyElement.scrollIntoView({ block: 'center', inline: 'nearest' });
-        bodyElement.focus({ preventScroll: true });
-        const range = document.createRange();
-        range.selectNodeContents(bodyElement);
-        const selection = window.getSelection();
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-        const inserted = document.execCommand('insertHTML', false, ${JSON.stringify(html)});
-        if (!inserted) {
-          bodyElement.replaceChildren();
-          bodyElement.insertAdjacentHTML('beforeend', ${JSON.stringify(html)});
-          bodyElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: requestedBody }));
-        }
-        bodyElement.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      })()`);
-      stableStreak = 0;
-    }
   }
   result.bodyFilled = false;
   return result;
@@ -359,13 +460,28 @@ export async function fillZhihuDraft(
   await ensureZhihuEditor(webContents);
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) {
-    throw new Error(`ZHIHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}, expectedLength=${content.bodyExpectedLength}, actualLength=${content.bodyTextLength}`);
+    throw new Error(`ZHIHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}, expectedLength=${content.bodyExpectedLength}, actualLength=${content.bodyTextLength}, draftWordCount=${content.draftWordCount}`);
   }
   if (!content.formatVerification.preserved) {
     throw new Error(`ZHIHU_FORMAT_DEGRADED: 知乎编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   }
   await delay(1000);
   const publishSettingsOpened = await openPublishSettings(webContents);
+  if (publishSettingsOpened) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const wordCount = await webContents.executeJavaScript(`(() => {
+        const text = String(document.body?.innerText || '').replace(/\\s+/g, ' ');
+        return Number(text.match(/字数[：:]\\s*(\\d+)/)?.[1] || 0);
+      })()`);
+      content.draftWordCount = wordCount;
+      content.draftStateVerified = wordCount >= Math.max(1, Math.floor(content.bodyExpectedLength * 0.6));
+      if (content.draftStateVerified) break;
+      await delay(500 + attempt * 150);
+    }
+  }
+  if (!content.draftStateVerified) {
+    throw new Error(`ZHIHU_DRAFT_STATE_MISMATCH: 页面正文看似完整，但知乎内部只识别到 ${content.draftWordCount} 字，已停止发布`);
+  }
   let declaration = { found: false, selected: false };
   if (publishSettingsOpened) declaration = await ensureAiDeclaration(webContents);
   const finalState = await webContents.executeJavaScript(`(() => {

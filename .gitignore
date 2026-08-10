@@ -9,5 +9,7 @@ release/
 .cos.conf
 coverage/
 beta-invites/
+.playwright-cli/
+tmp/
 *.log
 .DS_Store

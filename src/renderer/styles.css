@@ -9,6 +9,7 @@ header strong { font-size: 17px; }
 .status-badge::before { content: ""; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #12b76a; }
 .status-badge[data-state="busy"]::before { background: #f79009; }
 .status-badge[data-state="error"]::before { background: #f04438; }
+.task-locked { cursor: not-allowed; opacity: .68; }
 .header-meta { margin-left: auto; color: #7a8498; font-size: 12px; }
 .beta-icon-button { width: 28px; min-width: 28px; min-height: 28px; height: 28px; margin: 0 0 0 2px; padding: 0; justify-content: center; border: 1px solid #d6dbe5; border-radius: 50%; background: #fff; color: #667085; font-size: 12px; font-weight: 700; line-height: 1; text-align: center; }
 .beta-icon-button:hover { background: #edf3ff; border-color: #84adff; color: #175cd3; }
