@@ -41,7 +41,10 @@ try {
     platformButtons: document.querySelectorAll('[data-platform]').length,
     connectVisible: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height),
     updateVisible: Boolean(document.querySelector('#check-update')?.getBoundingClientRect().height),
-    betaVisible: Boolean(document.querySelector('#beta-access')?.getBoundingClientRect().height),
+    betaVisible: ['#beta-access', '#beta-disable'].some((selector) => {
+      const element = document.querySelector(selector);
+      return Boolean(element && !element.hidden && element.getBoundingClientRect().height);
+    }),
     betaInHeader: document.querySelector('#beta-access')?.parentElement?.tagName === 'HEADER',
     connectionState: document.querySelector('#connection')?.getAttribute('data-state'),
     updateLabel: document.querySelector('#update-state')?.textContent,
@@ -65,15 +68,17 @@ try {
   const updateDetail = await window.locator('#update-state').getAttribute('title');
   if (updateDetail !== '开发模式不检查更新') throw new Error(`update detail is missing: ${updateDetail}`);
 
-  await window.locator('#beta-access').click();
-  await window.locator('#beta-dialog').waitFor({ state: 'visible' });
-  await window.locator('#beta-code').fill('invalid');
-  await window.locator('#beta-submit').click();
-  await window.locator('#action-message', { hasText: '邀请码格式不正确' }).waitFor();
-  await window.locator('#beta-code').fill('BETA-SMOKE01');
-  await window.locator('#beta-submit').click();
-  await window.locator('#beta-dialog').waitFor({ state: 'hidden' });
-  if (await window.locator('#beta-disable').isHidden()) throw new Error('beta channel did not persist in the UI');
+  if (await window.locator('#beta-access').isVisible()) {
+    await window.locator('#beta-access').click();
+    await window.locator('#beta-dialog').waitFor({ state: 'visible' });
+    await window.locator('#beta-code').fill('invalid');
+    await window.locator('#beta-submit').click();
+    await window.locator('#action-message', { hasText: '邀请码格式不正确' }).waitFor();
+    await window.locator('#beta-code').fill('BETA-SMOKE01');
+    await window.locator('#beta-submit').click();
+    await window.locator('#beta-dialog').waitFor({ state: 'hidden' });
+  }
+  if (await window.locator('#beta-disable').isHidden()) throw new Error('beta control did not persist in the UI');
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.setSize(920, 640));
   await window.waitForTimeout(300);
@@ -84,13 +89,19 @@ try {
     scrollHeight: document.documentElement.scrollHeight,
     connectBottom: document.querySelector('#connect-workbuddy')?.getBoundingClientRect().bottom,
     updateBottom: document.querySelector('#check-update')?.getBoundingClientRect().bottom,
-    betaBottom: document.querySelector('#beta-disable')?.getBoundingClientRect().bottom,
+    betaBottom: document.querySelector('#beta-disable:not([hidden]), #beta-access:not([hidden])')?.getBoundingClientRect().bottom,
   }));
   if (compact.scrollWidth > compact.width || compact.scrollHeight > compact.height) throw new Error(`compact layout overflows: ${JSON.stringify(compact)}`);
   if ((compact.updateBottom || Infinity) > compact.height) throw new Error(`compact controls clipped: ${JSON.stringify(compact)}`);
   if ((compact.betaBottom || Infinity) > compact.height) throw new Error(`compact beta controls clipped: ${JSON.stringify(compact)}`);
 
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-home.png') });
+  await window.locator('#project-switch').click();
+  await window.locator('#project-select').selectOption('');
+  await window.locator('#project-input-name').fill('冒烟测试客户');
+  await window.locator('#project-company-name').fill('冒烟测试公司');
+  await window.locator('#project-save').click();
+  await window.locator('#project-dialog').waitFor({ state: 'hidden' });
   const cliPath = process.platform === 'win32'
     ? join(process.cwd(), 'dist', 'cli', 'geo-publisher-windows-amd64.exe')
     : join(process.cwd(), 'dist', 'cli', 'geo-publisher-darwin-arm64');
