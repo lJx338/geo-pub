@@ -20,6 +20,9 @@ const projectIndustry = document.querySelector('#project-industry');
 const projectProducts = document.querySelector('#project-products');
 const projectValue = document.querySelector('#project-value');
 const projectSave = document.querySelector('#project-save');
+const projectImport = document.querySelector('#project-import');
+const projectExport = document.querySelector('#project-export');
+const projectArchive = document.querySelector('#project-archive');
 let taskBusy = false;
 let currentProject = null;
 let availableProjects = [];
@@ -149,6 +152,41 @@ projectDialog.addEventListener('close', () => { void window.geoPublisher.setUiOv
 projectSelect.addEventListener('change', () => {
   const project = availableProjects.find((item) => item.id === projectSelect.value) || null;
   populateProjectForm(project);
+});
+
+projectImport.addEventListener('click', async () => {
+  try {
+    const result = await window.geoPublisher.importProject();
+    if (result.canceled) return;
+    renderProjects(await window.geoPublisher.projects());
+    showMessage(`已导入并切换到客户项目：${result.currentProject.name}`);
+  } catch (error) {
+    showMessage(`导入客户项目失败：${error.message}`, true);
+  }
+});
+
+projectExport.addEventListener('click', async () => {
+  const selected = availableProjects.find((item) => item.id === projectSelect.value);
+  if (!selected) return showMessage('请先选择需要导出的客户项目', true);
+  try {
+    const result = await window.geoPublisher.exportProject(selected.id);
+    if (!result.canceled) showMessage('客户项目资料已导出；平台登录状态不会导出。');
+  } catch (error) {
+    showMessage(`导出客户项目失败：${error.message}`, true);
+  }
+});
+
+projectArchive.addEventListener('click', async () => {
+  const selected = availableProjects.find((item) => item.id === projectSelect.value);
+  if (!selected) return showMessage('请先选择需要归档的客户项目', true);
+  if (!window.confirm(`确定归档“${selected.name}”吗？归档后该项目的平台登录状态会保留在本机，但不会再被使用。`)) return;
+  try {
+    renderProjects(await window.geoPublisher.archiveProject(selected.id));
+    if (currentProject) showMessage(`已归档，当前项目：${currentProject.name}`);
+    else showMessage('已归档最后一个客户项目，请新建项目后再登录平台。');
+  } catch (error) {
+    showMessage(`归档客户项目失败：${error.message}`, true);
+  }
 });
 
 projectSave.addEventListener('click', async (event) => {

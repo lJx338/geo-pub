@@ -31,4 +31,16 @@ describe('project store', () => {
     await writeFile(path, '{not-json', 'utf8');
     await expect(new ProjectStore(path).load()).rejects.toThrow('PROJECT_STORE_INVALID');
   });
+
+  it('exports profile only and imports it into a fresh isolated project', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
+    const store = new ProjectStore(join(directory, 'projects.json'));
+    await store.load();
+    const original = await store.create({ name: '客户 A', companyName: '公司 A', contact: 'wx-a' });
+    const imported = await store.import(store.export(original.id));
+    expect(imported).toMatchObject({ name: '客户 A', companyName: '公司 A', contact: 'wx-a' });
+    expect(imported.id).not.toBe(original.id);
+    await store.archive(original.id);
+    expect(store.list().map((project) => project.id)).toEqual([imported.id]);
+  });
 });

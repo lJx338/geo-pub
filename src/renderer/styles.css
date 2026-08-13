@@ -40,6 +40,9 @@ dialog::backdrop { background: rgba(16, 24, 40, .28); }
 .project-form { width: min(460px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; }
 .beta-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .beta-actions button { width: auto; min-width: 88px; justify-content: center; text-align: center; }
+.project-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.project-tools button { width: auto; min-height: 34px; padding: 7px 10px; font-size: 13px; }
+.project-tools .danger-button { color: #b42318; border: 1px solid #fecdca; background: #fffafa; }
 main { margin: 56px 0 0 220px; height: calc(100vh - 56px); display: grid; place-content: center; padding: 48px; color: #667085; }
 .setup { width: min(520px, calc(100vw - 316px)); }
 .setup h1 { margin: 0 0 28px; color: #273047; font-size: 24px; letter-spacing: 0; }

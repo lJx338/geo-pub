@@ -1,5 +1,6 @@
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, session, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, Tray } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
 import type { ControlRequest, Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
@@ -154,6 +155,44 @@ async function runDesktop(): Promise<void> {
     const project = await projects.select(id);
     await sessions.selectProject(project.id);
     return { project, currentProject: project };
+  });
+  ipcMain.handle('geo:project-archive', async (_event, id: string) => {
+    if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能归档客户项目');
+    await projects.archive(id);
+    const current = projects.current();
+    if (current) await sessions.selectProject(current.id);
+    else await sessions.clearProject();
+    return { projects: projects.list(), currentProject: current };
+  });
+  ipcMain.handle('geo:project-export', async (_event, id: string) => {
+    const project = projects.get(id);
+    if (!project || project.archivedAt) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
+    const result = await dialog.showSaveDialog(window, {
+      title: '导出客户项目资料',
+      defaultPath: `${project.name}-项目资料.json`,
+      filters: [{ name: 'JSON 文件', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await writeFile(result.filePath, `${JSON.stringify(projects.export(id), null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    return { canceled: false, filePath: result.filePath };
+  });
+  ipcMain.handle('geo:project-import', async () => {
+    if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能导入客户项目');
+    const result = await dialog.showOpenDialog(window, {
+      title: '导入客户项目资料',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON 文件', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true, project: null, currentProject: projects.current() };
+    let profile: ProjectInput;
+    try {
+      profile = JSON.parse(await readFile(result.filePaths[0], 'utf8')) as ProjectInput;
+    } catch (error) {
+      throw new Error(`PROJECT_IMPORT_INVALID: 项目资料文件无法读取：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const project = await projects.import(profile);
+    await sessions.selectProject(project.id);
+    return { canceled: false, project, currentProject: project };
   });
   ipcMain.handle('geo:open-platform', (_event, platform: Platform) => sessions.open(platform));
   ipcMain.handle('geo:workbuddy-status', () => workBuddyIntegrationStatus());

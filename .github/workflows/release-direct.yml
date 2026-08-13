@@ -2,6 +2,13 @@ name: Release Desktop Direct
 
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: '发布通道'
+        required: true
+        default: beta
+        type: choice
+        options: [beta, stable]
 
 permissions:
   contents: read
@@ -38,7 +45,7 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-      - run: node scripts/upload-release.mjs release/win-x64 win-x64 stable
+      - run: node scripts/upload-release.mjs release/win-x64 win-x64 "${{ inputs.channel }}"
 
   mac:
     runs-on: macos-14
@@ -67,4 +74,4 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - run: node scripts/upload-release.mjs release/mac-arm64 mac-arm64 stable
+      - run: node scripts/upload-release.mjs release/mac-arm64 mac-arm64 "${{ inputs.channel }}"

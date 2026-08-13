@@ -10,6 +10,9 @@ declare global {
       createProject(input: ProjectInput): Promise<{ project: Project; currentProject: Project }>;
       updateProject(id: string, input: Partial<ProjectInput>): Promise<{ project: Project }>;
       selectProject(id: string): Promise<{ project: Project; currentProject: Project }>;
+      archiveProject(id: string): Promise<{ projects: Project[]; currentProject: Project | null }>;
+      exportProject(id: string): Promise<{ canceled: boolean; filePath?: string }>;
+      importProject(): Promise<{ canceled: boolean; project: Project | null; currentProject: Project | null }>;
       workBuddyStatus(): Promise<WorkBuddyIntegrationStatus>;
       connectWorkBuddy(): Promise<WorkBuddyIntegrationStatus & { prompt: string }>;
       updateStatus(): Promise<UpdateStatus>;

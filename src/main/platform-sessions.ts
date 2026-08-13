@@ -192,6 +192,15 @@ export class PlatformSessions {
     this.attentionRequired = null;
   }
 
+  async clearProject(): Promise<void> {
+    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能切换客户项目');
+    await this.closeBackground();
+    for (const managed of [...this.views.values()]) this.closeInteractiveView(managed);
+    this.projectId = null;
+    this.activePlatform = null;
+    this.attentionRequired = null;
+  }
+
   ensureProject(projectId?: string): string {
     if (!this.projectId) throw new Error('PROJECT_REQUIRED: 请先在 GEO Publisher 中新建并选择客户项目');
     if (projectId && projectId !== this.projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新生成文章后再发布');
