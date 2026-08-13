@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { ProjectStore } from './project-store.js';
 
@@ -23,5 +23,12 @@ describe('project store', () => {
     await store.update(first.id, { industry: '工业服务' });
     expect(store.current()).toMatchObject({ id: second.id, companyName: '公司 B' });
     expect(store.get(first.id)).toMatchObject({ companyName: '公司 A', industry: '工业服务' });
+  });
+
+  it('does not silently replace an unreadable project file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
+    const path = join(directory, 'projects.json');
+    await writeFile(path, '{not-json', 'utf8');
+    await expect(new ProjectStore(path).load()).rejects.toThrow('PROJECT_STORE_INVALID');
   });
 });

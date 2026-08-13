@@ -45,8 +45,12 @@ export class ProjectStore {
   async load(): Promise<void> {
     try {
       this.state = storeSchema.parse(JSON.parse(await readFile(this.path, 'utf8')));
-    } catch {
-      this.state = { schemaVersion: 1, currentProjectId: null, projects: [] };
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        this.state = { schemaVersion: 1, currentProjectId: null, projects: [] };
+      } else {
+        throw new Error(`PROJECT_STORE_INVALID: 客户项目资料无法读取，请恢复备份后重试：${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     if (this.state.currentProjectId && !this.find(this.state.currentProjectId)) this.state.currentProjectId = null;
   }
