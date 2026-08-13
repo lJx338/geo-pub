@@ -10,7 +10,45 @@ const betaDisable = document.querySelector('#beta-disable');
 const betaDialog = document.querySelector('#beta-dialog');
 const betaCode = document.querySelector('#beta-code');
 const betaSubmit = document.querySelector('#beta-submit');
+const projectSwitch = document.querySelector('#project-switch');
+const projectName = document.querySelector('#project-name');
+const projectDialog = document.querySelector('#project-dialog');
+const projectSelect = document.querySelector('#project-select');
+const projectInputName = document.querySelector('#project-input-name');
+const projectCompanyName = document.querySelector('#project-company-name');
+const projectIndustry = document.querySelector('#project-industry');
+const projectProducts = document.querySelector('#project-products');
+const projectValue = document.querySelector('#project-value');
+const projectSave = document.querySelector('#project-save');
 let taskBusy = false;
+let currentProject = null;
+let availableProjects = [];
+
+function populateProjectForm(project) {
+  projectInputName.value = project?.name || '';
+  projectCompanyName.value = project?.companyName || '';
+  projectIndustry.value = project?.industry || '';
+  projectProducts.value = project?.products || '';
+  projectValue.value = project?.valueAndAudience || '';
+}
+
+function renderProjects(payload) {
+  availableProjects = payload.projects || [];
+  currentProject = payload.currentProject || null;
+  projectName.textContent = currentProject?.name || '新建客户项目';
+  const newOption = document.createElement('option');
+  newOption.value = '';
+  newOption.textContent = '+ 新建客户项目';
+  newOption.selected = !currentProject;
+  projectSelect.replaceChildren(newOption, ...availableProjects.map((project) => {
+    const option = document.createElement('option');
+    option.value = project.id;
+    option.textContent = project.name;
+    option.selected = project.id === currentProject?.id;
+    return option;
+  }));
+  populateProjectForm(currentProject);
+}
 
 function renderTaskStatus(status) {
   taskBusy = Boolean(status.busy);
@@ -69,6 +107,10 @@ for (const button of platformButtons) {
       showMessage('发布任务正在执行，完成前不能切换平台', true);
       return;
     }
+    if (!currentProject) {
+      showMessage('请先新建并选择客户项目', true);
+      return;
+    }
     if (button.disabled) return;
     platformButtons.forEach((candidate) => candidate.classList.remove('active'));
     button.classList.add('active');
@@ -93,6 +135,48 @@ for (const button of platformButtons) {
     }
   });
 }
+
+projectSwitch.addEventListener('click', async () => {
+  if (taskBusy) return showMessage('发布任务正在执行，完成前不能切换客户项目', true);
+  const payload = await window.geoPublisher.projects();
+  renderProjects(payload);
+  await window.geoPublisher.setUiOverlayOpen(true);
+  projectDialog.showModal();
+});
+
+projectDialog.addEventListener('close', () => { void window.geoPublisher.setUiOverlayOpen(false); });
+
+projectSelect.addEventListener('change', () => {
+  const project = availableProjects.find((item) => item.id === projectSelect.value) || null;
+  populateProjectForm(project);
+});
+
+projectSave.addEventListener('click', async (event) => {
+  event.preventDefault();
+  projectSave.disabled = true;
+  try {
+    const input = {
+      name: projectInputName.value.trim(), companyName: projectCompanyName.value.trim(),
+      industry: projectIndustry.value.trim(), products: projectProducts.value.trim(),
+      valueAndAudience: projectValue.value.trim(),
+    };
+    let result;
+    const selected = availableProjects.find((item) => item.id === projectSelect.value);
+    if (selected) {
+      await window.geoPublisher.updateProject(selected.id, input);
+      result = await window.geoPublisher.selectProject(selected.id);
+    } else {
+      result = await window.geoPublisher.createProject(input);
+    }
+    renderProjects(await window.geoPublisher.projects());
+    projectDialog.close();
+    showMessage(`已切换到客户项目：${result.currentProject.name}`);
+  } catch (error) {
+    showMessage(`保存客户项目失败：${error.message}`, true);
+  } finally {
+    projectSave.disabled = false;
+  }
+});
 
 document.querySelector('#connect-workbuddy').addEventListener('click', async () => {
   const button = document.querySelector('#connect-workbuddy');
@@ -192,10 +276,12 @@ window.geoPublisher.onStatusChanged(renderTaskStatus);
 
 void Promise.all([
   window.geoPublisher.status(),
+  window.geoPublisher.projects(),
   window.geoPublisher.workBuddyStatus(),
   window.geoPublisher.updateStatus(),
   window.geoPublisher.launchAtLoginStatus(),
-]).then(([status, workBuddy, update, launchStatus]) => {
+]).then(([status, projects, workBuddy, update, launchStatus]) => {
+  renderProjects(projects);
   if (status.attentionRequired) {
     setConnection('需要人工处理', 'error');
     showMessage(`${status.attentionRequired.platform}需要人工处理：${status.attentionRequired.message}`, true);

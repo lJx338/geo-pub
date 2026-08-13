@@ -24,7 +24,7 @@ describe('update feed platform selection', () => {
   });
 
   it('uses the default latest manifest for stable releases', () => {
-    expect(updaterManifestChannel('stable')).toBeNull();
+    expect(updaterManifestChannel('stable')).toBe('latest');
     expect(updaterManifestChannel('beta')).toBe('beta');
   });
 });

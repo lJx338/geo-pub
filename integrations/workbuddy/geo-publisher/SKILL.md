@@ -7,6 +7,16 @@ description: Use GEO Publisher Desktop and its local CLI to validate, fill, prev
 
 Use the desktop application as the execution engine. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, or direct browser automation. `inspect`, `fill`, and `publish` run in GEO Publisher's background execution page and must not be preceded by `show` or `open`.
 
+## Customer project context
+
+Run `geo-publisher project current` before generating an article, filling a draft, or publishing. The returned `project` is the current customer project selected in GEO Publisher and is the source of company name, business profile, products, strengths, cases, credentials, customer questions and forbidden phrases.
+
+- Never infer, cache, or substitute a customer project from another WorkBuddy task.
+- Include the exact returned `project.id` as `projectId` in every `validate`, `fill`, and `publish` input.
+- If no current project exists, ask the customer to create and select one in GEO Publisher before continuing.
+- If a command returns `PROJECT_CONTEXT_CHANGED`, stop immediately, re-read `project current`, regenerate or reconfirm the content for that customer, and do not retry the old publish request.
+- A customer may ask WorkBuddy to update company information. Summarize the proposed changes, obtain confirmation, then run `geo-publisher project update <projectId> --input <file.json>`.
+
 ## Resolve the CLI
 
 Run `geo-publisher doctor` when the command is available. Otherwise read `discovery.json` from the operating system's GEO Publisher user-data directory and invoke its `cliPath`:
@@ -41,6 +51,7 @@ Example input for `validate` or `fill`:
 
 ```json
 {
+  "projectId": "the exact id from geo-publisher project current",
   "platform": "zhihu",
   "document": {
     "title": "企业部署 AI 工具前，先把哪三类流程理清？",

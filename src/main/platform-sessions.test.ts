@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OperationTimeoutError, PlatformSessions, pickEvictionCandidate, platformRuntimeState, withOperationDeadline } from './platform-sessions.js';
+import { OperationTimeoutError, PlatformSessions, pickEvictionCandidate, platformRuntimeState, projectPartitionName, withOperationDeadline } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -19,6 +19,12 @@ describe('platform view eviction', () => {
 });
 
 describe('platform runtime status', () => {
+  it('isolates browser storage by customer project and platform', () => {
+    expect(projectPartitionName('11111111-1111-4111-8111-111111111111', 'toutiao'))
+      .not.toBe(projectPartitionName('22222222-2222-4222-8222-222222222222', 'toutiao'));
+    expect(projectPartitionName('11111111-1111-4111-8111-111111111111', 'toutiao'))
+      .not.toBe(projectPartitionName('11111111-1111-4111-8111-111111111111', 'zhihu'));
+  });
   it('does not confuse view residency with login state', () => {
     expect(platformRuntimeState(false, false)).toBe('not_loaded');
     expect(platformRuntimeState(true, false)).toBe('resident');

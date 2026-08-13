@@ -13,6 +13,7 @@ const requestBase = z.object({
 
 const articleRequest = {
   platform: z.enum(['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease']),
+  projectId: z.string().uuid(),
   document: articleDocumentSchema,
   coverPath: z.string().default(''),
 } as const;
@@ -28,6 +29,13 @@ const articleRefinements = <T extends { platform: string; document: { title: str
 
 export const controlRequestSchema = z.discriminatedUnion('action', [
   requestBase.extend({ action: z.literal('status') }),
+  requestBase.extend({ action: z.literal('project.list') }),
+  requestBase.extend({ action: z.literal('project.current') }),
+  requestBase.extend({ action: z.literal('project.get'), projectId: z.string().uuid() }),
+  requestBase.extend({ action: z.literal('project.create'), project: z.record(z.string(), z.unknown()) }),
+  requestBase.extend({ action: z.literal('project.update'), projectId: z.string().uuid(), project: z.record(z.string(), z.unknown()) }),
+  requestBase.extend({ action: z.literal('project.select'), projectId: z.string().uuid() }),
+  requestBase.extend({ action: z.literal('project.archive'), projectId: z.string().uuid() }),
   requestBase.extend({ action: z.literal('app.show') }),
   requestBase.extend({ action: z.literal('platform.open'), platform: platformSchema }),
   requestBase.extend({ action: z.literal('platform.inspect'), platform: platformSchema }),
@@ -76,6 +84,7 @@ export interface DesktopStatus {
   activePlatform: Platform | null;
   executingPlatform: Platform | null;
   windowState: 'visible' | 'minimized' | 'hidden';
+  currentProject: ProjectSummary | null;
   attentionRequired: {
     platform: Platform;
     code: 'LOGIN_REQUIRED' | 'VERIFICATION_REQUIRED' | 'RISK_CONTROL_REQUIRED';
@@ -83,6 +92,13 @@ export interface DesktopStatus {
     url: string;
   } | null;
   platforms: PlatformStatus[];
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  companyName: string;
+  updatedAt: string;
 }
 
 export type UpdatePhase = 'disabled' | 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'downloaded' | 'error';

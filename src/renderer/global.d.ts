@@ -1,10 +1,15 @@
 import type { BetaActivationResult, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from '../shared/protocol.js';
+import type { Project, ProjectInput } from '../main/project-store.js';
 
 declare global {
   interface Window {
     geoPublisher: {
       status(): Promise<DesktopStatus>;
       openPlatform(platform: Platform): Promise<PlatformStatus>;
+      projects(): Promise<{ projects: Project[]; currentProject: Project | null }>;
+      createProject(input: ProjectInput): Promise<{ project: Project; currentProject: Project }>;
+      updateProject(id: string, input: Partial<ProjectInput>): Promise<{ project: Project }>;
+      selectProject(id: string): Promise<{ project: Project; currentProject: Project }>;
       workBuddyStatus(): Promise<WorkBuddyIntegrationStatus>;
       connectWorkBuddy(): Promise<WorkBuddyIntegrationStatus & { prompt: string }>;
       updateStatus(): Promise<UpdateStatus>;

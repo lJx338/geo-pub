@@ -36,8 +36,8 @@ export function updateChannelForVersion(version: string): 'stable' | 'beta' {
   return process.env.GEO_UPDATE_CHANNEL === 'beta' || /-(?:alpha|beta)\./.test(version) ? 'beta' : 'stable';
 }
 
-export function updaterManifestChannel(channel: 'stable' | 'beta'): 'beta' | null {
-  return channel === 'beta' ? 'beta' : null;
+export function updaterManifestChannel(channel: 'stable' | 'beta'): 'latest' | 'beta' {
+  return channel === 'beta' ? 'beta' : 'latest';
 }
 
 export class UpdateManager {
@@ -98,7 +98,7 @@ export class UpdateManager {
       await this.verifyBetaInvite(normalized);
       writeFileSync(this.channelPath, JSON.stringify({ channel: 'beta', codeHash: createHash('sha256').update(normalized).digest('hex'), activatedAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
       this.channel = 'beta';
-      this.patch({ channel: 'beta' });
+      this.resetChannelStatus('beta', 'Beta 灰度已开启，正在检查更新');
       if (app.isPackaged) this.configureFeed();
       const update = this.getStatus();
       void this.check();
@@ -112,9 +112,11 @@ export class UpdateManager {
     try {
       writeFileSync(this.channelPath, JSON.stringify({ channel: 'stable', deactivatedAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
       this.channel = 'stable';
-      this.patch({ channel: 'stable' });
+      this.resetChannelStatus('stable', '已恢复正式版更新通道，正在检查更新');
       if (app.isPackaged) this.configureFeed();
-      return { accepted: true, enabled: false, message: '已恢复正式版更新通道', update: this.getStatus() };
+      const update = this.getStatus();
+      if (app.isPackaged) void this.check();
+      return { accepted: true, enabled: false, message: '已恢复正式版更新通道，正在检查正式版更新', update };
     } catch (error) {
       return { accepted: false, enabled: this.channel === 'beta', message: `保存更新通道失败：${error instanceof Error ? error.message : String(error)}`, update: this.getStatus() };
     }
@@ -166,9 +168,20 @@ export class UpdateManager {
 
   private configureFeed(): void {
     autoUpdater.allowPrerelease = this.channel === 'beta';
-    const manifestChannel = updaterManifestChannel(this.channel);
-    autoUpdater.channel = manifestChannel ?? null;
+    autoUpdater.channel = updaterManifestChannel(this.channel);
     autoUpdater.setFeedURL({ provider: 'generic', url: updateFeedUrl(this.channel)! });
+  }
+
+  private resetChannelStatus(channel: 'stable' | 'beta', message: string): void {
+    this.patch({
+      channel,
+      phase: app.isPackaged ? 'checking' : 'disabled',
+      availableVersion: null,
+      progress: null,
+      message,
+      checkedAt: null,
+      canRestart: false,
+    });
   }
 
   private async verifyBetaInvite(code: string): Promise<void> {

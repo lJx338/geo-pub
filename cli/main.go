@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.4.1"
+var version = "0.5.0-beta.1"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
@@ -39,6 +39,8 @@ type controlRequest struct {
 	Token          string          `json:"token"`
 	Action         string          `json:"action"`
 	Platform       string          `json:"platform,omitempty"`
+	ProjectID      string          `json:"projectId,omitempty"`
+	Project        json.RawMessage `json:"project,omitempty"`
 	Document       articleDocument `json:"document,omitempty"`
 	CoverPath      string          `json:"coverPath"`
 	ConfirmPublish bool            `json:"confirmPublish,omitempty"`
@@ -56,6 +58,7 @@ type controlResponse struct {
 }
 
 type fillInput struct {
+	ProjectID      string          `json:"projectId"`
 	Platform       string          `json:"platform"`
 	Document       articleDocument `json:"document"`
 	CoverPath      string          `json:"coverPath"`
@@ -141,6 +144,10 @@ func run(args []string) (string, json.RawMessage, error) {
 		return command, response, err
 	case "status":
 		return call(command, controlRequest{Action: "status"}, defaultTimeout)
+	case "projects":
+		return call(command, controlRequest{Action: "project.list"}, defaultTimeout)
+	case "project":
+		return runProject(args)
 	case "show":
 		return call(command, controlRequest{Action: "app.show"}, defaultTimeout)
 	case "open", "login", "inspect":
@@ -165,7 +172,7 @@ func run(args []string) (string, json.RawMessage, error) {
 		}
 		if command == "validate" {
 			return command, mustJSON(map[string]any{
-				"valid": true, "platform": input.Platform, "title": input.Document.Title,
+				"valid": true, "projectId": input.ProjectID, "platform": input.Platform, "title": input.Document.Title,
 				"titleLength": len([]rune(input.Document.Title)), "blockCount": len(input.Document.Blocks),
 				"coverRequired": input.Platform == "baijia" || input.Platform == "toutiao" || input.Platform == "netease",
 			}), nil
@@ -178,13 +185,83 @@ func run(args []string) (string, json.RawMessage, error) {
 			action = "draft.publish"
 		}
 		return call(command, controlRequest{
-			Action: action, Platform: input.Platform, Document: input.Document,
+			Action: action, ProjectID: input.ProjectID, Platform: input.Platform, Document: input.Document,
 			CoverPath: input.CoverPath, ConfirmPublish: input.ConfirmPublish,
 		}, publishTimeout)
 	case "doctor":
 		return command, doctor(), nil
 	default:
-		return command, nil, usageError("命令：discover | doctor | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
+		return command, nil, usageError("命令：discover | doctor | projects | project current|select|create|update|archive | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
+	}
+}
+
+func runProject(args []string) (string, json.RawMessage, error) {
+	if len(args) == 0 {
+		return "project", nil, usageError("项目命令：project current | select <projectId> | create/import --input <file.json> | update <projectId> --input <file.json> | export <projectId> --output <file.json> | archive <projectId>")
+	}
+	subcommand := args[0]
+	switch subcommand {
+	case "current":
+		_, data, err := call("project.current", controlRequest{Action: "project.current"}, defaultTimeout)
+		return "project.current", data, err
+	case "select", "archive":
+		if len(args) != 2 {
+			return "project." + subcommand, nil, usageError("请提供 projectId")
+		}
+		action := "project.select"
+		if subcommand == "archive" {
+			action = "project.archive"
+		}
+		_, data, err := call("project."+subcommand, controlRequest{Action: action, ProjectID: args[1]}, defaultTimeout)
+		return "project." + subcommand, data, err
+	case "export":
+		if len(args) != 4 || args[2] != "--output" {
+			return "project.export", nil, usageError("请使用 project export <projectId> --output <file.json>")
+		}
+		_, data, err := call("project.get", controlRequest{Action: "project.get", ProjectID: args[1]}, defaultTimeout)
+		if err != nil {
+			return "project.export", nil, err
+		}
+		var result struct {
+			Project json.RawMessage `json:"project"`
+		}
+		if json.Unmarshal(data, &result) != nil || len(result.Project) == 0 || string(result.Project) == "null" {
+			return "project.export", nil, &cliError{code: "PROJECT_NOT_FOUND", message: "找不到客户项目", suggestion: "运行 geo-publisher projects 查看可用项目"}
+		}
+		if err := os.WriteFile(args[3], append(result.Project, '\n'), 0o600); err != nil {
+			return "project.export", nil, &cliError{code: "PROJECT_EXPORT_FAILED", message: err.Error(), suggestion: "检查导出目录是否可写"}
+		}
+		return "project.export", mustJSON(map[string]any{"output": args[3]}), nil
+	case "create", "import", "update":
+		projectID, remaining := "", args[1:]
+		if subcommand == "update" {
+			if len(remaining) < 1 {
+				return "project.update", nil, usageError("请提供 projectId")
+			}
+			projectID, remaining = remaining[0], remaining[1:]
+		}
+		flags := flag.NewFlagSet("project "+subcommand, flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		inputPath := flags.String("input", "", "JSON project file")
+		if err := flags.Parse(remaining); err != nil || *inputPath == "" {
+			return "project." + subcommand, nil, usageError("请使用 --input <项目资料.json>")
+		}
+		data, err := os.ReadFile(*inputPath)
+		if err != nil {
+			return "project." + subcommand, nil, &cliError{code: "INPUT_READ_FAILED", message: err.Error(), suggestion: "检查项目资料 JSON 文件路径"}
+		}
+		var project map[string]any
+		if err := json.Unmarshal(data, &project); err != nil {
+			return "project." + subcommand, nil, usageError("项目资料必须是有效 JSON 对象")
+		}
+		action := "project.create"
+		if subcommand == "update" {
+			action = "project.update"
+		}
+		_, result, err := call("project."+subcommand, controlRequest{Action: action, ProjectID: projectID, Project: data}, defaultTimeout)
+		return "project." + subcommand, result, err
+	default:
+		return "project", nil, usageError("项目命令：project current | select <projectId> | create/import --input <file.json> | update <projectId> --input <file.json> | export <projectId> --output <file.json> | archive <projectId>")
 	}
 }
 
@@ -287,7 +364,7 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 platform、document、coverPath（可选）、confirmPublish（publish 必须为 true）"}
+		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 projectId、platform、document、coverPath（可选）、confirmPublish（publish 必须为 true）"}
 	}
 	if input.Document.Tags == nil {
 		input.Document.Tags = []string{}
@@ -296,6 +373,9 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 }
 
 func validateFill(input fillInput) error {
+	if len(strings.TrimSpace(input.ProjectID)) != 36 {
+		return usageError("projectId 必须来自 geo-publisher project current")
+	}
 	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && input.Platform != "netease" {
 		return usageError("当前 alpha 版 fill 支持 platform=toutiao、baijia、zhihu、penguin、sohu 或 netease")
 	}
@@ -501,6 +581,7 @@ func instructions() json.RawMessage {
 		"version": version,
 		"workflow": []string{
 			"Run doctor and start the desktop when it is not connected",
+			"Run project current and use its exact project.id for every article request",
 			"Run validate with the exact article JSON",
 			"Use fill for preview or any request that says not to publish",
 			"Use publish only after explicit user authorization and confirmPublish=true",
@@ -519,11 +600,14 @@ func commandSchema() json.RawMessage {
 	return mustJSON(map[string]any{
 		"commands": map[string]any{
 			"doctor":   map[string]any{"input": nil, "sideEffect": false},
+			"projects": map[string]any{"input": nil, "sideEffect": false},
+			"project":  map[string]any{"input": "project profile JSON for create, import, or update", "sideEffect": "manages the selected customer project"},
 			"validate": map[string]any{"input": "article", "sideEffect": false},
 			"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},
 			"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},
 		},
 		"article": map[string]any{
+			"projectId": "required UUID from geo-publisher project current; must match the project currently selected in GEO Publisher",
 			"platform": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
 			"document": map[string]any{
 				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64",

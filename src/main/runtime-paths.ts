@@ -17,8 +17,8 @@ export function authFilePath(): string {
   return join(dataDirectory(), 'control-token.json');
 }
 
-export function evidenceDirectory(): string {
-  return join(dataDirectory(), 'evidence');
+export function evidenceDirectory(projectId?: string): string {
+  return projectId ? join(dataDirectory(), 'projects', projectId, 'evidence') : join(dataDirectory(), 'evidence');
 }
 
 export function discoveryFilePath(): string {

@@ -68,6 +68,10 @@ export function platformRuntimeState(
   return created ? 'resident' : 'not_loaded';
 }
 
+export function projectPartitionName(projectId: string, platform: Platform): string {
+  return `persist:geo-publisher-${projectId}-${platform}`;
+}
+
 function originalErrorCode(error: unknown): string | null {
   const message = error instanceof Error ? error.message : String(error);
   return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] ?? null;
@@ -165,6 +169,7 @@ export class PlatformSessions {
   private operationTail: Promise<void> = Promise.resolve();
   private pendingOperations = 0;
   private uiOverlayOpen = false;
+  private projectId: string | null = null;
 
   constructor(
     private readonly window: BrowserWindow,
@@ -175,7 +180,26 @@ export class PlatformSessions {
     this.executionHost = new BackgroundExecutionHost();
   }
 
+  currentProjectId(): string | null { return this.projectId; }
+
+  async selectProject(projectId: string): Promise<void> {
+    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能切换客户项目');
+    if (this.projectId === projectId) return;
+    await this.closeBackground();
+    for (const managed of [...this.views.values()]) this.closeInteractiveView(managed);
+    this.projectId = projectId;
+    this.activePlatform = null;
+    this.attentionRequired = null;
+  }
+
+  ensureProject(projectId?: string): string {
+    if (!this.projectId) throw new Error('PROJECT_REQUIRED: 请先在 GEO Publisher 中新建并选择客户项目');
+    if (projectId && projectId !== this.projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新生成文章后再发布');
+    return this.projectId;
+  }
+
   async open(platform: Platform): Promise<PlatformStatus> {
+    this.ensureProject();
     if (this.isBusy()) {
       if (this.executingPlatform === platform && this.background) {
         this.showRunningPlatform(this.background);
@@ -220,6 +244,7 @@ export class PlatformSessions {
   }
 
   async fillDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
+    this.ensureProject();
     return await this.runExclusive(() => this.fillDraftInternal(platform, document, coverPath));
   }
 
@@ -257,6 +282,7 @@ export class PlatformSessions {
   }
 
   async publishDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
+    this.ensureProject();
     return await this.runExclusive(async () => {
       const fill = await this.fillDraftInternal(platform, document, coverPath);
       const managed = this.background || this.views.get(platform);
@@ -276,6 +302,7 @@ export class PlatformSessions {
   }
 
   async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storageEntryCount: number; attentionRequired: AttentionRequired | null }> {
+    this.ensureProject();
     return await this.runExclusive(() => this.inspectInternal(platform));
   }
 
@@ -318,6 +345,7 @@ export class PlatformSessions {
       activePlatform: this.activePlatform,
       executingPlatform: this.executingPlatform,
       windowState: this.window.isMinimized() ? 'minimized' : this.window.isVisible() ? 'visible' : 'hidden',
+      currentProject: null,
       attentionRequired: this.attentionRequired,
       platforms: PLATFORMS.map((platform) => this.platformStatus(platform)),
     };
@@ -329,7 +357,9 @@ export class PlatformSessions {
 
   async flushStorage(): Promise<void> {
     const managed = [...this.views.values(), ...(this.background ? [this.background] : [])];
-    await Promise.all(managed.flatMap(({ platform, partition }) => [partition.flushStorageData(), snapshotPlatformCookies(partition, platform)]));
+    const projectId = this.projectId;
+    if (!projectId) return;
+    await Promise.all(managed.flatMap(({ platform, partition }) => [partition.flushStorageData(), snapshotPlatformCookies(partition, projectId, platform)]));
   }
 
   dispose(): void {
@@ -337,10 +367,11 @@ export class PlatformSessions {
   }
 
   private async createView(platform: Platform, host: ViewHost): Promise<ManagedView> {
+    const projectId = this.ensureProject();
     const useMinimalBrowserEnvironment = platform === 'toutiao' || platform === 'netease';
     const view = new WebContentsView({
       webPreferences: {
-        partition: `persist:geo-publisher-${platform}`,
+        partition: projectPartitionName(projectId, platform),
         contextIsolation: false,
         sandbox: false,
         nodeIntegration: false,
@@ -351,10 +382,10 @@ export class PlatformSessions {
         preload: useMinimalBrowserEnvironment ? undefined : join(__dirname, '..', 'stealth-preload.cjs'),
       },
     });
-    const partition = session.fromPartition(`persist:geo-publisher-${platform}`);
+    const partition = session.fromPartition(projectPartitionName(projectId, platform));
     if (useMinimalBrowserEnvironment) setupStealthUserAgent(partition);
     else setupStealthSession(partition);
-    await restorePlatformCookies(partition, platform);
+    await restorePlatformCookies(partition, projectId, platform);
     const managed: ManagedView = { platform, view, partition, host, loading: false, lastUsedAt: Date.now() };
     view.webContents.setWindowOpenHandler(({ url }) => {
       if (!managed.loading && url !== managed.view.webContents.getURL()) void this.loadUrl(managed, url);
@@ -372,11 +403,11 @@ export class PlatformSessions {
       managed.loading = false;
       this.restoreManagedView(managed);
       void partition.flushStorageData();
-      void snapshotPlatformCookies(partition, platform).catch(() => undefined);
+      void snapshotPlatformCookies(partition, projectId, platform).catch(() => undefined);
     });
     partition.cookies.on('changed', () => {
       void partition.flushStorageData();
-      void snapshotPlatformCookies(partition, platform).catch(() => undefined);
+      void snapshotPlatformCookies(partition, projectId, platform).catch(() => undefined);
     });
     if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
     return managed;
@@ -467,7 +498,7 @@ export class PlatformSessions {
     this.background = null;
     this.executingPlatform = null;
     await managed.partition.flushStorageData();
-    await snapshotPlatformCookies(managed.partition, managed.platform).catch(() => undefined);
+    if (this.projectId) await snapshotPlatformCookies(managed.partition, this.projectId, managed.platform).catch(() => undefined);
     if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close({ waitForBeforeUnload: false });
   }
 
@@ -654,7 +685,7 @@ export class PlatformSessions {
   }
 
   private async captureEvidence(managed: ManagedView, stage: string): Promise<string | null> {
-    const directory = join(evidenceDirectory(), new Date().toISOString().slice(0, 10));
+    const directory = join(evidenceDirectory(this.projectId ?? undefined), new Date().toISOString().slice(0, 10));
     await mkdir(directory, { recursive: true });
     const path = join(directory, `${Date.now()}-${managed.platform}-${stage}.png`);
     let lastError: unknown;

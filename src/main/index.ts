@@ -7,6 +7,7 @@ import { installBundledCli } from './cli-installer.js';
 import { ControlServer } from './control-server.js';
 import { createDiscoveryRecord, writeDiscoveryRecord } from './discovery.js';
 import { PlatformSessions } from './platform-sessions.js';
+import { ProjectStore, type ProjectInput } from './project-store.js';
 import { dataDirectory } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
 import { UpdateManager } from './update-manager.js';
@@ -22,6 +23,8 @@ async function runDesktop(): Promise<void> {
   }
 
   await app.whenReady();
+  const projects = new ProjectStore();
+  await projects.load();
   const cliPath = await installBundledCli(packageJson.version).catch((error) => {
     console.error('Failed to install bundled CLI:', error);
     return null;
@@ -63,6 +66,7 @@ async function runDesktop(): Promise<void> {
   }, () => {
     if (!window.isDestroyed()) window.webContents.send('geo:status-changed', sessions.status());
   });
+  if (projects.current()) await sessions.selectProject(projects.current()!.id);
   const updateManager = new UpdateManager(packageJson.version, () => sessions.isBusy(), (status) => {
     if (status.phase === 'error') closingForUpdate = false;
     if (!window.isDestroyed()) window.webContents.send('geo:update-status-changed', status);
@@ -92,18 +96,42 @@ async function runDesktop(): Promise<void> {
     window.hide();
   });
 
+  const desktopStatus = () => ({ ...sessions.status(), cliPath, currentProject: projects.current() });
   const route = async (request: ControlRequest): Promise<unknown> => {
-    if (request.action === 'status') return { ...sessions.status(), cliPath };
+    if (request.action === 'status') return desktopStatus();
+    if (request.action === 'project.list') return { projects: projects.list(), currentProject: projects.current() };
+    if (request.action === 'project.current') return { project: projects.current() };
+    if (request.action === 'project.get') return { project: projects.get(request.projectId) };
+    if (request.action === 'project.create') {
+      const project = await projects.create(request.project as ProjectInput);
+      await sessions.selectProject(project.id);
+      return { project, currentProject: project };
+    }
+    if (request.action === 'project.update') return { project: await projects.update(request.projectId, request.project as Partial<ProjectInput>) };
+    if (request.action === 'project.select') {
+      const project = await projects.select(request.projectId);
+      await sessions.selectProject(project.id);
+      return { project, currentProject: project };
+    }
+    if (request.action === 'project.archive') {
+      if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能归档客户项目');
+      await projects.archive(request.projectId);
+      const current = projects.current();
+      if (current) await sessions.selectProject(current.id);
+      return { currentProject: current };
+    }
     if (request.action === 'app.show') {
       showWindow();
-      return { ...sessions.status(), cliPath };
+      return desktopStatus();
     }
     if (request.action === 'platform.open') return await sessions.open(request.platform);
     if (request.action === 'platform.inspect') return await sessions.inspect(request.platform);
     if (request.action === 'draft.fill') {
+      sessions.ensureProject(request.projectId);
       return await sessions.fillDraft(request.platform, request.document, request.coverPath);
     }
     if (request.action === 'draft.publish') {
+      sessions.ensureProject(request.projectId);
       return await sessions.publishDraft(request.platform, request.document, request.coverPath);
     }
     throw new Error('不支持的控制命令');
@@ -113,7 +141,20 @@ async function runDesktop(): Promise<void> {
   await controlServer.start();
   await writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPath, true));
 
-  ipcMain.handle('geo:status', () => ({ ...sessions.status(), cliPath }));
+  ipcMain.handle('geo:status', desktopStatus);
+  ipcMain.handle('geo:projects-list', () => ({ projects: projects.list(), currentProject: projects.current() }));
+  ipcMain.handle('geo:project-create', async (_event, input: ProjectInput) => {
+    if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能新建客户项目');
+    const project = await projects.create(input);
+    await sessions.selectProject(project.id);
+    return { project, currentProject: project };
+  });
+  ipcMain.handle('geo:project-update', async (_event, id: string, input: Partial<ProjectInput>) => ({ project: await projects.update(id, input) }));
+  ipcMain.handle('geo:project-select', async (_event, id: string) => {
+    const project = await projects.select(id);
+    await sessions.selectProject(project.id);
+    return { project, currentProject: project };
+  });
   ipcMain.handle('geo:open-platform', (_event, platform: Platform) => sessions.open(platform));
   ipcMain.handle('geo:workbuddy-status', () => workBuddyIntegrationStatus());
   ipcMain.handle('geo:workbuddy-connect', () => prepareWorkBuddyIntegration(true, cliPath));
