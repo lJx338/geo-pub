@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.5.0-beta.2"
+var version = "0.5.0-beta.3"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,

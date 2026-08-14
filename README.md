@@ -2,6 +2,10 @@
 
 GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器保存六个平台的登录状态，通过本地 Go CLI 接收 WorkBuddy 或其他 Agent 的发布任务，不依赖 MCP、Chrome 扩展、Native Host 或固定端口。
 
+## 许可证
+
+本项目采用 [GNU Affero General Public License v3.0 or later](LICENSE)（`AGPL-3.0-or-later`）。使用、修改或分发本项目时应遵守该许可证；若向用户提供基于本项目修改后的网络服务，也必须向这些用户提供对应的完整源代码。
+
 ## 用户流程
 
 1. 安装并打开 GEO Publisher；关闭主窗口后应用会驻留在系统托盘或 macOS 菜单栏。
