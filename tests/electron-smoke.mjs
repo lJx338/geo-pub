@@ -110,8 +110,30 @@ try {
     GEO_PUBLISHER_USER_DATA_DIR: isolatedUserDataDirectory,
     GEO_PUBLISHER_CONTROL_ENDPOINT: isolatedControlEndpoint,
   };
+  const runCli = async (args) => JSON.parse((await execFileAsync(cliPath, args, { env: cliEnv })).stdout);
   const runInspect = async () => JSON.parse((await execFileAsync(cliPath, ['inspect', 'baijia'], { env: cliEnv })).stdout);
   const runStatus = async () => JSON.parse((await execFileAsync(cliPath, ['status'], { env: cliEnv })).stdout);
+
+  // Archiving the final project through the CLI must also clear the in-memory
+  // browser session. Otherwise a stale project ID could still operate it.
+  const projectCurrent = await runCli(['project', 'current']);
+  const projectId = projectCurrent.data?.project?.id;
+  if (!projectId) throw new Error(`created project is not current: ${JSON.stringify(projectCurrent)}`);
+  const archived = await runCli(['project', 'archive', projectId]);
+  if (!archived.ok || archived.data?.currentProject !== null) throw new Error(`project archive did not clear current project: ${JSON.stringify(archived)}`);
+  try {
+    await runInspect();
+    throw new Error('inspect unexpectedly succeeded after archiving the final project');
+  } catch (error) {
+    if (!String(error.stderr || error.message).includes('PROJECT_REQUIRED')) throw error;
+  }
+  await window.locator('#project-switch').click();
+  await window.locator('#project-select').selectOption('');
+  await window.locator('#project-input-name').fill('恢复后的冒烟客户');
+  await window.locator('#project-company-name').fill('恢复后的冒烟公司');
+  await window.locator('#project-save').click();
+  await window.locator('#project-dialog').waitFor({ state: 'hidden' });
+
   const visibleBefore = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
   const visibleInspect = await runInspect();
   if (!visibleInspect.ok || visibleInspect.data?.runtimeState !== 'background') throw new Error(`visible background inspect failed: ${JSON.stringify(visibleInspect)}`);

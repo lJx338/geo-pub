@@ -22,7 +22,18 @@ env:
   GEO_UPDATE_PUBLIC_BASE: ${{ vars.TENCENT_COS_BASE_URL }}/geo-publisher/releases
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm version matches selected channel
+        env:
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+        run: |
+          node -e "const version=require('./package.json').version; const prerelease=/-[0-9A-Za-z.]+$/.test(version); const beta=/-beta\./.test(version); const channel=process.env.RELEASE_CHANNEL; if ((channel === 'beta' && !beta) || (channel === 'stable' && prerelease)) { throw new Error('版本 ' + version + ' 不能发布到 ' + channel + ' 通道'); }"
+
   windows:
+    needs: validate
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +59,7 @@ jobs:
       - run: node scripts/upload-release.mjs release/win-x64 win-x64 "${{ inputs.channel }}"
 
   mac:
+    needs: validate
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4

@@ -119,6 +119,7 @@ async function runDesktop(): Promise<void> {
       await projects.archive(request.projectId);
       const current = projects.current();
       if (current) await sessions.selectProject(current.id);
+      else await sessions.clearProject();
       return { currentProject: current };
     }
     if (request.action === 'app.show') {
