@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { BetaActivationResult, DataChangeEvent, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
 import type { Project, ProjectInput } from './main/project-store.js';
-import type { ContentInput, ContentItem, ContentKind } from './main/content-store.js';
+import type { ContentFilter, ContentInput, ContentItem, ContentKind } from './main/content-store.js';
 
 // 反检测：确保不暴露任何Electron相关的全局对象
 // 删除可能被注入的 process 和 require
@@ -24,8 +24,11 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),
   workspaceSnapshot: (): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[] }> => ipcRenderer.invoke('geo:workspace-snapshot'),
   dataRevision: (): Promise<number> => ipcRenderer.invoke('geo:data-revision'),
-  contentList: (projectId: string, kind?: ContentKind): Promise<{ items: ContentItem[] }> => ipcRenderer.invoke('geo:content-list', projectId, kind),
+  contentList: (projectId: string, kind?: ContentKind, filter?: ContentFilter): Promise<{ items: ContentItem[] }> => ipcRenderer.invoke('geo:content-list', projectId, kind, filter),
   contentSave: (projectId: string, input: ContentInput): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:content-save', projectId, input),
+  contentImportMaterial: (projectId: string, sourcePath: string, input?: Omit<ContentInput, 'kind'>): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:content-import-material', projectId, sourcePath, input),
+  contentChooseMaterial: (projectId: string): Promise<{ canceled: boolean; items: ContentItem[] }> => ipcRenderer.invoke('geo:content-choose-material', projectId),
+  topicVariant: (projectId: string, topicId: string, input: ContentInput): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:topic-variant', projectId, topicId, input),
   createProject: (input: ProjectInput): Promise<{ project: Project; currentProject: Project }> => ipcRenderer.invoke('geo:project-create', input),
   updateProject: (id: string, input: Partial<ProjectInput>): Promise<{ project: Project }> => ipcRenderer.invoke('geo:project-update', id, input),
   selectProject: (id: string): Promise<{ project: Project; currentProject: Project }> => ipcRenderer.invoke('geo:project-select', id),

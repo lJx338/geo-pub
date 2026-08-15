@@ -42,4 +42,15 @@ describe('control protocol', () => {
       id: '1', token: 'x'.repeat(32), action: 'draft.fill', platform: 'zhihu', document, coverPath: '',
     }).success).toBe(false);
   });
+
+  it('validates topic lifecycle commands', () => {
+    const base = { id: '1', token: 'x'.repeat(32), projectId, topicId: 'topic-a' };
+    expect(controlRequestSchema.safeParse({ ...base, action: 'topic.reserve', taskId: 'task-a' }).success).toBe(true);
+    expect(controlRequestSchema.safeParse({ ...base, action: 'topic.reserve' }).success).toBe(false);
+    expect(controlRequestSchema.safeParse({ ...base, action: 'topic.use', articleId: 'article-a', taskId: 'task-a' }).success).toBe(true);
+  });
+
+  it('accepts indexed content filters', () => {
+    expect(controlRequestSchema.safeParse({ id: '1', token: 'x'.repeat(32), action: 'content.list', projectId, kind: 'topic', filter: { status: 'approved', autoSelectable: true } }).success).toBe(true);
+  });
 });

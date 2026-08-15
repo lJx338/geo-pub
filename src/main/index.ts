@@ -9,7 +9,7 @@ import { ControlServer } from './control-server.js';
 import { createDiscoveryRecord, writeDiscoveryRecord } from './discovery.js';
 import { PlatformSessions } from './platform-sessions.js';
 import { ProjectStore, type ProjectInput } from './project-store.js';
-import { ContentStore, type ContentKind, type ContentInput } from './content-store.js';
+import { ContentStore, type ContentKind, type ContentInput, type ContentFilter } from './content-store.js';
 import { DataChangeTracker } from './data-change.js';
 import { dataDirectory } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
@@ -122,6 +122,12 @@ async function runDesktop(): Promise<void> {
     }
     return snapshot;
   };
+  const ensureCurrentContentProject = (projectId: string) => {
+    const project = projects.get(projectId);
+    if (!project) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
+    if (projects.current()?.id !== projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新读取当前项目后再操作内容');
+    return project;
+  };
   const route = async (request: ControlRequest): Promise<unknown> => {
     if (request.action === 'status') return desktopStatus();
     if (request.action === 'project.list') return { projects: projects.list(), currentProject: projects.current() };
@@ -154,12 +160,38 @@ async function runDesktop(): Promise<void> {
       return { currentProject: current };
     }
     if (request.action === 'content.list') {
-      projects.get(request.projectId) ?? (() => { throw new Error('PROJECT_NOT_FOUND: 找不到客户项目'); })();
-      return { items: await content.list(request.projectId, request.kind as ContentKind | undefined) };
+      ensureCurrentContentProject(request.projectId);
+      return { items: await content.list(request.projectId, request.kind as ContentKind | undefined, (request.filter || {}) as ContentFilter) };
     }
     if (request.action === 'content.save') {
-      projects.get(request.projectId) ?? (() => { throw new Error('PROJECT_NOT_FOUND: 找不到客户项目'); })();
+      ensureCurrentContentProject(request.projectId);
       const item = await content.save(request.projectId, request.item as ContentInput);
+      recordDataChange({ entity: 'content', action: 'saved', projectId: request.projectId, itemId: item.id, contentKind: item.kind, source: 'cli' });
+      return { item };
+    }
+    if (request.action === 'content.import-material') {
+      ensureCurrentContentProject(request.projectId);
+      const item = await content.importMaterial(request.projectId, request.sourcePath, (request.item || {}) as ContentInput);
+      recordDataChange({ entity: 'content', action: 'saved', projectId: request.projectId, itemId: item.id, contentKind: item.kind, source: 'cli' });
+      return { item };
+    }
+    if (request.action === 'topic.reserve') {
+      ensureCurrentContentProject(request.projectId);
+      return { item: await content.reserveTopic(request.projectId, request.topicId, request.taskId, request.ttlMs) };
+    }
+    if (request.action === 'topic.release') {
+      ensureCurrentContentProject(request.projectId);
+      return { item: await content.releaseTopic(request.projectId, request.topicId, request.taskId) };
+    }
+    if (request.action === 'topic.use') {
+      ensureCurrentContentProject(request.projectId);
+      const item = await content.markTopicUsed(request.projectId, request.topicId, request.articleId, request.taskId);
+      recordDataChange({ entity: 'content', action: 'saved', projectId: request.projectId, itemId: item.id, contentKind: item.kind, source: 'cli' });
+      return { item };
+    }
+    if (request.action === 'topic.variant') {
+      ensureCurrentContentProject(request.projectId);
+      const item = await content.createTopicVariant(request.projectId, request.topicId, request.item as ContentInput);
       recordDataChange({ entity: 'content', action: 'saved', projectId: request.projectId, itemId: item.id, contentKind: item.kind, source: 'cli' });
       return { item };
     }
@@ -188,9 +220,32 @@ async function runDesktop(): Promise<void> {
   ipcMain.handle('geo:projects-list', () => ({ projects: projects.list(), currentProject: projects.current() }));
   ipcMain.handle('geo:workspace-snapshot', workspaceSnapshot);
   ipcMain.handle('geo:data-revision', () => dataChanges.current());
-  ipcMain.handle('geo:content-list', async (_event, projectId: string, kind?: ContentKind) => ({ items: await content.list(projectId, kind) }));
+  ipcMain.handle('geo:content-list', async (_event, projectId: string, kind?: ContentKind, filter?: ContentFilter) => ({ items: await content.list(projectId, kind, filter) }));
   ipcMain.handle('geo:content-save', async (_event, projectId: string, input: ContentInput) => {
     const item = await content.save(projectId, input);
+    recordDataChange({ entity: 'content', action: 'saved', projectId, itemId: item.id, contentKind: item.kind, source: 'desktop' });
+    return { item };
+  });
+  ipcMain.handle('geo:content-import-material', async (_event, projectId: string, sourcePath: string, input?: Omit<ContentInput, 'kind'>) => {
+    if (!projects.get(projectId)) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
+    const item = await content.importMaterial(projectId, sourcePath, input);
+    recordDataChange({ entity: 'content', action: 'saved', projectId, itemId: item.id, contentKind: item.kind, source: 'desktop' });
+    return { item };
+  });
+  ipcMain.handle('geo:content-choose-material', async (_event, projectId: string) => {
+    if (!projects.get(projectId)) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
+    const selection = await dialog.showOpenDialog(window, { title: '添加客户素材', properties: ['openFile', 'multiSelections'], filters: [{ name: '常用素材', extensions: ['txt', 'md', 'pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'webp'] }, { name: '所有文件', extensions: ['*'] }] });
+    if (selection.canceled) return { canceled: true, items: [] };
+    const imported = [];
+    for (const sourcePath of selection.filePaths) {
+      const item = await content.importMaterial(projectId, sourcePath);
+      imported.push(item); recordDataChange({ entity: 'content', action: 'saved', projectId, itemId: item.id, contentKind: item.kind, source: 'desktop' });
+    }
+    return { canceled: false, items: imported };
+  });
+  ipcMain.handle('geo:topic-variant', async (_event, projectId: string, topicId: string, input: ContentInput) => {
+    if (!projects.get(projectId)) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
+    const item = await content.createTopicVariant(projectId, topicId, input);
     recordDataChange({ entity: 'content', action: 'saved', projectId, itemId: item.id, contentKind: item.kind, source: 'desktop' });
     return { item };
   });

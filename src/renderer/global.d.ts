@@ -1,6 +1,6 @@
 import type { BetaActivationResult, DataChangeEvent, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from '../shared/protocol.js';
 import type { Project, ProjectInput } from '../main/project-store.js';
-import type { ContentInput, ContentItem, ContentKind } from '../main/content-store.js';
+import type { ContentFilter, ContentInput, ContentItem, ContentKind } from '../main/content-store.js';
 
 declare global {
   interface Window {
@@ -10,8 +10,11 @@ declare global {
       projects(): Promise<{ projects: Project[]; currentProject: Project | null }>;
       workspaceSnapshot(): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[] }>;
       dataRevision(): Promise<number>;
-      contentList(projectId: string, kind?: ContentKind): Promise<{ items: ContentItem[] }>;
+      contentList(projectId: string, kind?: ContentKind, filter?: ContentFilter): Promise<{ items: ContentItem[] }>;
       contentSave(projectId: string, input: ContentInput): Promise<{ item: ContentItem }>;
+      contentImportMaterial(projectId: string, sourcePath: string, input?: Omit<ContentInput, 'kind'>): Promise<{ item: ContentItem }>;
+      contentChooseMaterial(projectId: string): Promise<{ canceled: boolean; items: ContentItem[] }>;
+      topicVariant(projectId: string, topicId: string, input: ContentInput): Promise<{ item: ContentItem }>;
       createProject(input: ProjectInput): Promise<{ project: Project; currentProject: Project }>;
       updateProject(id: string, input: Partial<ProjectInput>): Promise<{ project: Project }>;
       selectProject(id: string): Promise<{ project: Project; currentProject: Project }>;

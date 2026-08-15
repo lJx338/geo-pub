@@ -12,11 +12,12 @@ Generate content inside the current GEO Publisher project. Never depend on the r
 1. Resolve the production CLI through the sibling `geo-publisher` Skill.
 2. Run `doctor`, `instructions --json`, and `project current`.
 3. Record the exact current project and read its company facts.
-4. Run `content list <projectId> material`, `content list <projectId> topic`, and `content list <projectId> article`.
-5. Select one approved topic. If the user supplied a title directly, create and save a topic through the sibling `geo-topic-planner` rules before writing.
-6. Read [output-contract.md](references/output-contract.md) completely.
-7. Read exactly one matching structure file from `references/structures/`.
-8. Read [platform-rules.md](references/platform-rules.md) for every requested platform.
+4. Run `content list <projectId> material --query <keywords>`, `content list <projectId> topic --auto-selectable`, and `content list <projectId> article`. Do not scan every original material file. An already-used evergreen topic is not directly selectable: ask the topic planner to create an approved variant first.
+5. Select one available topic. If the user supplied a title directly, create and save a topic through the sibling `geo-topic-planner` rules before writing.
+6. Generate a unique task ID and run `topic reserve <projectId> --topic <topicId> --task <taskId>` before writing. If reservation fails, select another available topic; never bypass the reservation.
+7. Read [output-contract.md](references/output-contract.md) completely.
+8. Read exactly one matching structure file from `references/structures/`.
+9. Read [platform-rules.md](references/platform-rules.md) for every requested platform.
 
 Re-run `project current` before every save. Stop with `PROJECT_CONTEXT_CHANGED` if it differs from the article's project ID.
 
@@ -75,6 +76,8 @@ Save one content item per platform. A project-level preview may use an empty pla
 ```
 
 Write it through `content save <projectId> --input <article.json>`. Do not mark an article `ready` until the output contract passes. Updating an existing article must retain its content item `id`, so a revision replaces the package instead of creating an ambiguous duplicate.
+
+After every requested article package has been saved successfully, run `topic use <projectId> --topic <topicId> --article <articleId> --task <taskId>`. If generation or saving fails, run `topic release <projectId> --topic <topicId> --task <taskId>` before reporting the error. Never leave a topic reserved after a failed task.
 
 ## Boundaries
 

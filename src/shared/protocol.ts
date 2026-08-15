@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { articleDocumentSchema } from './article-document.js';
-import type { ContentKind } from '../main/content-store.js';
+import type { ContentFilter, ContentKind } from '../main/content-store.js';
 
 export const PLATFORMS = ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease'] as const;
 export type Platform = (typeof PLATFORMS)[number];
@@ -37,8 +37,13 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
   requestBase.extend({ action: z.literal('project.update'), projectId: z.string().uuid(), project: z.record(z.string(), z.unknown()) }),
   requestBase.extend({ action: z.literal('project.select'), projectId: z.string().uuid() }),
   requestBase.extend({ action: z.literal('project.archive'), projectId: z.string().uuid() }),
-  requestBase.extend({ action: z.literal('content.list'), projectId: z.string().uuid(), kind: z.string().optional() }),
+  requestBase.extend({ action: z.literal('content.list'), projectId: z.string().uuid(), kind: z.string().optional(), filter: z.record(z.string(), z.unknown()).optional() }),
   requestBase.extend({ action: z.literal('content.save'), projectId: z.string().uuid(), item: z.record(z.string(), z.unknown()) }),
+  requestBase.extend({ action: z.literal('content.import-material'), projectId: z.string().uuid(), sourcePath: z.string().min(1), item: z.record(z.string(), z.unknown()).optional() }),
+  requestBase.extend({ action: z.literal('topic.reserve'), projectId: z.string().uuid(), topicId: z.string().min(1), taskId: z.string().min(1), ttlMs: z.number().int().positive().max(3600000).optional() }),
+  requestBase.extend({ action: z.literal('topic.release'), projectId: z.string().uuid(), topicId: z.string().min(1), taskId: z.string().min(1).optional() }),
+  requestBase.extend({ action: z.literal('topic.use'), projectId: z.string().uuid(), topicId: z.string().min(1), articleId: z.string().min(1), taskId: z.string().min(1).optional() }),
+  requestBase.extend({ action: z.literal('topic.variant'), projectId: z.string().uuid(), topicId: z.string().min(1), item: z.record(z.string(), z.unknown()) }),
   requestBase.extend({ action: z.literal('app.show') }),
   requestBase.extend({ action: z.literal('platform.open'), platform: platformSchema }),
   requestBase.extend({ action: z.literal('platform.inspect'), platform: platformSchema }),
@@ -56,6 +61,18 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
 export type ControlRequest = z.infer<typeof controlRequestSchema>;
 
 export type { ContentKind };
+export type { ContentFilter };
+
+export interface DataChangeEvent {
+  revision: number;
+  entity: 'project' | 'content';
+  action: 'created' | 'updated' | 'selected' | 'archived' | 'imported' | 'saved';
+  projectId: string;
+  itemId?: string;
+  contentKind?: ContentKind;
+  source: 'cli' | 'desktop';
+  changedAt: string;
+}
 
 export interface ControlResponse {
   id: string;
@@ -124,6 +141,8 @@ export interface WorkBuddyIntegrationStatus {
   prepared: boolean;
   skillPath: string | null;
   profileSkillPath: string | null;
+  topicSkillPath: string | null;
+  articleSkillPath: string | null;
   promptPath: string | null;
 }
 

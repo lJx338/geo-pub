@@ -44,6 +44,12 @@ type controlRequest struct {
 	Project        json.RawMessage `json:"project,omitempty"`
 	Item           json.RawMessage `json:"item,omitempty"`
 	Kind           string          `json:"kind,omitempty"`
+	Filter         map[string]any  `json:"filter,omitempty"`
+	TopicID        string          `json:"topicId,omitempty"`
+	TaskID         string          `json:"taskId,omitempty"`
+	ArticleID      string          `json:"articleId,omitempty"`
+	SourcePath     string          `json:"sourcePath,omitempty"`
+	TTLMS          int             `json:"ttlMs,omitempty"`
 	Document       articleDocument `json:"document,omitempty"`
 	CoverPath      string          `json:"coverPath"`
 	ConfirmPublish bool            `json:"confirmPublish,omitempty"`
@@ -203,11 +209,13 @@ func run(args []string) (string, json.RawMessage, error) {
 		return command, doctor(), nil
 	case "content":
 		return runContent(args)
+	case "topic":
+		return runTopic(args)
 	default:
 		if !isDevelopmentBuild() {
-			return command, nil, usageError("命令：doctor | project current|create|update | content list|save | instructions --json | schema --json | start | status | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
+			return command, nil, usageError("命令：doctor | project current|create|update | content list|save|import-material | topic reserve|release|use|variant | instructions --json | schema --json | start | status | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
 		}
-		return command, nil, usageError("命令：discover | doctor | projects | project current|select|create|update|archive | content list|save | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
+		return command, nil, usageError("命令：discover | doctor | projects | project current|select|create|update|archive | content list|save|import-material | topic reserve|release|use|variant | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
 	}
 }
 
@@ -215,6 +223,7 @@ var productionCommands = map[string]bool{
 	"version": true, "--version": true, "-v": true,
 	"doctor": true, "instructions": true, "schema": true,
 	"start": true, "status": true, "project": true, "content": true,
+	"topic": true,
 	"login": true, "inspect": true, "validate": true, "fill": true, "publish": true,
 }
 
@@ -229,17 +238,45 @@ func cliProfile() string {
 
 func runContent(args []string) (string, json.RawMessage, error) {
 	if len(args) == 0 {
-		return "content", nil, usageError("内容命令：content list <projectId> [kind] | content save <projectId> --input <file.json>")
+		return "content", nil, usageError("内容命令：content list <projectId> [kind] [--status <status>] [--category <category>] [--query <text>] | content save <projectId> --input <file.json> | content import-material <projectId> --path <file>")
 	}
 	subcommand := args[0]
 	switch subcommand {
 	case "list":
-		if len(args) < 2 || len(args) > 3 {
-			return "content.list", nil, usageError("请使用 content list <projectId> [material|topic|article|distribution]")
+		if len(args) < 2 {
+			return "content.list", nil, usageError("请提供 projectId")
 		}
 		request := controlRequest{Action: "content.list", ProjectID: args[1]}
-		if len(args) == 3 {
-			request.Kind = args[2]
+		remaining := args[2:]
+		if len(remaining) > 0 && !strings.HasPrefix(remaining[0], "--") {
+			request.Kind = remaining[0]
+			remaining = remaining[1:]
+		}
+		flags := flag.NewFlagSet("content list", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		status := flags.String("status", "", "status")
+		category := flags.String("category", "", "category")
+		reusePolicy := flags.String("reuse-policy", "", "reuse policy")
+		query := flags.String("query", "", "query")
+		auto := flags.Bool("auto-selectable", false, "auto selectable")
+		if err := flags.Parse(remaining); err != nil {
+			return "content.list", nil, usageError("筛选参数格式错误")
+		}
+		request.Filter = map[string]any{}
+		if *status != "" {
+			request.Filter["status"] = *status
+		}
+		if *category != "" {
+			request.Filter["category"] = *category
+		}
+		if *reusePolicy != "" {
+			request.Filter["reusePolicy"] = *reusePolicy
+		}
+		if *query != "" {
+			request.Filter["query"] = *query
+		}
+		if *auto {
+			request.Filter["autoSelectable"] = true
 		}
 		return call("content.list", request, defaultTimeout)
 	case "save":
@@ -261,8 +298,69 @@ func runContent(args []string) (string, json.RawMessage, error) {
 			return "content.save", nil, usageError("内容必须是有效 JSON 对象")
 		}
 		return call("content.save", controlRequest{Action: "content.save", ProjectID: args[1], Item: data}, defaultTimeout)
+	case "import-material":
+		if len(args) < 2 {
+			return "content.import-material", nil, usageError("请提供 projectId")
+		}
+		flags := flag.NewFlagSet("content import-material", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		path := flags.String("path", "", "source path")
+		title := flags.String("title", "", "title")
+		category := flags.String("category", "", "category")
+		if err := flags.Parse(args[2:]); err != nil || *path == "" {
+			return "content.import-material", nil, usageError("请使用 --path <素材文件>")
+		}
+		item := map[string]any{}
+		if *title != "" {
+			item["title"] = *title
+		}
+		if *category != "" {
+			item["category"] = *category
+		}
+		return call("content.import-material", controlRequest{Action: "content.import-material", ProjectID: args[1], SourcePath: *path, Item: mustJSON(item)}, defaultTimeout)
 	default:
-		return "content", nil, usageError("内容命令：content list <projectId> [material|topic|article|distribution] | content save <projectId> --input <file.json>")
+		return "content", nil, usageError("内容命令：content list <projectId> [kind] [--status <status>] | content save <projectId> --input <file.json> | content import-material <projectId> --path <file>")
+	}
+}
+
+func runTopic(args []string) (string, json.RawMessage, error) {
+	if len(args) < 2 {
+		return "topic", nil, usageError("选题命令：topic reserve|release|use|variant <projectId> ...")
+	}
+	subcommand, projectID := args[0], args[1]
+	flags := flag.NewFlagSet("topic "+subcommand, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	topicID := flags.String("topic", "", "topic id")
+	taskID := flags.String("task", "", "task id")
+	articleID := flags.String("article", "", "article id")
+	inputPath := flags.String("input", "", "topic JSON")
+	if err := flags.Parse(args[2:]); err != nil || *topicID == "" {
+		return "topic." + subcommand, nil, usageError("请使用 --topic <topicId>")
+	}
+	switch subcommand {
+	case "reserve":
+		if *taskID == "" {
+			return "topic.reserve", nil, usageError("请使用 --task <taskId>")
+		}
+		return call("topic.reserve", controlRequest{Action: "topic.reserve", ProjectID: projectID, TopicID: *topicID, TaskID: *taskID}, defaultTimeout)
+	case "release":
+		return call("topic.release", controlRequest{Action: "topic.release", ProjectID: projectID, TopicID: *topicID, TaskID: *taskID}, defaultTimeout)
+	case "use":
+		if *articleID == "" {
+			return "topic.use", nil, usageError("请使用 --article <articleId>")
+		}
+		return call("topic.use", controlRequest{Action: "topic.use", ProjectID: projectID, TopicID: *topicID, ArticleID: *articleID, TaskID: *taskID}, defaultTimeout)
+	case "variant":
+		if *inputPath == "" {
+			return "topic.variant", nil, usageError("请使用 --input <topic.json>")
+		}
+		data, err := os.ReadFile(*inputPath)
+		if err != nil {
+			return "topic.variant", nil, &cliError{code: "INPUT_READ_FAILED", message: err.Error(), suggestion: "检查选题 JSON 文件路径"}
+		}
+		return call("topic.variant", controlRequest{Action: "topic.variant", ProjectID: projectID, TopicID: *topicID, Item: data}, defaultTimeout)
+	default:
+		return "topic", nil, usageError("选题命令：topic reserve|release|use|variant <projectId> --topic <topicId> ...")
 	}
 }
 
@@ -697,6 +795,10 @@ func instructions() json.RawMessage {
 			"Use publish only after explicit user authorization and confirmPublish=true",
 			"Process platforms serially and preserve every structured result",
 			"Never republish automatically when status=result_uncertain; reconcile first",
+			"Before generating an article, list topics with auto-selectable=true and reserve exactly one topic with a unique task id",
+			"After saving an article call topic use; if generation fails call topic release; used topics remain searchable but are not automatically selected unless evergreen",
+			"For a long-running subject create a topic variant instead of reusing the same title or body",
+			"Search material summaries and facts through content list filters; do not scan the whole local content database",
 		},
 		"platformOrder": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
 		"platformNames": map[string]string{
@@ -710,7 +812,8 @@ func commandSchema() json.RawMessage {
 	commands := map[string]any{
 		"doctor":   map[string]any{"input": nil, "sideEffect": false},
 		"project":  map[string]any{"input": "project create JSON with confirmCreate=true, or project update JSON", "sideEffect": "creates and selects a customer project after explicit confirmation, or updates only the current project"},
-		"content":  map[string]any{"input": "content item JSON", "sideEffect": "reads or saves content for the current customer project"},
+		"content":  map[string]any{"input": "content item JSON, filters, or a material file path", "sideEffect": "reads, saves, or imports content for the current customer project"},
+		"topic":    map[string]any{"input": "topic id plus task/article id or a variant JSON", "sideEffect": "reserves, releases, records use of, or creates a topic variant"},
 		"validate": map[string]any{"input": "article", "sideEffect": false},
 		"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},
 		"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},

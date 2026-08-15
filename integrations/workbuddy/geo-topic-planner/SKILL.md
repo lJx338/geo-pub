@@ -13,7 +13,7 @@ Use GEO Publisher Desktop as the only source of truth. Never create a separate w
 2. Run `doctor`, `instructions --json`, and `project current`.
 3. Stop and ask the user to select or create a customer project if no current project exists.
 4. Record the exact `project.id`. Use it for every content command in this task.
-5. Run `content list <projectId> material`, `content list <projectId> topic`, and `content list <projectId> article` before generating topics.
+5. Run `content list <projectId> material`, `content list <projectId> topic`, and `content list <projectId> article` before generating topics. Use `--query` to retrieve relevant indexed material instead of repeatedly loading every source file.
 6. Read [topic-rules.md](references/topic-rules.md) completely before generating or revising topics.
 
 Re-run `project current` immediately before saving. If the project changed, stop with `PROJECT_CONTEXT_CHANGED`; never save the old customer's topics into the new project.
@@ -50,6 +50,7 @@ Save each accepted topic separately with:
   "kind": "topic",
   "title": "客户会直接提出的单一问题",
   "status": "approved",
+  "reusePolicy": "standard",
   "payload": {
     "topicVersion": 1,
     "questionSource": "真实原话或推导依据",
@@ -67,6 +68,13 @@ Save each accepted topic separately with:
 ```
 
 Write the JSON to a temporary file and run `geo-publisher content save <projectId> --input <topic.json>`. Delete temporary files after use. Report the saved count and titles only after every CLI write succeeds.
+
+## Reuse a subject safely
+
+- A normal topic remains in history after article generation but is excluded from automatic selection.
+- If the user wants to keep writing about the same subject, find it with `content list <projectId> topic --reuse-policy evergreen` and create a linked angle variant with `topic variant <projectId> --topic <parentTopicId> --input <topic.json>`.
+- Every variant must change the single customer question, title, scenario or decision angle. Never copy the original title or body.
+- Use `reusePolicy: "evergreen"` only for a subject the user explicitly wants to develop continuously. Do not mark every generated topic evergreen.
 
 ## Boundaries
 
