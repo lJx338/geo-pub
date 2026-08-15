@@ -1,0 +1,4 @@
+interface:
+  display_name: "GEO 文章创作"
+  short_description: "根据当前客户项目与选题生成适合六个平台的结构化 GEO 文章包"
+  default_prompt: "使用 $geo-article-writer 根据当前客户项目和选题生成并保存平台文章包。"

@@ -13,6 +13,8 @@ Run `geo-publisher project current` before generating an article, filling a draf
 
 When the user wants to create, complete, extract, polish, or update customer information, load and follow the sibling `geo-customer-profile` Skill. That Skill owns the short collection workflow and confirmation rules; this Skill owns CLI resolution and publishing behavior.
 
+When the user asks for intent words, customer questions, a topic pool, or weekly topic planning, load the sibling `geo-topic-planner` Skill. When the user asks to write, revise, or quality-check an article, load the sibling `geo-article-writer` Skill. Those Skills own content creation; this Skill remains the only owner of platform login, validation, filling, publishing, and reconciliation.
+
 - Never infer, cache, or substitute a customer project from another WorkBuddy task.
 - Include the exact returned `project.id` as `projectId` in every `validate`, `fill`, and `publish` input.
 - If no current project exists and the customer wants WorkBuddy to create one, collect the company profile interactively. Show the proposed project name and a concise profile summary, obtain explicit confirmation, then write a JSON file with `confirmCreate: true` and run `geo-publisher project create --input <file.json>`. Never create a project before that confirmation.

@@ -115,3 +115,5 @@ Run `project current` again and verify the values. Never use an ID cached from a
 ## Completion
 
 Report the saved project name and the important non-empty fields. Clearly list optional information that remains empty, but do not force the user to complete it before generating content. Do not claim completion unless the CLI write and the final `project current` verification both succeed.
+
+After completion, use the sibling `geo-topic-planner` Skill when the user wants topic ideas, and the sibling `geo-article-writer` Skill when the user wants an article. Do not generate or publish content inside this profile Skill.

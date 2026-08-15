@@ -1,0 +1,4 @@
+interface:
+  display_name: "GEO 选题规划"
+  short_description: "读取当前客户资料并生成具体、去重、可直接写作的 GEO 选题池"
+  default_prompt: "使用 $geo-topic-planner 读取当前客户项目，生成具体且不重复的 GEO 选题并保存到内容中心。"

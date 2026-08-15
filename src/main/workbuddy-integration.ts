@@ -4,6 +4,8 @@ import { app, clipboard, shell } from 'electron';
 import type { WorkBuddyIntegrationStatus } from '../shared/protocol.js';
 import { cliExecutablePath, integrationsDirectory } from './runtime-paths.js';
 
+const WORKBUDDY_SKILLS = ['geo-publisher', 'geo-customer-profile', 'geo-topic-planner', 'geo-article-writer'] as const;
+
 function sourceSkillPath(name = 'geo-publisher'): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'integrations', 'workbuddy', name)
@@ -28,6 +30,8 @@ export function buildWorkBuddyPrompt(options: {
   cliPath: string;
   skillPath: string;
   profileSkillPath: string;
+  topicSkillPath: string;
+  articleSkillPath: string;
   platform?: NodeJS.Platform;
   arch?: string;
 }): string {
@@ -37,20 +41,24 @@ export function buildWorkBuddyPrompt(options: {
     ? `& '${options.cliPath.replaceAll("'", "''")}'`
     : `'${options.cliPath.replaceAll("'", `'\\''`)}'`;
   return [
-    '请安装并启用本机 GEO Publisher 的两个 Skill。',
+    '请从下面四个独立目录安装并启用本机 GEO Publisher 的四个 Skill；不要把它们合并成一个 Skill。',
     '以下路径由当前安装自动生成，仅适用于这台电脑；不要替换成其他电脑的路径：',
     `GEO Publisher 安装位置：${options.appPath}`,
-    `Skill 目录：${options.skillPath}`,
-    `客户资料 Skill 目录：${options.profileSkillPath}`,
+    `发布与基础连接 Skill（geo-publisher）：${options.skillPath}`,
+    `客户资料 Skill（geo-customer-profile）：${options.profileSkillPath}`,
+    `选题规划 Skill（geo-topic-planner）：${options.topicSkillPath}`,
+    `文章创作 Skill（geo-article-writer）：${options.articleSkillPath}`,
     `CLI 位置：${options.cliPath}`,
     `CLI 调用前缀：${quotedCli}`,
     `系统与架构：${platform} / ${arch}`,
     '只允许使用上述 production CLI；不要查找或调用 geo-publisher-dev、.dev-cli 或开发诊断命令。',
     'CLI 路径可能包含空格。执行时必须把完整路径作为一个可执行文件参数；Windows PowerShell 必须保留开头的 & 和引号。',
-    '先完整读取两个 Skill 目录中的 SKILL.md，然后运行 CLI 的 doctor 和 instructions --json。',
+    '安装时分别完整读取四个目录中的 SKILL.md，并保留每个目录内的 agents 与 references；以后按用户意图调用对应 Skill。',
+    '用户要求收集或修改公司资料时调用 geo-customer-profile；要求意图词、选题或选题池时调用 geo-topic-planner；要求生成或修改文章时调用 geo-article-writer；要求登录、填充、发布或对账时调用 geo-publisher。',
+    '每个任务先按 geo-publisher 运行 production CLI 的 doctor、instructions --json 和 project current，不要使用其他任务缓存的客户项目。',
     '客户资料、素材、选题、文章包和分发记录都必须保存在 GEO Publisher 当前客户项目中；不要创建或要求客户维护单独工作空间。',
     '如果客户要求创建项目，先交互式收集资料并展示摘要；只有客户明确确认后，才按 Skill 调用 production CLI 的 project create。',
-    '以后百家号、头条号、知乎、企鹅号、搜狐号、网易号的填充与发布都按该 Skill 执行。',
+    '百家号、头条号、知乎、企鹅号、搜狐号、网易号的填充与发布只按 geo-publisher Skill 执行；选题和文章 Skill 不得直接控制平台页面。',
     '应用更新或更换安装位置后，重新点击 GEO Publisher 的“连接 WorkBuddy”，以刷新本机路径和 Skill。',
   ].join('\n');
 }
@@ -62,45 +70,46 @@ function currentApplicationPath(): string {
 }
 
 export async function workBuddyIntegrationStatus(): Promise<WorkBuddyIntegrationStatus> {
-  const source = sourceSkillPath();
-  const profileSource = sourceSkillPath('geo-customer-profile');
-  const target = preparedSkillPath();
-  const profileTarget = preparedSkillPath('geo-customer-profile');
+  const sources = Object.fromEntries(WORKBUDDY_SKILLS.map((name) => [name, sourceSkillPath(name)])) as Record<typeof WORKBUDDY_SKILLS[number], string>;
+  const targets = Object.fromEntries(WORKBUDDY_SKILLS.map((name) => [name, preparedSkillPath(name)])) as Record<typeof WORKBUDDY_SKILLS[number], string>;
   const promptPath = join(integrationsDirectory(), 'workbuddy', 'CONNECT-WORKBUDDY.txt');
-  const sourceAvailable = await exists(join(source, 'SKILL.md'));
-  const profileSourceAvailable = await exists(join(profileSource, 'SKILL.md'));
-  const targetPrepared = await exists(join(target, 'SKILL.md'));
-  const profileTargetPrepared = await exists(join(profileTarget, 'SKILL.md'));
+  const sourceStates = await Promise.all(WORKBUDDY_SKILLS.map((name) => exists(join(sources[name], 'SKILL.md'))));
+  const targetStates = await Promise.all(WORKBUDDY_SKILLS.map((name) => exists(join(targets[name], 'SKILL.md'))));
+  const targetPrepared = Object.fromEntries(WORKBUDDY_SKILLS.map((name, index) => [name, targetStates[index]])) as Record<typeof WORKBUDDY_SKILLS[number], boolean>;
   return {
-    available: sourceAvailable && profileSourceAvailable,
-    prepared: targetPrepared && profileTargetPrepared,
-    skillPath: targetPrepared ? target : null,
-    profileSkillPath: profileTargetPrepared ? profileTarget : null,
+    available: sourceStates.every(Boolean),
+    prepared: targetStates.every(Boolean),
+    skillPath: targetPrepared['geo-publisher'] ? targets['geo-publisher'] : null,
+    profileSkillPath: targetPrepared['geo-customer-profile'] ? targets['geo-customer-profile'] : null,
+    topicSkillPath: targetPrepared['geo-topic-planner'] ? targets['geo-topic-planner'] : null,
+    articleSkillPath: targetPrepared['geo-article-writer'] ? targets['geo-article-writer'] : null,
     promptPath: await exists(promptPath) ? promptPath : null,
   };
 }
 
 export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCliPath: string | null = null): Promise<WorkBuddyIntegrationStatus & { prompt: string }> {
-  const source = sourceSkillPath();
-  const profileSource = sourceSkillPath('geo-customer-profile');
-  if (!(await exists(join(source, 'SKILL.md'))) || !(await exists(join(profileSource, 'SKILL.md')))) {
-    throw new Error('安装包中缺少 GEO Publisher 或客户资料收集 Skill');
+  const sources = Object.fromEntries(WORKBUDDY_SKILLS.map((name) => [name, sourceSkillPath(name)])) as Record<typeof WORKBUDDY_SKILLS[number], string>;
+  const targets = Object.fromEntries(WORKBUDDY_SKILLS.map((name) => [name, preparedSkillPath(name)])) as Record<typeof WORKBUDDY_SKILLS[number], string>;
+  const missing = [] as string[];
+  for (const name of WORKBUDDY_SKILLS) {
+    if (!(await exists(join(sources[name], 'SKILL.md')))) missing.push(name);
   }
+  if (missing.length > 0) throw new Error(`安装包中缺少 WorkBuddy Skill：${missing.join('、')}`);
 
-  const target = preparedSkillPath();
-  const profileTarget = preparedSkillPath('geo-customer-profile');
   const directory = join(integrationsDirectory(), 'workbuddy');
   await mkdir(directory, { recursive: true });
-  await rm(target, { recursive: true, force: true });
-  await rm(profileTarget, { recursive: true, force: true });
-  await cp(source, target, { recursive: true });
-  await cp(profileSource, profileTarget, { recursive: true });
+  for (const name of WORKBUDDY_SKILLS) {
+    await rm(targets[name], { recursive: true, force: true });
+    await cp(sources[name], targets[name], { recursive: true });
+  }
 
   const prompt = buildWorkBuddyPrompt({
     appPath: currentApplicationPath(),
     cliPath: activeCliPath || cliExecutablePath(),
-    skillPath: target,
-    profileSkillPath: profileTarget,
+    skillPath: targets['geo-publisher'],
+    profileSkillPath: targets['geo-customer-profile'],
+    topicSkillPath: targets['geo-topic-planner'],
+    articleSkillPath: targets['geo-article-writer'],
   });
   const promptPath = join(directory, 'CONNECT-WORKBUDDY.txt');
   await writeFile(promptPath, `${prompt}\n`, { encoding: 'utf8', mode: 0o600 });

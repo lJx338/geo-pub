@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
-import type { ControlRequest, Platform } from '../shared/protocol.js';
+import type { ControlRequest, DataChangeEvent, Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
 import { installBundledCli } from './cli-installer.js';
 import { ControlServer } from './control-server.js';
@@ -10,6 +10,7 @@ import { createDiscoveryRecord, writeDiscoveryRecord } from './discovery.js';
 import { PlatformSessions } from './platform-sessions.js';
 import { ProjectStore, type ProjectInput } from './project-store.js';
 import { ContentStore, type ContentKind, type ContentInput } from './content-store.js';
+import { DataChangeTracker } from './data-change.js';
 import { dataDirectory } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
 import { UpdateManager } from './update-manager.js';
@@ -28,6 +29,7 @@ async function runDesktop(): Promise<void> {
   const projects = new ProjectStore();
   await projects.load();
   const content = new ContentStore();
+  const dataChanges = new DataChangeTracker();
   const cliPath = await installBundledCli(packageJson.version).catch((error) => {
     console.error('Failed to install bundled CLI:', error);
     return null;
@@ -100,6 +102,26 @@ async function runDesktop(): Promise<void> {
   });
 
   const desktopStatus = () => ({ ...sessions.status(), cliPath, currentProject: projects.current() });
+  const recordDataChange = (change: Omit<DataChangeEvent, 'revision' | 'changedAt'>) => {
+    const event = dataChanges.record(change);
+    if (!window.isDestroyed()) window.webContents.send('geo:data-changed', event);
+    return event;
+  };
+  const workspaceSnapshot = async () => {
+    let snapshot = { revision: dataChanges.current(), projects: projects.list(), currentProject: projects.current(), items: [] as Awaited<ReturnType<ContentStore['list']>> };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const revision = dataChanges.current();
+      const currentProject = projects.current();
+      snapshot = {
+        revision,
+        projects: projects.list(),
+        currentProject,
+        items: currentProject ? await content.list(currentProject.id) : [],
+      };
+      if (dataChanges.current() === revision) break;
+    }
+    return snapshot;
+  };
   const route = async (request: ControlRequest): Promise<unknown> => {
     if (request.action === 'status') return desktopStatus();
     if (request.action === 'project.list') return { projects: projects.list(), currentProject: projects.current() };
@@ -108,12 +130,18 @@ async function runDesktop(): Promise<void> {
     if (request.action === 'project.create') {
       const project = await projects.create(request.project as ProjectInput);
       await sessions.selectProject(project.id);
+      recordDataChange({ entity: 'project', action: 'created', projectId: project.id, source: 'cli' });
       return { project, currentProject: project };
     }
-    if (request.action === 'project.update') return { project: await projects.update(request.projectId, request.project as Partial<ProjectInput>) };
+    if (request.action === 'project.update') {
+      const project = await projects.update(request.projectId, request.project as Partial<ProjectInput>);
+      recordDataChange({ entity: 'project', action: 'updated', projectId: project.id, source: 'cli' });
+      return { project };
+    }
     if (request.action === 'project.select') {
       const project = await projects.select(request.projectId);
       await sessions.selectProject(project.id);
+      recordDataChange({ entity: 'project', action: 'selected', projectId: project.id, source: 'cli' });
       return { project, currentProject: project };
     }
     if (request.action === 'project.archive') {
@@ -122,6 +150,7 @@ async function runDesktop(): Promise<void> {
       const current = projects.current();
       if (current) await sessions.selectProject(current.id);
       else await sessions.clearProject();
+      recordDataChange({ entity: 'project', action: 'archived', projectId: request.projectId, source: 'cli' });
       return { currentProject: current };
     }
     if (request.action === 'content.list') {
@@ -130,7 +159,9 @@ async function runDesktop(): Promise<void> {
     }
     if (request.action === 'content.save') {
       projects.get(request.projectId) ?? (() => { throw new Error('PROJECT_NOT_FOUND: 找不到客户项目'); })();
-      return { item: await content.save(request.projectId, request.item as ContentInput) };
+      const item = await content.save(request.projectId, request.item as ContentInput);
+      recordDataChange({ entity: 'content', action: 'saved', projectId: request.projectId, itemId: item.id, contentKind: item.kind, source: 'cli' });
+      return { item };
     }
     if (request.action === 'app.show') {
       showWindow();
@@ -155,18 +186,30 @@ async function runDesktop(): Promise<void> {
 
   ipcMain.handle('geo:status', desktopStatus);
   ipcMain.handle('geo:projects-list', () => ({ projects: projects.list(), currentProject: projects.current() }));
+  ipcMain.handle('geo:workspace-snapshot', workspaceSnapshot);
+  ipcMain.handle('geo:data-revision', () => dataChanges.current());
   ipcMain.handle('geo:content-list', async (_event, projectId: string, kind?: ContentKind) => ({ items: await content.list(projectId, kind) }));
-  ipcMain.handle('geo:content-save', async (_event, projectId: string, input: ContentInput) => ({ item: await content.save(projectId, input) }));
+  ipcMain.handle('geo:content-save', async (_event, projectId: string, input: ContentInput) => {
+    const item = await content.save(projectId, input);
+    recordDataChange({ entity: 'content', action: 'saved', projectId, itemId: item.id, contentKind: item.kind, source: 'desktop' });
+    return { item };
+  });
   ipcMain.handle('geo:project-create', async (_event, input: ProjectInput) => {
     if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能新建客户项目');
     const project = await projects.create(input);
     await sessions.selectProject(project.id);
+    recordDataChange({ entity: 'project', action: 'created', projectId: project.id, source: 'desktop' });
     return { project, currentProject: project };
   });
-  ipcMain.handle('geo:project-update', async (_event, id: string, input: Partial<ProjectInput>) => ({ project: await projects.update(id, input) }));
+  ipcMain.handle('geo:project-update', async (_event, id: string, input: Partial<ProjectInput>) => {
+    const project = await projects.update(id, input);
+    recordDataChange({ entity: 'project', action: 'updated', projectId: project.id, source: 'desktop' });
+    return { project };
+  });
   ipcMain.handle('geo:project-select', async (_event, id: string) => {
     const project = await projects.select(id);
     await sessions.selectProject(project.id);
+    recordDataChange({ entity: 'project', action: 'selected', projectId: project.id, source: 'desktop' });
     return { project, currentProject: project };
   });
   ipcMain.handle('geo:project-archive', async (_event, id: string) => {
@@ -175,6 +218,7 @@ async function runDesktop(): Promise<void> {
     const current = projects.current();
     if (current) await sessions.selectProject(current.id);
     else await sessions.clearProject();
+    recordDataChange({ entity: 'project', action: 'archived', projectId: id, source: 'desktop' });
     return { projects: projects.list(), currentProject: current };
   });
   ipcMain.handle('geo:project-export', async (_event, id: string) => {
@@ -205,6 +249,7 @@ async function runDesktop(): Promise<void> {
     }
     const project = await projects.import(profile);
     await sessions.selectProject(project.id);
+    recordDataChange({ entity: 'project', action: 'imported', projectId: project.id, source: 'desktop' });
     return { canceled: false, project, currentProject: project };
   });
   ipcMain.handle('geo:open-platform', (_event, platform: Platform) => sessions.open(platform));

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { BetaActivationResult, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
+import type { BetaActivationResult, DataChangeEvent, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
 import type { Project, ProjectInput } from './main/project-store.js';
 import type { ContentInput, ContentItem, ContentKind } from './main/content-store.js';
 
@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   status: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:status'),
   openPlatform: (platform: Platform): Promise<PlatformStatus> => ipcRenderer.invoke('geo:open-platform', platform),
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),
+  workspaceSnapshot: (): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[] }> => ipcRenderer.invoke('geo:workspace-snapshot'),
+  dataRevision: (): Promise<number> => ipcRenderer.invoke('geo:data-revision'),
   contentList: (projectId: string, kind?: ContentKind): Promise<{ items: ContentItem[] }> => ipcRenderer.invoke('geo:content-list', projectId, kind),
   contentSave: (projectId: string, input: ContentInput): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:content-save', projectId, input),
   createProject: (input: ProjectInput): Promise<{ project: Project; currentProject: Project }> => ipcRenderer.invoke('geo:project-create', input),
@@ -56,5 +58,10 @@ contextBridge.exposeInMainWorld('geoPublisher', {
     const handler = (_event: Electron.IpcRendererEvent, status: DesktopStatus) => listener(status);
     ipcRenderer.on('geo:status-changed', handler);
     return () => ipcRenderer.removeListener('geo:status-changed', handler);
+  },
+  onDataChanged: (listener: (change: DataChangeEvent) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, change: DataChangeEvent) => listener(change);
+    ipcRenderer.on('geo:data-changed', handler);
+    return () => ipcRenderer.removeListener('geo:data-changed', handler);
   },
 });
