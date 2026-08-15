@@ -19,8 +19,9 @@ try {
   const window = await app.firstWindow();
   await window.waitForLoadState('domcontentloaded');
   if ((await window.title()) !== 'GEO Publisher') throw new Error('unexpected window title');
-  const initial = await window.evaluate(() => ({ width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, navigation: document.querySelectorAll('.nav-item').length, connect: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height) }));
-  if (initial.navigation < 6 || !initial.connect || initial.scrollWidth > initial.width) throw new Error(`new UI layout is incomplete: ${JSON.stringify(initial)}`);
+  await window.evaluate(() => document.fonts.ready);
+  const initial = await window.evaluate(() => ({ width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, navigation: document.querySelectorAll('.nav-item').length, connect: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height), fontLoaded: document.fonts.check('16px "Noto Sans SC Variable"') }));
+  if (initial.navigation < 6 || !initial.connect || initial.scrollWidth > initial.width || !initial.fontLoaded) throw new Error(`new UI layout is incomplete: ${JSON.stringify(initial)}`);
   await window.locator('#connect-workbuddy').click();
   await window.locator('#workbuddy-state', { hasText: '已连接' }).waitFor();
   const prompt = await readFile(join(userDataDirectory, 'integrations', 'workbuddy', 'CONNECT-WORKBUDDY.txt'), 'utf8');

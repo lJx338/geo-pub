@@ -23,6 +23,7 @@
     "verify": "npm run typecheck && npm test && npm run build && npm run build:cli"
   },
   "dependencies": {
+    "@fontsource-variable/noto-sans-sc": "^5.3.0",
     "electron-updater": "^6.8.9",
     "lucide-react": "^1.31.0",
     "react": "^19.2.8",

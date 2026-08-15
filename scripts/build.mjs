@@ -49,3 +49,6 @@ await Promise.all([
 await cp('src/renderer/index.html', 'dist/renderer/index.html');
 await cp('src/renderer/styles.css', 'dist/renderer/styles.css');
 await cp('build/icon.png', 'dist/renderer/logo.png');
+await cp('node_modules/@fontsource-variable/noto-sans-sc/index.css', 'dist/renderer/noto-sans-sc.css');
+await cp('node_modules/@fontsource-variable/noto-sans-sc/files', 'dist/renderer/files', { recursive: true });
+await cp('node_modules/@fontsource-variable/noto-sans-sc/LICENSE', 'dist/renderer/Noto-Sans-SC-LICENSE.txt');
