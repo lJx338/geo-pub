@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { BetaActivationResult, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
+import type { BetaActivationResult, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
 import type { Project, ProjectInput } from './main/project-store.js';
+import type { ContentInput, ContentItem, ContentKind } from './main/content-store.js';
 
 // 反检测：确保不暴露任何Electron相关的全局对象
 // 删除可能被注入的 process 和 require
@@ -21,6 +22,8 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   status: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:status'),
   openPlatform: (platform: Platform): Promise<PlatformStatus> => ipcRenderer.invoke('geo:open-platform', platform),
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),
+  contentList: (projectId: string, kind?: ContentKind): Promise<{ items: ContentItem[] }> => ipcRenderer.invoke('geo:content-list', projectId, kind),
+  contentSave: (projectId: string, input: ContentInput): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:content-save', projectId, input),
   createProject: (input: ProjectInput): Promise<{ project: Project; currentProject: Project }> => ipcRenderer.invoke('geo:project-create', input),
   updateProject: (id: string, input: Partial<ProjectInput>): Promise<{ project: Project }> => ipcRenderer.invoke('geo:project-update', id, input),
   selectProject: (id: string): Promise<{ project: Project; currentProject: Project }> => ipcRenderer.invoke('geo:project-select', id),
@@ -37,6 +40,8 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   deactivateBeta: (): Promise<BetaActivationResult> => ipcRenderer.invoke('geo:beta-deactivate'),
   launchAtLoginStatus: (): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:launch-at-login-status'),
   setLaunchAtLogin: (enabled: boolean): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:set-launch-at-login', enabled),
+  copyDiagnostics: (): Promise<{ copied: true; diagnostic: DiagnosticSummary }> => ipcRenderer.invoke('geo:copy-diagnostics'),
+  openDataDirectory: (): Promise<{ opened: boolean; error?: string }> => ipcRenderer.invoke('geo:open-data-directory'),
   onUpdateStatus: (listener: (status: UpdateStatus) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
     ipcRenderer.on('geo:update-status-changed', handler);

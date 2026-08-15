@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,6 +65,9 @@ func TestReadPublishConfirmation(t *testing.T) {
 }
 
 func TestInstructionsAndSchemaAreAvailableOffline(t *testing.T) {
+	previous := buildMode
+	buildMode = "development"
+	t.Cleanup(func() { buildMode = previous })
 	for _, command := range []string{"instructions", "schema", "discover"} {
 		name, output, err := run([]string{command, "--json"})
 		if err != nil {
@@ -72,6 +76,56 @@ func TestInstructionsAndSchemaAreAvailableOffline(t *testing.T) {
 		if name != command || len(output) == 0 {
 			t.Fatalf("unexpected %s output: %s", command, output)
 		}
+	}
+}
+
+func TestProductionProfileDoesNotExposeDeveloperCommands(t *testing.T) {
+	previous := buildMode
+	buildMode = "production"
+	t.Cleanup(func() { buildMode = previous })
+	for _, args := range [][]string{{"discover"}, {"platforms"}, {"show"}, {"open", "toutiao"}, {"projects"}, {"project", "export", "id", "--output", "out.json"}} {
+		_, _, err := run(args)
+		if err == nil {
+			t.Fatalf("production CLI exposed developer command %v", args)
+		}
+		var typed *cliError
+		if !errors.As(err, &typed) || typed.code != "COMMAND_NOT_EXPOSED" {
+			t.Fatalf("unexpected error for %v: %v", args, err)
+		}
+	}
+}
+
+func TestProductionProjectCreateRequiresExplicitConfirmation(t *testing.T) {
+	previous := buildMode
+	buildMode = "production"
+	t.Cleanup(func() { buildMode = previous })
+	directory := t.TempDir()
+	path := filepath.Join(directory, "project.json")
+	if err := os.WriteFile(path, []byte(`{"name":"客户 A","companyName":"公司 A"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := run([]string{"project", "create", "--input", path})
+	var typed *cliError
+	if !errors.As(err, &typed) || typed.code != "PROJECT_CREATE_CONFIRMATION_REQUIRED" {
+		t.Fatalf("expected confirmation error, got %v", err)
+	}
+}
+
+func TestProductionSchemaDocumentsConfirmedProjectCreation(t *testing.T) {
+	previous := buildMode
+	buildMode = "production"
+	t.Cleanup(func() { buildMode = previous })
+	if got := string(commandSchema()); !strings.Contains(got, "confirmCreate=true") {
+		t.Fatalf("production schema omitted project confirmation: %s", got)
+	}
+}
+
+func TestDevelopmentProfileIsExplicit(t *testing.T) {
+	previous := buildMode
+	buildMode = "development"
+	t.Cleanup(func() { buildMode = previous })
+	if got := string(instructions()); !strings.Contains(got, `"profile":"development"`) {
+		t.Fatalf("development instructions did not identify profile: %s", got)
 	}
 }
 

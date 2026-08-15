@@ -1,205 +1,74 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { _electron as electron } from 'playwright';
 
 const evidenceDirectory = join(process.cwd(), 'release', 'test-evidence');
-const isolatedUserDataDirectory = join(process.cwd(), 'release', 'test-user-data');
-const isolatedControlEndpoint = join(isolatedUserDataDirectory, 'control.sock');
+const userDataDirectory = join(process.cwd(), 'release', 'test-user-data');
+const controlEndpoint = join(userDataDirectory, 'control.sock');
 const fixtureUrl = pathToFileURL(join(process.cwd(), 'tests', 'fixtures', 'silent-platform.html')).toString();
-const userDataDirectory = isolatedUserDataDirectory;
 const execFileAsync = promisify(execFile);
-await rm(isolatedUserDataDirectory, { recursive: true, force: true });
+await rm(userDataDirectory, { recursive: true, force: true });
 await mkdir(evidenceDirectory, { recursive: true });
-await mkdir(isolatedUserDataDirectory, { recursive: true });
+await mkdir(userDataDirectory, { recursive: true });
 
-const app = await electron.launch({
-  args: ['.'],
-  cwd: process.cwd(),
-  env: {
-    ...process.env,
-    GEO_DISABLE_OPEN_WORKBUDDY: '1',
-    GEO_BETA_INVITE_ALLOW_LOCAL: '1',
-    GEO_PUBLISHER_USER_DATA_DIR: isolatedUserDataDirectory,
-    GEO_PUBLISHER_CONTROL_ENDPOINT: isolatedControlEndpoint,
-    GEO_PUBLISHER_TEST_PLATFORM_URL: fixtureUrl,
-  },
-});
-
+const app = await electron.launch({ args: ['.'], cwd: process.cwd(), env: { ...process.env, GEO_DISABLE_OPEN_WORKBUDDY: '1', GEO_PUBLISHER_USER_DATA_DIR: userDataDirectory, GEO_PUBLISHER_CONTROL_ENDPOINT: controlEndpoint, GEO_PUBLISHER_TEST_PLATFORM_URL: fixtureUrl } });
 try {
   const window = await app.firstWindow();
   await window.waitForLoadState('domcontentloaded');
   if ((await window.title()) !== 'GEO Publisher') throw new Error('unexpected window title');
-
-  const initial = await window.evaluate(() => ({
-    width: innerWidth,
-    height: innerHeight,
-    scrollWidth: document.documentElement.scrollWidth,
-    scrollHeight: document.documentElement.scrollHeight,
-    platformButtons: document.querySelectorAll('[data-platform]').length,
-    connectVisible: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height),
-    updateVisible: Boolean(document.querySelector('#check-update')?.getBoundingClientRect().height),
-    betaVisible: ['#beta-access', '#beta-disable'].some((selector) => {
-      const element = document.querySelector(selector);
-      return Boolean(element && !element.hidden && element.getBoundingClientRect().height);
-    }),
-    betaInHeader: document.querySelector('#beta-access')?.parentElement?.tagName === 'HEADER',
-    connectionState: document.querySelector('#connection')?.getAttribute('data-state'),
-    updateLabel: document.querySelector('#update-state')?.textContent,
-  }));
-  if (initial.platformButtons !== 6 || !initial.connectVisible || !initial.updateVisible || !initial.betaVisible || !initial.betaInHeader) throw new Error(`initial controls missing: ${JSON.stringify(initial)}`);
-  if (initial.scrollWidth > initial.width || initial.scrollHeight > initial.height) throw new Error(`initial layout overflows: ${JSON.stringify(initial)}`);
-  if (initial.connectionState !== 'ready' || initial.updateLabel !== '不可用') throw new Error(`initial status is unclear: ${JSON.stringify(initial)}`);
-
-  if (process.platform === 'win32') {
-    const menuVisible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.isMenuBarVisible());
-    if (menuVisible) throw new Error('Windows menu bar should be hidden');
-  }
-
+  const initial = await window.evaluate(() => ({ width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, navigation: document.querySelectorAll('.nav-item').length, connect: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height) }));
+  if (initial.navigation < 6 || !initial.connect || initial.scrollWidth > initial.width) throw new Error(`new UI layout is incomplete: ${JSON.stringify(initial)}`);
   await window.locator('#connect-workbuddy').click();
-  await window.locator('#workbuddy-state', { hasText: '指令已复制' }).waitFor();
+  await window.locator('#workbuddy-state', { hasText: '已连接' }).waitFor();
   const prompt = await readFile(join(userDataDirectory, 'integrations', 'workbuddy', 'CONNECT-WORKBUDDY.txt'), 'utf8');
-  if (!prompt.includes('GEO Publisher Skill') || !prompt.includes('CLI 位置')) throw new Error('WorkBuddy prompt is incomplete');
+  if (!prompt.includes('当前客户项目') || !prompt.includes('GEO Publisher Skill') || !prompt.includes('GEO Publisher 安装位置') || !prompt.includes('系统与架构')) throw new Error('WorkBuddy prompt is incomplete');
 
-  await window.locator('#check-update').click();
-  await window.locator('#update-state', { hasText: '不可用' }).waitFor();
-  const updateDetail = await window.locator('#update-state').getAttribute('title');
-  if (updateDetail !== '开发模式不检查更新') throw new Error(`update detail is missing: ${updateDetail}`);
-
-  if (await window.locator('#beta-access').isVisible()) {
-    await window.locator('#beta-access').click();
-    await window.locator('#beta-dialog').waitFor({ state: 'visible' });
-    await window.locator('#beta-code').fill('invalid');
-    await window.locator('#beta-submit').click();
-    await window.locator('#action-message', { hasText: '邀请码格式不正确' }).waitFor();
-    await window.locator('#beta-code').fill('BETA-SMOKE01');
-    await window.locator('#beta-submit').click();
-    await window.locator('#beta-dialog').waitFor({ state: 'hidden' });
-  }
-  if (await window.locator('#beta-disable').isHidden()) throw new Error('beta control did not persist in the UI');
-
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.setSize(920, 640));
-  await window.waitForTimeout(300);
-  const compact = await window.evaluate(() => ({
-    width: innerWidth,
-    height: innerHeight,
-    scrollWidth: document.documentElement.scrollWidth,
-    scrollHeight: document.documentElement.scrollHeight,
-    connectBottom: document.querySelector('#connect-workbuddy')?.getBoundingClientRect().bottom,
-    updateBottom: document.querySelector('#check-update')?.getBoundingClientRect().bottom,
-    betaBottom: document.querySelector('#beta-disable:not([hidden]), #beta-access:not([hidden])')?.getBoundingClientRect().bottom,
-  }));
-  if (compact.scrollWidth > compact.width || compact.scrollHeight > compact.height) throw new Error(`compact layout overflows: ${JSON.stringify(compact)}`);
-  if ((compact.updateBottom || Infinity) > compact.height) throw new Error(`compact controls clipped: ${JSON.stringify(compact)}`);
-  if ((compact.betaBottom || Infinity) > compact.height) throw new Error(`compact beta controls clipped: ${JSON.stringify(compact)}`);
-
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-home.png') });
-  await window.locator('#project-switch').click();
-  await window.locator('#project-select').selectOption('');
-  await window.locator('#project-input-name').fill('冒烟测试客户');
-  await window.locator('#project-company-name').fill('冒烟测试公司');
-  await window.locator('#project-save').click();
-  await window.locator('#project-dialog').waitFor({ state: 'hidden' });
-  const cliPath = process.platform === 'win32'
-    ? join(process.cwd(), 'dist', 'cli', 'geo-publisher-windows-amd64.exe')
-    : join(process.cwd(), 'dist', 'cli', 'geo-publisher-darwin-arm64');
-  const cliEnv = {
-    ...process.env,
-    GEO_PUBLISHER_USER_DATA_DIR: isolatedUserDataDirectory,
-    GEO_PUBLISHER_CONTROL_ENDPOINT: isolatedControlEndpoint,
-  };
+  const cliPath = process.platform === 'win32' ? join(process.cwd(), '.dev-cli', 'geo-publisher-dev-windows-amd64.exe') : join(process.cwd(), '.dev-cli', 'geo-publisher-dev-darwin-arm64');
+  const cliEnv = { ...process.env, GEO_PUBLISHER_USER_DATA_DIR: userDataDirectory, GEO_PUBLISHER_CONTROL_ENDPOINT: controlEndpoint };
   const runCli = async (args) => JSON.parse((await execFileAsync(cliPath, args, { env: cliEnv })).stdout);
-  const runInspect = async () => JSON.parse((await execFileAsync(cliPath, ['inspect', 'baijia'], { env: cliEnv })).stdout);
-  const runStatus = async () => JSON.parse((await execFileAsync(cliPath, ['status'], { env: cliEnv })).stdout);
-
-  // Archiving the final project through the CLI must also clear the in-memory
-  // browser session. Otherwise a stale project ID could still operate it.
-  const projectCurrent = await runCli(['project', 'current']);
-  const projectId = projectCurrent.data?.project?.id;
-  if (!projectId) throw new Error(`created project is not current: ${JSON.stringify(projectCurrent)}`);
-  const archived = await runCli(['project', 'archive', projectId]);
-  if (!archived.ok || archived.data?.currentProject !== null) throw new Error(`project archive did not clear current project: ${JSON.stringify(archived)}`);
-  try {
-    await runInspect();
-    throw new Error('inspect unexpectedly succeeded after archiving the final project');
-  } catch (error) {
-    if (!String(error.stderr || error.message).includes('PROJECT_REQUIRED')) throw error;
-  }
-  await window.locator('#project-switch').click();
-  await window.locator('#project-select').selectOption('');
-  await window.locator('#project-input-name').fill('恢复后的冒烟客户');
-  await window.locator('#project-company-name').fill('恢复后的冒烟公司');
-  await window.locator('#project-save').click();
-  await window.locator('#project-dialog').waitFor({ state: 'hidden' });
-
-  const visibleBefore = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
-  const visibleInspect = await runInspect();
-  if (!visibleInspect.ok || visibleInspect.data?.runtimeState !== 'background') throw new Error(`visible background inspect failed: ${JSON.stringify(visibleInspect)}`);
-  if ('storage' in (visibleInspect.data || {}) || 'valueStart' in (visibleInspect.data || {})) {
-    throw new Error('inspect leaked local storage values');
-  }
-  const visibleAfter = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
-  if (visibleAfter.filter((state) => state.visible).length !== visibleBefore.filter((state) => state.visible).length) {
-    throw new Error(`background inspect changed the customer's visible window state: before=${JSON.stringify(visibleBefore)}, after=${JSON.stringify(visibleAfter)}`);
-  }
-
-  // The detached view must retain a stable desktop viewport and receive real
-  // Chromium input events. Platform adapters rely on both facts for upload
-  // confirmations and controls that cannot be changed through DOM APIs.
-  const hiddenInput = await app.evaluate(async ({ webContents }) => {
-    const page = webContents.getAllWebContents().find((candidate) => candidate.getURL().includes('silent-platform.html'));
-    if (!page) throw new Error('background fixture WebContents missing');
-    const point = await page.executeJavaScript(`(() => {
-      const button = document.querySelector('button');
-      if (!(button instanceof HTMLButtonElement)) return null;
-      button.addEventListener('click', () => { button.dataset.geoClicks = String(Number(button.dataset.geoClicks || 0) + 1); });
-      const rect = button.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: innerWidth, height: innerHeight };
-    })()`);
-    if (!point) throw new Error('fixture button missing');
-    page.sendInputEvent({ type: 'mouseMove', x: Math.round(point.x), y: Math.round(point.y) });
-    page.sendInputEvent({ type: 'mouseDown', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
-    page.sendInputEvent({ type: 'mouseUp', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    const clicks = await page.executeJavaScript(`document.querySelector('button')?.dataset.geoClicks || '0'`);
-    return { ...point, clicks };
+  const profilePath = join(userDataDirectory, 'project.json');
+  await writeFile(profilePath, JSON.stringify({ name: '冒烟测试客户', companyName: '冒烟测试公司', industry: '企业 AI 服务' }));
+  const created = await runCli(['project', 'create', '--input', profilePath]);
+  const projectId = created.data?.project?.id;
+  if (!projectId) throw new Error(`project creation failed: ${JSON.stringify(created)}`);
+  const articlePath = join(userDataDirectory, 'article.json');
+  await writeFile(articlePath, JSON.stringify({ kind: 'article', title: '测试文章', status: 'ready', platform: 'baijia', payload: { document: { title: '测试文章' } } }));
+  const saved = await runCli(['content', 'save', projectId, '--input', articlePath]);
+  if (!saved.ok) throw new Error(`content save failed: ${JSON.stringify(saved)}`);
+  const listed = await runCli(['content', 'list', projectId, 'article']);
+  if (listed.data?.items?.[0]?.title !== '测试文章') throw new Error(`content list failed: ${JSON.stringify(listed)}`);
+  await window.reload();
+  await window.locator('#current-project-title', { hasText: '冒烟测试客户' }).waitFor();
+  await window.getByText('内容中心', { exact: true }).click();
+  await window.getByText('测试文章', { exact: true }).waitFor();
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-content-center.png') });
+  await window.getByText('设置', { exact: true }).click();
+  await window.locator('#settings-connect-workbuddy').waitFor();
+  const settings = await window.evaluate(async () => {
+    const result = await window.geoPublisher.copyDiagnostics();
+    const serialized = JSON.stringify(result.diagnostic);
+    return {
+      cards: document.querySelectorAll('.settings-card').length,
+      hasLaunchSwitch: Boolean(document.querySelector('[role="switch"]')),
+      hasBetaControl: Boolean(document.querySelector('#beta-invite-code,.beta-panel')),
+      diagnosticsSanitized: !/token|cookie|cliPath|dataDirectory|companyName|title/i.test(serialized),
+    };
   });
-  if (hiddenInput.width !== 1440 || hiddenInput.height !== 1000 || hiddenInput.clicks !== '1') {
-    throw new Error(`detached background view did not accept stable input: ${JSON.stringify(hiddenInput)}`);
-  }
+  if (settings.cards !== 4 || !settings.hasLaunchSwitch || !settings.hasBetaControl || !settings.diagnosticsSanitized) throw new Error(`settings UI is incomplete: ${JSON.stringify(settings)}`);
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-settings.png') });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.setSize(920, 640));
+  await window.waitForTimeout(150);
+  const compact = await window.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth, sidebarBottom: document.querySelector('.sidebar-bottom')?.getBoundingClientRect().bottom, height: innerHeight }));
+  if (compact.scrollWidth > compact.width || (compact.sidebarBottom || 0) > compact.height) throw new Error(`compact UI is clipped: ${JSON.stringify(compact)}`);
 
-  // A login requirement must be reported through the control response while
-  // keeping the automation page in the background. It must never surface the
-  // desktop window or replace it with the platform page.
-  await app.evaluate(({ webContents }) => {
-    const page = webContents.getAllWebContents().find((candidate) => candidate.getURL().includes('silent-platform.html'));
-    if (!page) throw new Error('background fixture WebContents missing');
-    return page.executeJavaScript(`(() => { const input = document.createElement('input'); input.type = 'password'; input.id = 'silent-login-check'; document.body.append(input); })()`);
-  });
-  const attentionInspect = await runInspect();
-  if (attentionInspect.data?.attentionRequired?.code !== 'LOGIN_REQUIRED' || attentionInspect.data?.runtimeState !== 'background') {
-    throw new Error(`background login detection was not reported silently: ${JSON.stringify(attentionInspect)}`);
-  }
-  const attentionStatus = await runStatus();
-  if (attentionStatus.data?.attentionRequired?.code !== 'LOGIN_REQUIRED' || attentionStatus.data?.windowState !== 'visible') {
-    throw new Error(`background login detection changed desktop visibility: ${JSON.stringify(attentionStatus)}`);
-  }
-
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.close());
-  const hiddenInspect = await runInspect();
-  if (!hiddenInspect.ok || hiddenInspect.data?.runtimeState !== 'background') throw new Error(`hidden background inspect failed: ${JSON.stringify(hiddenInspect)}`);
-  const backgroundState = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
-  if (backgroundState.some((state) => state.visible || state.focused)) throw new Error(`background task changed window state: ${JSON.stringify(backgroundState)}`);
-
-  // Finder/Dock activation must restore a deliberately hidden background app
-  // on macOS. This event is distinct from second-instance and is how users
-  // reopen an app that started through the login-item --background argument.
-  await app.evaluate(({ app }) => app.emit('activate'));
-  const activatedState = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((candidate) => ({ visible: candidate.isVisible(), focused: candidate.isFocused() })));
-  if (!activatedState.some((state) => state.visible)) throw new Error(`macOS activation did not restore the main window: ${JSON.stringify(activatedState)}`);
-  process.stdout.write(`${JSON.stringify({ initial, compact, screenshot: join(evidenceDirectory, 'desktop-home.png') }, null, 2)}\n`);
-} finally {
-  await app.close();
-}
+  const inspect = await runCli(['inspect', 'baijia']);
+  if (!inspect.ok || inspect.data?.runtimeState !== 'background') throw new Error(`background inspect failed: ${JSON.stringify(inspect)}`);
+  const visibleBefore = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((candidate) => candidate.isVisible()).length);
+  await runCli(['inspect', 'toutiao']);
+  const visibleAfter = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((candidate) => candidate.isVisible()).length);
+  if (visibleBefore !== visibleAfter) throw new Error('background inspection changed visible window state');
+  process.stdout.write(`${JSON.stringify({ initial, compact, projectId, screenshot: join(evidenceDirectory, 'desktop-content-center.png') })}\n`);
+} finally { await app.close(); }

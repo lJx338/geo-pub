@@ -1,0 +1,4 @@
+interface:
+  display_name: "客户资料收集"
+  short_description: "分步解析和润色公司资料，提取关键信息并创建桌面端客户项目"
+  default_prompt: "Use $geo-customer-profile to organize my company information and create a GEO Publisher customer project."

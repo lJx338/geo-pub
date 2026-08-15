@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { articleDocumentSchema } from './article-document.js';
+import type { ContentKind } from '../main/content-store.js';
 
 export const PLATFORMS = ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease'] as const;
 export type Platform = (typeof PLATFORMS)[number];
@@ -36,6 +37,8 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
   requestBase.extend({ action: z.literal('project.update'), projectId: z.string().uuid(), project: z.record(z.string(), z.unknown()) }),
   requestBase.extend({ action: z.literal('project.select'), projectId: z.string().uuid() }),
   requestBase.extend({ action: z.literal('project.archive'), projectId: z.string().uuid() }),
+  requestBase.extend({ action: z.literal('content.list'), projectId: z.string().uuid(), kind: z.string().optional() }),
+  requestBase.extend({ action: z.literal('content.save'), projectId: z.string().uuid(), item: z.record(z.string(), z.unknown()) }),
   requestBase.extend({ action: z.literal('app.show') }),
   requestBase.extend({ action: z.literal('platform.open'), platform: platformSchema }),
   requestBase.extend({ action: z.literal('platform.inspect'), platform: platformSchema }),
@@ -51,6 +54,8 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
 ]);
 
 export type ControlRequest = z.infer<typeof controlRequestSchema>;
+
+export type { ContentKind };
 
 export interface ControlResponse {
   id: string;
@@ -118,12 +123,37 @@ export interface WorkBuddyIntegrationStatus {
   available: boolean;
   prepared: boolean;
   skillPath: string | null;
+  profileSkillPath: string | null;
   promptPath: string | null;
 }
 
 export interface LaunchAtLoginStatus {
   available: boolean;
   enabled: boolean;
+}
+
+export interface DiagnosticSummary {
+  generatedAt: string;
+  app: {
+    version: string;
+    platform: NodeJS.Platform;
+    arch: string;
+    packaged: boolean;
+  };
+  cli: {
+    installed: boolean;
+    profile: 'production';
+  };
+  publisher: {
+    ready: boolean;
+    busy: boolean;
+    executingPlatform: Platform | null;
+    projectSelected: boolean;
+    attentionCode: DesktopStatus['attentionRequired'] extends infer T
+      ? T extends { code: infer C } ? C : null
+      : null;
+  };
+  update: Pick<UpdateStatus, 'channel' | 'phase' | 'currentVersion' | 'availableVersion'>;
 }
 
 export interface BetaActivationResult {

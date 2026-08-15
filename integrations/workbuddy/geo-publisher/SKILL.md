@@ -5,17 +5,44 @@ description: Use GEO Publisher Desktop and its local CLI to validate, fill, prev
 
 # GEO Publisher
 
-Use the desktop application as the execution engine. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, or direct browser automation. `inspect`, `fill`, and `publish` run in GEO Publisher's background execution page and must not be preceded by `show` or `open`.
+Use the desktop application as the execution engine and the current customer project's only content store. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, direct browser automation, or a separate customer workspace. `inspect`, `fill`, and `publish` run in GEO Publisher's background execution page and must not be preceded by `show` or `open`.
 
 ## Customer project context
 
 Run `geo-publisher project current` before generating an article, filling a draft, or publishing. The returned `project` is the current customer project selected in GEO Publisher and is the source of company name, business profile, products, strengths, cases, credentials, customer questions and forbidden phrases.
 
+When the user wants to create, complete, extract, polish, or update customer information, load and follow the sibling `geo-customer-profile` Skill. That Skill owns the short collection workflow and confirmation rules; this Skill owns CLI resolution and publishing behavior.
+
 - Never infer, cache, or substitute a customer project from another WorkBuddy task.
 - Include the exact returned `project.id` as `projectId` in every `validate`, `fill`, and `publish` input.
-- If no current project exists, ask the customer to create and select one in GEO Publisher before continuing.
+- If no current project exists and the customer wants WorkBuddy to create one, collect the company profile interactively. Show the proposed project name and a concise profile summary, obtain explicit confirmation, then write a JSON file with `confirmCreate: true` and run `geo-publisher project create --input <file.json>`. Never create a project before that confirmation.
+- A successful `project create` automatically selects the new project. Immediately run `project current` and verify that its `project.id` and name match the created project before saving content or publishing.
+- Do not ask for every field at once. Collect the project name and basic company information first, then ask only for important missing facts. Never invent company facts.
 - If a command returns `PROJECT_CONTEXT_CHANGED`, stop immediately, re-read `project current`, regenerate or reconfirm the content for that customer, and do not retry the old publish request.
 - A customer may ask WorkBuddy to update company information. Summarize the proposed changes, obtain confirmation, then run `geo-publisher project update <projectId> --input <file.json>`.
+
+Example confirmed project input:
+
+```json
+{
+  "confirmCreate": true,
+  "name": "客户项目名称",
+  "companyName": "公司全称",
+  "industry": "所属行业",
+  "products": "核心产品或服务",
+  "strengths": "核心优势"
+}
+```
+
+## Content center
+
+All materials, topics, article packages, and distribution records belong to the current desktop project. Never create a parallel worktree, company-information Markdown file, or template state as a source of truth.
+
+- Use `geo-publisher content list <projectId> [material|topic|article|distribution]` to inspect existing project content before creating duplicates.
+- Use `geo-publisher content save <projectId> --input <file.json>` to persist generated content. The JSON contains `kind`, `title`, optional `status`, optional `platform`, and `payload`.
+- An article package uses `kind: "article"`; its `payload.document` must be the same structured document later passed to `validate`, `fill`, and `publish`.
+- A topic uses `kind: "topic"`, a material index record uses `kind: "material"`, and a platform execution/reconciliation record uses `kind: "distribution"`.
+- Before saving or distributing, re-read `project current` and stop if the returned `project.id` differs from the article package's `projectId`.
 
 ## Resolve the CLI
 
@@ -25,6 +52,8 @@ Run `geo-publisher doctor` when the command is available. Otherwise read `discov
 - Windows: resolve from `%LOCALAPPDATA%\GEO Publisher Desktop`.
 
 Never copy a path or user name from another computer. If discovery is missing, ask the user to install and open GEO Publisher Desktop once.
+
+Treat the discovered `cliPath` as one executable path even when it contains spaces. On Windows PowerShell invoke it with the call operator, for example `& '<discovered cliPath>' doctor`; do not split or reconstruct the path. Use only the production `geo-publisher` binary supplied by the desktop. Never search for or invoke `geo-publisher-dev`, `.dev-cli`, raw control sockets, control tokens, or developer-only commands.
 
 ## Execute a request
 

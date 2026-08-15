@@ -28,6 +28,7 @@ const (
 )
 
 var version = "0.5.0-beta.3"
+var buildMode = "production"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
@@ -41,6 +42,8 @@ type controlRequest struct {
 	Platform       string          `json:"platform,omitempty"`
 	ProjectID      string          `json:"projectId,omitempty"`
 	Project        json.RawMessage `json:"project,omitempty"`
+	Item           json.RawMessage `json:"item,omitempty"`
+	Kind           string          `json:"kind,omitempty"`
 	Document       articleDocument `json:"document,omitempty"`
 	CoverPath      string          `json:"coverPath"`
 	ConfirmPublish bool            `json:"confirmPublish,omitempty"`
@@ -86,6 +89,7 @@ type cliOutput struct {
 	OK         bool            `json:"ok"`
 	Command    string          `json:"command,omitempty"`
 	Version    string          `json:"version,omitempty"`
+	Profile    string          `json:"profile,omitempty"`
 	Data       json.RawMessage `json:"data,omitempty"`
 	Code       string          `json:"code,omitempty"`
 	Message    string          `json:"message,omitempty"`
@@ -105,7 +109,7 @@ func (e *cliError) Error() string { return e.message }
 func main() {
 	command, response, err := run(os.Args[1:])
 	if err != nil {
-		failure := cliOutput{OK: false, Command: command, Version: version, Code: "GEO_CLI_FAILED", Message: err.Error()}
+		failure := cliOutput{OK: false, Command: command, Version: version, Profile: cliProfile(), Code: "GEO_CLI_FAILED", Message: err.Error()}
 		var typed *cliError
 		if errors.As(err, &typed) {
 			failure.Code = typed.code
@@ -115,7 +119,7 @@ func main() {
 		writeJSON(os.Stderr, failure)
 		os.Exit(1)
 	}
-	writeJSON(os.Stdout, cliOutput{OK: true, Command: command, Version: version, Data: response})
+	writeJSON(os.Stdout, cliOutput{OK: true, Command: command, Version: version, Profile: cliProfile(), Data: response})
 }
 
 func run(args []string) (string, json.RawMessage, error) {
@@ -123,6 +127,13 @@ func run(args []string) (string, json.RawMessage, error) {
 	if len(args) > 0 {
 		command = args[0]
 		args = args[1:]
+	}
+	if !isDevelopmentBuild() && !productionCommands[command] {
+		return command, nil, &cliError{
+			code:       "COMMAND_NOT_EXPOSED",
+			message:    "此命令仅在 GEO Publisher 开发工具中可用，不向 WorkBuddy 生产 CLI 暴露",
+			suggestion: "请使用 GEO Publisher 桌面端界面完成项目管理或开发诊断",
+		}
 	}
 
 	switch command {
@@ -190,16 +201,86 @@ func run(args []string) (string, json.RawMessage, error) {
 		}, publishTimeout)
 	case "doctor":
 		return command, doctor(), nil
+	case "content":
+		return runContent(args)
 	default:
-		return command, nil, usageError("命令：discover | doctor | projects | project current|select|create|update|archive | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
+		if !isDevelopmentBuild() {
+			return command, nil, usageError("命令：doctor | project current|create|update | content list|save | instructions --json | schema --json | start | status | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
+		}
+		return command, nil, usageError("命令：discover | doctor | projects | project current|select|create|update|archive | content list|save | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
+	}
+}
+
+var productionCommands = map[string]bool{
+	"version": true, "--version": true, "-v": true,
+	"doctor": true, "instructions": true, "schema": true,
+	"start": true, "status": true, "project": true, "content": true,
+	"login": true, "inspect": true, "validate": true, "fill": true, "publish": true,
+}
+
+func isDevelopmentBuild() bool { return buildMode == "development" }
+
+func cliProfile() string {
+	if isDevelopmentBuild() {
+		return "development"
+	}
+	return "production"
+}
+
+func runContent(args []string) (string, json.RawMessage, error) {
+	if len(args) == 0 {
+		return "content", nil, usageError("内容命令：content list <projectId> [kind] | content save <projectId> --input <file.json>")
+	}
+	subcommand := args[0]
+	switch subcommand {
+	case "list":
+		if len(args) < 2 || len(args) > 3 {
+			return "content.list", nil, usageError("请使用 content list <projectId> [material|topic|article|distribution]")
+		}
+		request := controlRequest{Action: "content.list", ProjectID: args[1]}
+		if len(args) == 3 {
+			request.Kind = args[2]
+		}
+		return call("content.list", request, defaultTimeout)
+	case "save":
+		if len(args) < 3 {
+			return "content.save", nil, usageError("请使用 content save <projectId> --input <file.json>")
+		}
+		flags := flag.NewFlagSet("content save", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		inputPath := flags.String("input", "", "content JSON")
+		if err := flags.Parse(args[2:]); err != nil || *inputPath == "" {
+			return "content.save", nil, usageError("请使用 --input <内容.json>")
+		}
+		data, err := os.ReadFile(*inputPath)
+		if err != nil {
+			return "content.save", nil, &cliError{code: "INPUT_READ_FAILED", message: err.Error(), suggestion: "检查内容 JSON 文件路径"}
+		}
+		var item map[string]any
+		if err := json.Unmarshal(data, &item); err != nil {
+			return "content.save", nil, usageError("内容必须是有效 JSON 对象")
+		}
+		return call("content.save", controlRequest{Action: "content.save", ProjectID: args[1], Item: data}, defaultTimeout)
+	default:
+		return "content", nil, usageError("内容命令：content list <projectId> [material|topic|article|distribution] | content save <projectId> --input <file.json>")
 	}
 }
 
 func runProject(args []string) (string, json.RawMessage, error) {
 	if len(args) == 0 {
+		if !isDevelopmentBuild() {
+			return "project", nil, usageError("项目命令：project current | create --input <file.json> | update <projectId> --input <file.json>")
+		}
 		return "project", nil, usageError("项目命令：project current | select <projectId> | create/import --input <file.json> | update <projectId> --input <file.json> | export <projectId> --output <file.json> | archive <projectId>")
 	}
 	subcommand := args[0]
+	if !isDevelopmentBuild() && subcommand != "current" && subcommand != "create" && subcommand != "update" {
+		return "project." + subcommand, nil, &cliError{
+			code:       "COMMAND_NOT_EXPOSED",
+			message:    "生产 CLI 只允许创建客户项目，或读取、更新当前客户项目",
+			suggestion: "请在 GEO Publisher 桌面端管理客户项目",
+		}
+	}
 	switch subcommand {
 	case "current":
 		_, data, err := call("project.current", controlRequest{Action: "project.current"}, defaultTimeout)
@@ -253,6 +334,22 @@ func runProject(args []string) (string, json.RawMessage, error) {
 		var project map[string]any
 		if err := json.Unmarshal(data, &project); err != nil {
 			return "project." + subcommand, nil, usageError("项目资料必须是有效 JSON 对象")
+		}
+		if subcommand == "create" && !isDevelopmentBuild() {
+			confirmed, _ := project["confirmCreate"].(bool)
+			if !confirmed {
+				return "project.create", nil, &cliError{
+					code:       "PROJECT_CREATE_CONFIRMATION_REQUIRED",
+					message:    "创建客户项目需要用户明确确认",
+					suggestion: "先向用户展示项目名称和公司资料摘要；用户确认后，在输入 JSON 中设置 confirmCreate=true",
+				}
+			}
+			delete(project, "confirmCreate")
+			name, _ := project["name"].(string)
+			if strings.TrimSpace(name) == "" {
+				return "project.create", nil, usageError("创建客户项目必须提供非空 name")
+			}
+			data = mustJSON(project)
 		}
 		action := "project.create"
 		if subcommand == "update" {
@@ -530,33 +627,43 @@ func windowsDesktopExecutable() string {
 
 func doctor() json.RawMessage {
 	result := map[string]any{
-		"cliVersion":      version,
-		"os":              runtime.GOOS,
-		"arch":            runtime.GOARCH,
-		"dataDirectory":   dataDirectory(),
-		"controlEndpoint": controlEndpoint(),
-		"tokenFile":       tokenPath(),
-		"discoveryFile":   discoveryPath(),
+		"cliVersion": version,
+		"profile":    cliProfile(),
+		"exposure":   map[string]any{"purpose": "WorkBuddy production control", "developerCommandsIncluded": isDevelopmentBuild()},
+		"os":         runtime.GOOS,
+		"arch":       runtime.GOARCH,
+	}
+	if isDevelopmentBuild() {
+		result["dataDirectory"] = dataDirectory()
+		result["controlEndpoint"] = controlEndpoint()
+		result["tokenFile"] = tokenPath()
+		result["discoveryFile"] = discoveryPath()
 	}
 	var discovery map[string]any
 	if data, err := os.ReadFile(discoveryPath()); err == nil && json.Unmarshal(data, &discovery) == nil {
 		result["discoveryReadable"] = true
-		result["discovery"] = discovery
+		if isDevelopmentBuild() {
+			result["discovery"] = discovery
+		}
 		if appVersion, ok := discovery["appVersion"].(string); ok {
 			result["versionMatch"] = appVersion == version
 		}
 	} else {
 		result["discoveryReadable"] = false
 	}
-	if _, err := os.Stat(tokenPath()); err == nil {
-		result["tokenFileReadable"] = true
-	} else {
-		result["tokenFileReadable"] = false
-		result["tokenFileError"] = err.Error()
+	if isDevelopmentBuild() {
+		if _, err := os.Stat(tokenPath()); err == nil {
+			result["tokenFileReadable"] = true
+		} else {
+			result["tokenFileReadable"] = false
+			result["tokenFileError"] = err.Error()
+		}
 	}
 	if response, err := send(controlRequest{Action: "status"}, 2*time.Second); err == nil {
 		result["desktopConnected"] = true
-		result["desktop"] = json.RawMessage(response)
+		if isDevelopmentBuild() {
+			result["desktop"] = json.RawMessage(response)
+		}
 	} else {
 		result["desktopConnected"] = false
 		result["desktopError"] = err.Error()
@@ -578,9 +685,12 @@ func readDiscovery() json.RawMessage {
 
 func instructions() json.RawMessage {
 	return mustJSON(map[string]any{
-		"version": version,
+		"version":  version,
+		"profile":  cliProfile(),
+		"audience": "WorkBuddy",
 		"workflow": []string{
 			"Run doctor and start the desktop when it is not connected",
+			"If no current project exists and the user asks to create one, collect the customer profile, show a summary, obtain explicit confirmation, then run project create with confirmCreate=true",
 			"Run project current and use its exact project.id for every article request",
 			"Run validate with the exact article JSON",
 			"Use fill for preview or any request that says not to publish",
@@ -597,18 +707,25 @@ func instructions() json.RawMessage {
 }
 
 func commandSchema() json.RawMessage {
+	commands := map[string]any{
+		"doctor":   map[string]any{"input": nil, "sideEffect": false},
+		"project":  map[string]any{"input": "project create JSON with confirmCreate=true, or project update JSON", "sideEffect": "creates and selects a customer project after explicit confirmation, or updates only the current project"},
+		"content":  map[string]any{"input": "content item JSON", "sideEffect": "reads or saves content for the current customer project"},
+		"validate": map[string]any{"input": "article", "sideEffect": false},
+		"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},
+		"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},
+	}
+	if isDevelopmentBuild() {
+		commands["projects"] = map[string]any{"input": nil, "sideEffect": false}
+		commands["project"] = map[string]any{"input": "project profile JSON for create, import, update, export, or archive", "sideEffect": "manages customer projects"}
+		commands["show"] = map[string]any{"input": nil, "sideEffect": "shows the desktop window"}
+	}
 	return mustJSON(map[string]any{
-		"commands": map[string]any{
-			"doctor":   map[string]any{"input": nil, "sideEffect": false},
-			"projects": map[string]any{"input": nil, "sideEffect": false},
-			"project":  map[string]any{"input": "project profile JSON for create, import, or update", "sideEffect": "manages the selected customer project"},
-			"validate": map[string]any{"input": "article", "sideEffect": false},
-			"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},
-			"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},
-		},
+		"profile":  cliProfile(),
+		"commands": commands,
 		"article": map[string]any{
 			"projectId": "required UUID from geo-publisher project current; must match the project currently selected in GEO Publisher",
-			"platform": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
+			"platform":  []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
 			"document": map[string]any{
 				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64",
 				"blocks": []map[string]any{

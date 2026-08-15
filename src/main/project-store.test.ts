@@ -25,6 +25,15 @@ describe('project store', () => {
     expect(store.get(first.id)).toMatchObject({ companyName: '公司 A', industry: '工业服务' });
   });
 
+  it('selects every newly created project as the current project', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
+    const store = new ProjectStore(join(directory, 'projects.json'));
+    await store.load();
+    await store.create({ name: '客户 A' });
+    const second = await store.create({ name: '客户 B' });
+    expect(store.current()).toMatchObject({ id: second.id, name: '客户 B' });
+  });
+
   it('does not silently replace an unreadable project file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
     const path = join(directory, 'projects.json');

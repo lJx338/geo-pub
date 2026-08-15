@@ -9,11 +9,12 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "build:cli": "sh scripts/build-cli.sh",
+    "build:cli": "sh scripts/build-cli.sh production",
+    "build:cli:dev": "sh scripts/build-cli.sh development",
     "dev": "npm run build && npm run build:cli && electron .",
     "pretest": "node node_modules/electron/install.js",
     "test": "vitest run",
-    "test:e2e": "npm run build && npm run build:cli && node tests/electron-smoke.mjs && node tests/background-start-smoke.mjs",
+    "test:e2e": "npm run build && npm run build:cli && npm run build:cli:dev && node tests/electron-smoke.mjs && node tests/background-start-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package:mac": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release && electron-builder --mac --arm64",
     "package:win": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release && electron-builder --win --x64",
@@ -23,15 +24,22 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
+    "lucide-react": "^1.31.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^25.0.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "cos-nodejs-sdk-v5": "^2.15.4",
     "electron": "43.1.1",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.28.1",
     "playwright": "^1.62.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vitest": "^4.0.16",
     "yaml": "^2.9.0"

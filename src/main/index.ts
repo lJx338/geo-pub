@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, session, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
 import type { ControlRequest, Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
@@ -9,6 +9,7 @@ import { ControlServer } from './control-server.js';
 import { createDiscoveryRecord, writeDiscoveryRecord } from './discovery.js';
 import { PlatformSessions } from './platform-sessions.js';
 import { ProjectStore, type ProjectInput } from './project-store.js';
+import { ContentStore, type ContentKind, type ContentInput } from './content-store.js';
 import { dataDirectory } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
 import { UpdateManager } from './update-manager.js';
@@ -26,6 +27,7 @@ async function runDesktop(): Promise<void> {
   await app.whenReady();
   const projects = new ProjectStore();
   await projects.load();
+  const content = new ContentStore();
   const cliPath = await installBundledCli(packageJson.version).catch((error) => {
     console.error('Failed to install bundled CLI:', error);
     return null;
@@ -122,6 +124,14 @@ async function runDesktop(): Promise<void> {
       else await sessions.clearProject();
       return { currentProject: current };
     }
+    if (request.action === 'content.list') {
+      projects.get(request.projectId) ?? (() => { throw new Error('PROJECT_NOT_FOUND: 找不到客户项目'); })();
+      return { items: await content.list(request.projectId, request.kind as ContentKind | undefined) };
+    }
+    if (request.action === 'content.save') {
+      projects.get(request.projectId) ?? (() => { throw new Error('PROJECT_NOT_FOUND: 找不到客户项目'); })();
+      return { item: await content.save(request.projectId, request.item as ContentInput) };
+    }
     if (request.action === 'app.show') {
       showWindow();
       return desktopStatus();
@@ -145,6 +155,8 @@ async function runDesktop(): Promise<void> {
 
   ipcMain.handle('geo:status', desktopStatus);
   ipcMain.handle('geo:projects-list', () => ({ projects: projects.list(), currentProject: projects.current() }));
+  ipcMain.handle('geo:content-list', async (_event, projectId: string, kind?: ContentKind) => ({ items: await content.list(projectId, kind) }));
+  ipcMain.handle('geo:content-save', async (_event, projectId: string, input: ContentInput) => ({ item: await content.save(projectId, input) }));
   ipcMain.handle('geo:project-create', async (_event, input: ProjectInput) => {
     if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能新建客户项目');
     const project = await projects.create(input);
@@ -218,6 +230,34 @@ async function runDesktop(): Promise<void> {
     if (!app.isPackaged) return { available: false, enabled: false };
     app.setLoginItemSettings({ openAtLogin: Boolean(enabled), openAsHidden: Boolean(enabled), args: ['--background'] });
     return { available: true, enabled: app.getLoginItemSettings().openAtLogin };
+  });
+  ipcMain.handle('geo:copy-diagnostics', () => {
+    const publisher = desktopStatus();
+    const currentUpdate = updateManager.getStatus();
+    const diagnostic = {
+      generatedAt: new Date().toISOString(),
+      app: { version: packageJson.version, platform: process.platform, arch: process.arch, packaged: app.isPackaged },
+      cli: { installed: Boolean(cliPath), profile: 'production' as const },
+      publisher: {
+        ready: publisher.ready,
+        busy: publisher.busy,
+        executingPlatform: publisher.executingPlatform,
+        projectSelected: Boolean(projects.current()),
+        attentionCode: publisher.attentionRequired?.code ?? null,
+      },
+      update: {
+        channel: currentUpdate.channel,
+        phase: currentUpdate.phase,
+        currentVersion: currentUpdate.currentVersion,
+        availableVersion: currentUpdate.availableVersion,
+      },
+    };
+    clipboard.writeText(JSON.stringify(diagnostic, null, 2));
+    return { copied: true as const, diagnostic };
+  });
+  ipcMain.handle('geo:open-data-directory', async () => {
+    const error = await shell.openPath(dataDirectory());
+    return error ? { opened: false, error } : { opened: true };
   });
   await window.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
   if (!startsInBackground) showWindow();

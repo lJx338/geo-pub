@@ -63,7 +63,7 @@ export class ProjectStore {
     const now = new Date().toISOString();
     const project = projectSchema.parse({ ...input, id: randomUUID(), createdAt: now, updatedAt: now, archivedAt: null });
     this.state.projects.push(project);
-    if (!this.state.currentProjectId) this.state.currentProjectId = project.id;
+    this.state.currentProjectId = project.id;
     await this.save();
     return project;
   }

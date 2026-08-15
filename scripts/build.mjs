@@ -35,7 +35,17 @@ await Promise.all([
     external: ['electron'],
     sourcemap: true,
   }),
+  build({
+    entryPoints: ['src/renderer/app.tsx'],
+    outfile: 'dist/renderer/renderer.js',
+    bundle: true,
+    platform: 'browser',
+    format: 'iife',
+    target: 'chrome110',
+    sourcemap: true,
+  }),
 ]);
 
-await cp('src/renderer', 'dist/renderer', { recursive: true });
+await cp('src/renderer/index.html', 'dist/renderer/index.html');
+await cp('src/renderer/styles.css', 'dist/renderer/styles.css');
 await cp('build/icon.png', 'dist/renderer/logo.png');
