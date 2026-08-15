@@ -15,6 +15,8 @@ When the user wants to create, complete, extract, polish, or update customer inf
 
 When the user asks for intent words, customer questions, a topic pool, or weekly topic planning, load the sibling `geo-topic-planner` Skill. When the user asks to write, revise, or quality-check an article, load the sibling `geo-article-writer` Skill. Those Skills own content creation; this Skill remains the only owner of platform login, validation, filling, publishing, and reconciliation.
 
+When the user asks to organize images, or `material pending` returns new images before article work, load the sibling `geo-material-organizer` Skill. It owns one-time visual indexing and may only use the dedicated `material pending|get|analyze` commands.
+
 - Never infer, cache, or substitute a customer project from another WorkBuddy task.
 - Include the exact returned `project.id` as `projectId` in every `validate`, `fill`, and `publish` input.
 - If no current project exists and the customer wants WorkBuddy to create one, collect the company profile interactively. Show the proposed project name and a concise profile summary, obtain explicit confirmation, then write a JSON file with `confirmCreate: true` and run `geo-publisher project create --input <file.json>`. Never create a project before that confirmation.
@@ -41,6 +43,7 @@ Example confirmed project input:
 All materials, topics, article packages, and distribution records belong to the current desktop project. Never create a parallel worktree, company-information Markdown file, or template state as a source of truth.
 
 - Use `geo-publisher content list <projectId> [material|topic|article|distribution]` to inspect existing project content before creating duplicates.
+- Use `geo-publisher material pending|get|analyze` only through `geo-material-organizer` to index newly uploaded images once.
 - Use `geo-publisher content save <projectId> --input <file.json>` to persist generated content. The JSON contains `kind`, `title`, optional `status`, optional `platform`, and `payload`.
 - An article package uses `kind: "article"`; its `payload.document` must be the same structured document later passed to `validate`, `fill`, and `publish`.
 - A topic uses `kind: "topic"`, a material index record uses `kind: "material"`, and a platform execution/reconciliation record uses `kind: "distribution"`.

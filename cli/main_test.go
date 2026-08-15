@@ -120,6 +120,27 @@ func TestProductionSchemaDocumentsConfirmedProjectCreation(t *testing.T) {
 	}
 }
 
+func TestProductionSchemaDocumentsMaterialOrganizer(t *testing.T) {
+	previous := buildMode
+	buildMode = "production"
+	t.Cleanup(func() { buildMode = previous })
+	if got := string(commandSchema()); !strings.Contains(got, `"material"`) {
+		t.Fatalf("production schema omitted material organizer: %s", got)
+	}
+}
+
+func TestMaterialAnalyzeRejectsInvalidInputBeforeDesktopCall(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "analysis.json")
+	if err := os.WriteFile(path, []byte(`not-json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := runMaterial([]string{"analyze", "11111111-1111-4111-8111-111111111111", "--material", "image-a", "--input", path})
+	if err == nil || !strings.Contains(err.Error(), "有效 JSON") {
+		t.Fatalf("expected local JSON validation error, got %v", err)
+	}
+}
+
 func TestDevelopmentProfileIsExplicit(t *testing.T) {
 	previous := buildMode
 	buildMode = "development"

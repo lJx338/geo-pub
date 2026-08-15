@@ -1,0 +1,4 @@
+interface:
+  display_name: "GEO 素材整理"
+  short_description: "识别并整理当前客户项目中新上传的图片素材，建立可复用索引"
+  default_prompt: "使用 $geo-material-organizer 整理当前客户项目中所有待整理图片素材。"

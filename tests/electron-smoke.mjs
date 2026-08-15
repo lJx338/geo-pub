@@ -25,7 +25,7 @@ try {
   await window.locator('#connect-workbuddy').click();
   await window.locator('#workbuddy-state', { hasText: '已连接' }).waitFor();
   const prompt = await readFile(join(userDataDirectory, 'integrations', 'workbuddy', 'CONNECT-WORKBUDDY.txt'), 'utf8');
-  if (!prompt.includes('当前客户项目') || !prompt.includes('geo-topic-planner') || !prompt.includes('geo-article-writer') || !prompt.includes('GEO Publisher 安装位置') || !prompt.includes('系统与架构')) throw new Error('WorkBuddy prompt is incomplete');
+  if (!prompt.includes('当前客户项目') || !prompt.includes('geo-topic-planner') || !prompt.includes('geo-article-writer') || !prompt.includes('geo-material-organizer') || !prompt.includes('GEO Publisher 安装位置') || !prompt.includes('系统与架构')) throw new Error('WorkBuddy prompt is incomplete');
 
   const cliPath = process.platform === 'win32' ? join(process.cwd(), '.dev-cli', 'geo-publisher-dev-windows-amd64.exe') : join(process.cwd(), '.dev-cli', 'geo-publisher-dev-darwin-arm64');
   const cliEnv = { ...process.env, GEO_PUBLISHER_USER_DATA_DIR: userDataDirectory, GEO_PUBLISHER_CONTROL_ENDPOINT: controlEndpoint };
@@ -36,8 +36,21 @@ try {
   const projectId = created.data?.project?.id;
   if (!projectId) throw new Error(`project creation failed: ${JSON.stringify(created)}`);
   await window.locator('#current-project-title', { hasText: '冒烟测试客户' }).waitFor();
+  await writeFile(profilePath, JSON.stringify({ name: '第二测试客户', companyName: '第二测试公司', industry: '工业服务' }));
+  const secondProject = await runCli(['project', 'create', '--input', profilePath]);
+  if (!secondProject.data?.project?.id) throw new Error(`second project creation failed: ${JSON.stringify(secondProject)}`);
+  await window.locator('#current-project-title', { hasText: '第二测试客户' }).waitFor();
+  await window.locator('#project-switch').click();
+  await window.locator('#project-selector').waitFor();
+  await window.mouse.click(2, 2);
+  await window.locator('#project-selector').waitFor({ state: 'detached' });
+  await window.locator('#project-switch').click();
+  await window.locator('#project-selector').waitFor();
+  await window.locator('.project-selector-row', { hasText: '冒烟测试客户' }).getByRole('button', { name: '切换' }).click();
+  await window.locator('#current-project-title', { hasText: '冒烟测试客户' }).waitFor();
+  await window.locator('#action-message', { hasText: '已切换到客户项目：冒烟测试客户' }).waitFor();
   await window.locator('.nav-item', { hasText: '客户项目' }).click();
-  await window.locator('.item-row', { hasText: '冒烟测试客户' }).click();
+  await window.locator('.item-row', { hasText: '冒烟测试客户' }).getByRole('button', { name: '编辑' }).click();
   await window.locator('.project-sheet').waitFor();
   const projectSheet = await window.evaluate(() => {
     const sheet = document.querySelector('.project-sheet')?.getBoundingClientRect();
@@ -49,7 +62,7 @@ try {
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-project-sheet.png') });
   await window.getByRole('button', { name: '关闭客户资料' }).click();
   const articlePath = join(userDataDirectory, 'article.json');
-  await writeFile(articlePath, JSON.stringify({ kind: 'article', title: '测试文章', status: 'ready', platform: 'baijia', payload: { document: { title: '测试文章' } } }));
+  await writeFile(articlePath, JSON.stringify({ kind: 'article', title: '测试文章', status: 'ready', platform: 'baijia', payload: { document: { title: '测试文章', summary: '用于验证文章预览结构。', tags: ['预览验证'], blocks: [{ type: 'paragraph', text: '这是文章预览的第一段正文。' }, { type: 'heading', level: 2, text: '预览小标题' }, { type: 'list', ordered: true, items: ['第一项', '第二项'] }, { type: 'quote', text: '这是引用内容。' }] } } }));
   const saved = await runCli(['content', 'save', projectId, '--input', articlePath]);
   if (!saved.ok) throw new Error(`content save failed: ${JSON.stringify(saved)}`);
   const listed = await runCli(['content', 'list', projectId, 'article']);
@@ -65,12 +78,55 @@ try {
   await runCli(['topic', 'use', projectId, '--topic', topicId, '--article', saved.data.item.id, '--task', 'smoke-task']);
   const noLongerSelectable = await runCli(['content', 'list', projectId, 'topic', '--auto-selectable']);
   if (noLongerSelectable.data?.items?.some((item) => item.id === topicId)) throw new Error('used topic remained in automatic selection');
+  const imagePath = join(userDataDirectory, '设备现场.png');
+  await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));
+  const importedMaterial = await runCli(['content', 'import-material', projectId, '--path', imagePath]);
+  const materialId = importedMaterial.data?.item?.id;
+  if (!materialId) throw new Error(`material import failed: ${JSON.stringify(importedMaterial)}`);
+  const pendingMaterials = await runCli(['material', 'pending', projectId]);
+  if (pendingMaterials.data?.items?.[0]?.id !== materialId) throw new Error(`material pending failed: ${JSON.stringify(pendingMaterials)}`);
   await window.getByText('内容中心', { exact: true }).click();
+  await window.getByRole('button', { name: /素材 1/ }).click();
+  await window.locator('.material-card', { hasText: '设备现场.png' }).waitFor();
+  await window.locator('.material-thumbnail img').waitFor();
+  const organizeButton = window.getByRole('button', { name: /让 WorkBuddy 整理/ });
+  if (!(await organizeButton.isEnabled())) throw new Error('material organizer stayed disabled with a pending image');
+  await organizeButton.click();
+  await window.locator('#action-message', { hasText: '整理指令已复制' }).waitFor();
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-material-library.png') });
+  await window.getByRole('button', { name: /文章 1/ }).click();
   await window.getByText('测试文章', { exact: true }).waitFor();
+  await window.getByRole('button', { name: '预览', exact: true }).click();
+  await window.locator('#article-preview-title', { hasText: '测试文章' }).waitFor();
+  await window.getByText('这是文章预览的第一段正文。', { exact: true }).waitFor();
+  await window.getByText('预览小标题', { exact: true }).waitFor();
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-article-preview.png') });
+  await window.getByRole('button', { name: '关闭文章预览' }).click();
   await window.getByRole('button', { name: /选题 1/ }).click();
   await window.getByText('客户如何判断解决方案是否适合自己？', { exact: true }).waitFor();
   await window.locator('.ui-badge', { hasText: '已使用' }).waitFor();
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-content-center.png') });
+  await window.getByText('使用指南', { exact: true }).click();
+  await window.getByText('从公司资料到自动发布的简易教程', { exact: true }).waitFor();
+  const promptCards = window.locator('.workbuddy-prompt');
+  if (await promptCards.count() !== 6) throw new Error('WorkBuddy tutorial does not contain all six steps');
+  await promptCards.first().getByRole('button', { name: '复制提示词' }).click();
+  const copiedPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
+  if (!copiedPrompt.includes('配置 GEO Publisher 当前客户项目的公司资料') || !copiedPrompt.includes('确认写入')) throw new Error('company profile prompt was not copied');
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-workbuddy-guide.png'), fullPage: true });
+  await window.getByText('分发', { exact: true }).first().click();
+  await window.getByRole('button', { name: '配置分发' }).click();
+  await window.locator('#distribution-dialog-title', { hasText: '测试文章' }).waitFor();
+  if (await window.locator('#distribution-run').isEnabled()) throw new Error('distribution was enabled without the required Baijia cover');
+  await window.getByLabel('百家号').uncheck();
+  await window.getByLabel('知乎').check();
+  if (!(await window.locator('#distribution-run').isEnabled())) throw new Error('fill mode stayed disabled for a platform that does not require a cover');
+  await window.getByLabel(/真实发布/).check();
+  if (await window.locator('#distribution-run').isEnabled()) throw new Error('publish was enabled without explicit confirmation');
+  await window.getByLabel(/我确认执行真实发布/).check();
+  if (!(await window.locator('#distribution-run').isEnabled())) throw new Error('confirmed publish did not become available');
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-distribution-dialog.png') });
+  await window.getByRole('button', { name: '关闭分发配置' }).click();
   await window.getByText('设置', { exact: true }).click();
   await window.locator('#settings-connect-workbuddy').waitFor();
   const settings = await window.evaluate(async () => {
@@ -90,7 +146,7 @@ try {
   const compact = await window.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth, sidebarBottom: document.querySelector('.sidebar-bottom')?.getBoundingClientRect().bottom, height: innerHeight }));
   if (compact.scrollWidth > compact.width || (compact.sidebarBottom || 0) > compact.height) throw new Error(`compact UI is clipped: ${JSON.stringify(compact)}`);
   await window.locator('.nav-item', { hasText: '客户项目' }).click();
-  await window.locator('.item-row', { hasText: '冒烟测试客户' }).click();
+  await window.locator('.item-row', { hasText: '冒烟测试客户' }).getByRole('button', { name: '编辑' }).click();
   const compactSheet = await window.evaluate(() => {
     const sheet = document.querySelector('.project-sheet')?.getBoundingClientRect();
     const body = document.querySelector('.project-sheet-body')?.getBoundingClientRect();
@@ -100,6 +156,21 @@ try {
   if (!compactSheet.sheet || !compactSheet.body || !compactSheet.footer || compactSheet.sheet.left < 0 || compactSheet.sheet.right > compactSheet.width + 2 || compactSheet.footer.bottom > compactSheet.height + 2 || compactSheet.body.height < 260) throw new Error(`compact project sheet is clipped: ${JSON.stringify(compactSheet)}`);
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-project-sheet-compact.png') });
   await window.getByRole('button', { name: '关闭客户资料' }).click();
+
+  await window.getByText('平台账号', { exact: true }).first().click();
+  await window.locator('.account-grid section', { hasText: '百家号' }).getByRole('button', { name: '打开平台' }).click();
+  await window.locator('#platform-back').waitFor();
+  const platformToolbar = await window.evaluate(async () => {
+    const toolbar = document.querySelector('.platform-toolbar')?.getBoundingClientRect();
+    const back = document.querySelector('#platform-back')?.getBoundingClientRect();
+    const status = await window.geoPublisher.status();
+    return { toolbar, back, activePlatform: status.activePlatform, width: innerWidth };
+  });
+  if (!platformToolbar.toolbar || !platformToolbar.back || platformToolbar.activePlatform !== 'baijia' || platformToolbar.toolbar.height !== 78 || platformToolbar.back.right > platformToolbar.width) throw new Error(`platform toolbar is incomplete: ${JSON.stringify(platformToolbar)}`);
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-platform-toolbar.png') });
+  await window.locator('#platform-back').click();
+  await window.locator('#platform-back').waitFor({ state: 'detached' });
+  if ((await window.evaluate(() => window.geoPublisher.status())).activePlatform !== null) throw new Error('platform remained active after returning to workspace');
 
   const inspect = await runCli(['inspect', 'baijia']);
   if (!inspect.ok || inspect.data?.runtimeState !== 'background') throw new Error(`background inspect failed: ${JSON.stringify(inspect)}`);

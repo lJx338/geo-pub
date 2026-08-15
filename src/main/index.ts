@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
-import type { ControlRequest, DataChangeEvent, Platform } from '../shared/protocol.js';
+import { desktopDistributionRequestSchema, type ControlRequest, type DataChangeEvent, type Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
 import { installBundledCli } from './cli-installer.js';
 import { ControlServer } from './control-server.js';
@@ -14,7 +14,8 @@ import { DataChangeTracker } from './data-change.js';
 import { dataDirectory } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
 import { UpdateManager } from './update-manager.js';
-import { prepareWorkBuddyIntegration, workBuddyIntegrationStatus } from './workbuddy-integration.js';
+import { prepareWorkBuddyIntegration, prepareWorkBuddyMaterialOrganization, workBuddyIntegrationStatus } from './workbuddy-integration.js';
+import { DistributionService } from './distribution-service.js';
 
 app.setName('GEO Publisher');
 app.setPath('userData', dataDirectory());
@@ -66,13 +67,14 @@ async function runDesktop(): Promise<void> {
     window.focus();
   };
   let closingForUpdate = false;
+  let distributionRunning = false;
   const sessions = new PlatformSessions(window, packageJson.version, (attention) => {
     if (!window.isDestroyed()) window.webContents.send('geo:attention-required', attention);
   }, () => {
-    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', sessions.status());
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', { ...sessions.status(), busy: sessions.isBusy() || distributionRunning, cliPath, currentProject: projects.current() });
   });
   if (projects.current()) await sessions.selectProject(projects.current()!.id);
-  const updateManager = new UpdateManager(packageJson.version, () => sessions.isBusy(), (status) => {
+  const updateManager = new UpdateManager(packageJson.version, () => sessions.isBusy() || distributionRunning, (status) => {
     if (status.phase === 'error') closingForUpdate = false;
     if (!window.isDestroyed()) window.webContents.send('geo:update-status-changed', status);
   });
@@ -101,7 +103,10 @@ async function runDesktop(): Promise<void> {
     window.hide();
   });
 
-  const desktopStatus = () => ({ ...sessions.status(), cliPath, currentProject: projects.current() });
+  const desktopStatus = () => ({ ...sessions.status(), busy: sessions.isBusy() || distributionRunning, cliPath, currentProject: projects.current() });
+  const ensureAppIdle = (message = '发布任务运行中，暂时不能执行此操作') => {
+    if (sessions.isBusy() || distributionRunning) throw new Error(`PUBLISHER_BUSY: ${message}`);
+  };
   const recordDataChange = (change: Omit<DataChangeEvent, 'revision' | 'changedAt'>) => {
     const event = dataChanges.record(change);
     if (!window.isDestroyed()) window.webContents.send('geo:data-changed', event);
@@ -128,30 +133,36 @@ async function runDesktop(): Promise<void> {
     if (projects.current()?.id !== projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新读取当前项目后再操作内容');
     return project;
   };
+  const distribution = new DistributionService(content, sessions, (record) => {
+    recordDataChange({ entity: 'content', action: 'saved', projectId: record.projectId, itemId: record.id, contentKind: record.kind, source: 'desktop' });
+  });
   const route = async (request: ControlRequest): Promise<unknown> => {
     if (request.action === 'status') return desktopStatus();
     if (request.action === 'project.list') return { projects: projects.list(), currentProject: projects.current() };
     if (request.action === 'project.current') return { project: projects.current() };
     if (request.action === 'project.get') return { project: projects.get(request.projectId) };
     if (request.action === 'project.create') {
+      ensureAppIdle('发布任务运行中，暂时不能新建客户项目');
       const project = await projects.create(request.project as ProjectInput);
       await sessions.selectProject(project.id);
       recordDataChange({ entity: 'project', action: 'created', projectId: project.id, source: 'cli' });
       return { project, currentProject: project };
     }
     if (request.action === 'project.update') {
+      ensureAppIdle('发布任务运行中，暂时不能修改客户项目');
       const project = await projects.update(request.projectId, request.project as Partial<ProjectInput>);
       recordDataChange({ entity: 'project', action: 'updated', projectId: project.id, source: 'cli' });
       return { project };
     }
     if (request.action === 'project.select') {
+      ensureAppIdle('发布任务运行中，暂时不能切换客户项目');
       const project = await projects.select(request.projectId);
       await sessions.selectProject(project.id);
       recordDataChange({ entity: 'project', action: 'selected', projectId: project.id, source: 'cli' });
       return { project, currentProject: project };
     }
     if (request.action === 'project.archive') {
-      if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能归档客户项目');
+      ensureAppIdle('发布任务运行中，暂时不能归档客户项目');
       await projects.archive(request.projectId);
       const current = projects.current();
       if (current) await sessions.selectProject(current.id);
@@ -172,6 +183,20 @@ async function runDesktop(): Promise<void> {
     if (request.action === 'content.import-material') {
       ensureCurrentContentProject(request.projectId);
       const item = await content.importMaterial(request.projectId, request.sourcePath, (request.item || {}) as ContentInput);
+      recordDataChange({ entity: 'content', action: 'saved', projectId: request.projectId, itemId: item.id, contentKind: item.kind, source: 'cli' });
+      return { item };
+    }
+    if (request.action === 'material.pending') {
+      ensureCurrentContentProject(request.projectId);
+      return { items: await content.pendingImageMaterials(request.projectId, request.limit) };
+    }
+    if (request.action === 'material.get') {
+      ensureCurrentContentProject(request.projectId);
+      return { item: await content.imageMaterial(request.projectId, request.materialId) };
+    }
+    if (request.action === 'material.analyze') {
+      ensureCurrentContentProject(request.projectId);
+      const item = await content.analyzeImageMaterial(request.projectId, request.materialId, request.analysis);
       recordDataChange({ entity: 'content', action: 'saved', projectId: request.projectId, itemId: item.id, contentKind: item.kind, source: 'cli' });
       return { item };
     }
@@ -199,13 +224,18 @@ async function runDesktop(): Promise<void> {
       showWindow();
       return desktopStatus();
     }
-    if (request.action === 'platform.open') return await sessions.open(request.platform);
+    if (request.action === 'platform.open') {
+      if (distributionRunning) throw new Error('PUBLISHER_BUSY: 分发任务运行中，暂时不能切换平台');
+      return await sessions.open(request.platform);
+    }
     if (request.action === 'platform.inspect') return await sessions.inspect(request.platform);
     if (request.action === 'draft.fill') {
+      if (distributionRunning) throw new Error('PUBLISHER_BUSY: 桌面端分发任务运行中，请等待完成');
       sessions.ensureProject(request.projectId);
       return await sessions.fillDraft(request.platform, request.document, request.coverPath);
     }
     if (request.action === 'draft.publish') {
+      if (distributionRunning) throw new Error('PUBLISHER_BUSY: 桌面端分发任务运行中，请等待完成');
       sessions.ensureProject(request.projectId);
       return await sessions.publishDraft(request.platform, request.document, request.coverPath);
     }
@@ -234,7 +264,7 @@ async function runDesktop(): Promise<void> {
   });
   ipcMain.handle('geo:content-choose-material', async (_event, projectId: string) => {
     if (!projects.get(projectId)) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
-    const selection = await dialog.showOpenDialog(window, { title: '添加客户素材', properties: ['openFile', 'multiSelections'], filters: [{ name: '常用素材', extensions: ['txt', 'md', 'pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg', 'webp'] }, { name: '所有文件', extensions: ['*'] }] });
+    const selection = await dialog.showOpenDialog(window, { title: '添加图片素材', properties: ['openFile', 'multiSelections'], filters: [{ name: '图片素材', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
     if (selection.canceled) return { canceled: true, items: [] };
     const imported = [];
     for (const sourcePath of selection.filePaths) {
@@ -243,6 +273,21 @@ async function runDesktop(): Promise<void> {
     }
     return { canceled: false, items: imported };
   });
+  ipcMain.handle('geo:material-thumbnail', async (_event, projectId: string, materialId: string) => {
+    ensureCurrentContentProject(projectId);
+    const item = await content.imageMaterial(projectId, materialId);
+    const sourcePath = String(item.payload.sourcePath);
+    const image = nativeImage.createFromPath(sourcePath);
+    if (image.isEmpty()) {
+      const bytes = await readFile(sourcePath);
+      const extension = String(item.payload.extension || 'png').toLowerCase();
+      const mime = extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : extension === 'webp' ? 'image/webp' : 'image/png';
+      return { dataUrl: `data:${mime};base64,${bytes.toString('base64')}`, width: 0, height: 0 };
+    }
+    const size = image.getSize();
+    const thumbnail = size.width > 360 ? image.resize({ width: 360, quality: 'good' }) : image;
+    return { dataUrl: thumbnail.toDataURL(), width: size.width, height: size.height };
+  });
   ipcMain.handle('geo:topic-variant', async (_event, projectId: string, topicId: string, input: ContentInput) => {
     if (!projects.get(projectId)) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
     const item = await content.createTopicVariant(projectId, topicId, input);
@@ -250,25 +295,27 @@ async function runDesktop(): Promise<void> {
     return { item };
   });
   ipcMain.handle('geo:project-create', async (_event, input: ProjectInput) => {
-    if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能新建客户项目');
+    ensureAppIdle('发布任务运行中，暂时不能新建客户项目');
     const project = await projects.create(input);
     await sessions.selectProject(project.id);
     recordDataChange({ entity: 'project', action: 'created', projectId: project.id, source: 'desktop' });
     return { project, currentProject: project };
   });
   ipcMain.handle('geo:project-update', async (_event, id: string, input: Partial<ProjectInput>) => {
+    ensureAppIdle('发布任务运行中，暂时不能修改客户项目');
     const project = await projects.update(id, input);
     recordDataChange({ entity: 'project', action: 'updated', projectId: project.id, source: 'desktop' });
     return { project };
   });
   ipcMain.handle('geo:project-select', async (_event, id: string) => {
+    ensureAppIdle('发布任务运行中，暂时不能切换客户项目');
     const project = await projects.select(id);
     await sessions.selectProject(project.id);
     recordDataChange({ entity: 'project', action: 'selected', projectId: project.id, source: 'desktop' });
     return { project, currentProject: project };
   });
   ipcMain.handle('geo:project-archive', async (_event, id: string) => {
-    if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能归档客户项目');
+    ensureAppIdle('发布任务运行中，暂时不能归档客户项目');
     await projects.archive(id);
     const current = projects.current();
     if (current) await sessions.selectProject(current.id);
@@ -289,7 +336,7 @@ async function runDesktop(): Promise<void> {
     return { canceled: false, filePath: result.filePath };
   });
   ipcMain.handle('geo:project-import', async () => {
-    if (sessions.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能导入客户项目');
+    ensureAppIdle('发布任务运行中，暂时不能导入客户项目');
     const result = await dialog.showOpenDialog(window, {
       title: '导入客户项目资料',
       properties: ['openFile'],
@@ -307,9 +354,41 @@ async function runDesktop(): Promise<void> {
     recordDataChange({ entity: 'project', action: 'imported', projectId: project.id, source: 'desktop' });
     return { canceled: false, project, currentProject: project };
   });
-  ipcMain.handle('geo:open-platform', (_event, platform: Platform) => sessions.open(platform));
+  ipcMain.handle('geo:open-platform', async (_event, platform: Platform) => {
+    const result = await sessions.open(platform);
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', desktopStatus());
+    return result;
+  });
+  ipcMain.handle('geo:hide-platform', () => {
+    sessions.hideActivePlatform();
+    const status = desktopStatus();
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
+    return status;
+  });
+  ipcMain.handle('geo:distribution-cover-choose', async () => {
+    ensureAppIdle('平台任务运行中，暂时不能选择封面');
+    const result = await dialog.showOpenDialog(window, {
+      title: '选择文章封面', properties: ['openFile'],
+      filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    });
+    return { canceled: result.canceled, filePath: result.filePaths[0] || '' };
+  });
+  ipcMain.handle('geo:distribution-run', async (_event, rawInput: unknown) => {
+    ensureAppIdle('已有任务正在执行，请等待完成');
+    const input = desktopDistributionRequestSchema.parse(rawInput);
+    ensureCurrentContentProject(input.projectId);
+    distributionRunning = true;
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', desktopStatus());
+    try {
+      return await distribution.run(input);
+    } finally {
+      distributionRunning = false;
+      if (!window.isDestroyed()) window.webContents.send('geo:status-changed', desktopStatus());
+    }
+  });
   ipcMain.handle('geo:workbuddy-status', () => workBuddyIntegrationStatus());
   ipcMain.handle('geo:workbuddy-connect', () => prepareWorkBuddyIntegration(true, cliPath));
+  ipcMain.handle('geo:workbuddy-organize-materials', () => prepareWorkBuddyMaterialOrganization(cliPath));
   ipcMain.handle('geo:update-status', () => updateManager.getStatus());
   ipcMain.handle('geo:update-check', () => updateManager.check());
   ipcMain.handle('geo:update-install', () => {
@@ -354,6 +433,11 @@ async function runDesktop(): Promise<void> {
     };
     clipboard.writeText(JSON.stringify(diagnostic, null, 2));
     return { copied: true as const, diagnostic };
+  });
+  ipcMain.handle('geo:copy-text', (_event, value: string) => {
+    const text = String(value || '').slice(0, 20_000);
+    clipboard.writeText(text);
+    return { copied: true as const };
   });
   ipcMain.handle('geo:open-data-directory', async () => {
     const error = await shell.openPath(dataDirectory());

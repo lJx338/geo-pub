@@ -19,6 +19,16 @@ export type ContentItem = z.infer<typeof contentItemSchema>;
 export type ContentInput = Partial<Pick<ContentItem, 'id' | 'title' | 'status' | 'platform' | 'category' | 'topicFamilyId' | 'parentTopicId' | 'variantNumber' | 'usageCount' | 'lastUsedAt' | 'reusePolicy' | 'cooldownDays' | 'reservedBy' | 'reservedUntil' | 'payload'>> & { kind: ContentKind };
 export type ContentFilter = { status?: string; category?: string; platform?: string; reusePolicy?: 'standard' | 'evergreen'; query?: string; autoSelectable?: boolean };
 
+export const materialAnalysisSchema = z.object({
+  description: z.string().trim().min(2).max(500),
+  category: z.enum(['product', 'equipment', 'factory', 'process', 'detail', 'case', 'credential', 'team', 'logo', 'scene', 'other']),
+  keywords: z.array(z.string().trim().min(1).max(40)).min(1).max(16),
+  uses: z.array(z.enum(['cover', 'body', 'brand', 'proof'])).min(1).max(4),
+  confidence: z.enum(['high', 'medium', 'low']),
+  warnings: z.array(z.string().trim().min(1).max(160)).max(8).default([]),
+});
+export type MaterialAnalysis = z.infer<typeof materialAnalysisSchema>;
+
 const columns = 'id, project_id, kind, title, status, platform, category, topic_family_id, parent_topic_id, variant_number, usage_count, last_used_at, reuse_policy, cooldown_days, reserved_by, reserved_until, payload, created_at, updated_at';
 
 export class ContentStore {
@@ -88,8 +98,60 @@ export class ContentStore {
   async importMaterial(projectId: string, sourcePath: string, input: Omit<ContentInput, 'kind'> = {}): Promise<ContentItem> {
     const source = await readFile(sourcePath); const hash = createHash('sha256').update(source).digest('hex'); const existing = (await this.list(projectId, 'material')).find((item) => item.payload.hash === hash); if (existing) return existing;
     const sourceName = sourcePath.split(/[\\/]/).pop() || 'material'; const destination = join(this.root, projectId, 'materials', `${hash.slice(0, 16)}-${sourceName}`); await mkdir(join(this.root, projectId, 'materials'), { recursive: true }); await copyFile(sourcePath, destination);
+    const extension = sourceName.toLowerCase().split('.').pop() || '';
+    if (['png', 'jpg', 'jpeg', 'webp'].includes(extension)) {
+      return this.save(projectId, {
+        ...input,
+        kind: 'material',
+        title: input.title || sourceName,
+        status: input.status || 'pending_analysis',
+        category: input.category || 'image',
+        payload: {
+          ...(input.payload || {}),
+          sourceType: 'file', sourceName, sourcePath: destination, hash,
+          mediaType: 'image', extension, fileSize: source.byteLength,
+          analysisStatus: 'pending', analysisVersion: 0,
+          summary: '等待 WorkBuddy 完成一次性图片识别。',
+        },
+      });
+    }
     const extracted = this.extractMaterial(sourceName, source);
     return this.save(projectId, { ...input, kind: 'material', title: input.title || sourceName, status: input.status || (extracted.category === 'pending_review' ? 'pending_review' : 'active'), category: input.category || extracted.category, payload: { ...(input.payload || {}), sourceType: 'file', sourceName, sourcePath: destination, hash, summary: extracted.summary, facts: extracted.facts, confidence: extracted.category === 'pending_review' ? 'needs_review' : 'auto_classified' } });
+  }
+
+  async pendingImageMaterials(projectId: string, limit = 20): Promise<ContentItem[]> {
+    return (await this.list(projectId, 'material'))
+      .filter((item) => item.payload.mediaType === 'image' && item.payload.analysisStatus !== 'analyzed')
+      .slice(0, Math.max(1, Math.min(50, limit)));
+  }
+
+  async imageMaterial(projectId: string, materialId: string): Promise<ContentItem> {
+    const item = await this.find(projectId, materialId, 'material');
+    if (item.payload.mediaType !== 'image' || typeof item.payload.sourcePath !== 'string') throw new Error('MATERIAL_NOT_IMAGE: 该素材不是可识别的图片');
+    return item;
+  }
+
+  async analyzeImageMaterial(projectId: string, materialId: string, rawAnalysis: unknown): Promise<ContentItem> {
+    const item = await this.imageMaterial(projectId, materialId);
+    const analysis = materialAnalysisSchema.parse(rawAnalysis);
+    return this.save(projectId, {
+      id: item.id,
+      kind: 'material',
+      status: 'active',
+      category: analysis.category,
+      payload: {
+        ...item.payload,
+        analysisStatus: 'analyzed',
+        analysisVersion: 1,
+        analyzedAt: new Date().toISOString(),
+        description: analysis.description,
+        summary: analysis.description,
+        keywords: [...new Set(analysis.keywords)],
+        uses: [...new Set(analysis.uses)],
+        confidence: analysis.confidence,
+        warnings: analysis.warnings,
+      },
+    });
   }
 
   private async find(projectId: string, id: string, kind?: ContentKind): Promise<ContentItem> {
@@ -118,7 +180,17 @@ export class ContentStore {
   }
 
   private fromRow(row: Record<string, unknown>): ContentItem {
-    return contentItemSchema.parse({ id: row.id, projectId: row.project_id, kind: row.kind, title: row.title, status: row.status, platform: row.platform, category: row.category, topicFamilyId: row.topic_family_id, parentTopicId: row.parent_topic_id, variantNumber: row.variant_number, usageCount: row.usage_count, lastUsedAt: row.last_used_at || null, reusePolicy: row.reuse_policy, cooldownDays: row.cooldown_days, reservedBy: row.reserved_by, reservedUntil: row.reserved_until || null, payload: JSON.parse(String(row.payload || '{}')), createdAt: row.created_at, updatedAt: row.updated_at });
+    const payload = JSON.parse(String(row.payload || '{}')) as Record<string, unknown>;
+    const sourceName = String(payload.sourceName || row.title || '').toLowerCase();
+    const extension = String(payload.extension || sourceName.split('.').pop() || '').toLowerCase();
+    const isLegacyImage = row.kind === 'material' && !payload.mediaType && ['png', 'jpg', 'jpeg', 'webp'].includes(extension);
+    if (isLegacyImage) {
+      payload.mediaType = 'image';
+      payload.extension = extension;
+      payload.analysisStatus = 'pending';
+      payload.analysisVersion = 0;
+    }
+    return contentItemSchema.parse({ id: row.id, projectId: row.project_id, kind: row.kind, title: row.title, status: isLegacyImage ? 'pending_analysis' : row.status, platform: row.platform, category: isLegacyImage ? 'image' : row.category, topicFamilyId: row.topic_family_id, parentTopicId: row.parent_topic_id, variantNumber: row.variant_number, usageCount: row.usage_count, lastUsedAt: row.last_used_at || null, reusePolicy: row.reuse_policy, cooldownDays: row.cooldown_days, reservedBy: row.reserved_by, reservedUntil: row.reserved_until || null, payload, createdAt: row.created_at, updatedAt: row.updated_at });
   }
 
   private toValues(item: ContentItem): SQLInputValue[] { return [item.id, item.projectId, item.kind, item.title, item.status, item.platform, item.category, item.topicFamilyId, item.parentTopicId, item.variantNumber, item.usageCount, item.lastUsedAt, item.reusePolicy, item.cooldownDays, item.reservedBy, item.reservedUntil, JSON.stringify(item.payload), item.createdAt, item.updatedAt]; }

@@ -243,6 +243,20 @@ export class PlatformSessions {
     if (managed) this.restoreManagedView(managed);
   }
 
+  hideActivePlatform(): DesktopStatus {
+    if (!this.activePlatform) return this.status();
+    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 平台任务正在执行，请先最小化窗口，任务完成后再返回工作台');
+    const managed = this.views.get(this.activePlatform);
+    if (managed) {
+      managed.lastUsedAt = Date.now();
+      managed.view.setVisible(false);
+      managed.view.webContents.setBackgroundThrottling(true);
+      this.window.contentView.removeChildView(managed.view);
+    }
+    this.activePlatform = null;
+    return this.status();
+  }
+
   setUiOverlayOpen(open: boolean): void {
     this.uiOverlayOpen = open;
     if (!this.activePlatform) return;
@@ -690,7 +704,14 @@ export class PlatformSessions {
 
   private interactiveViewBounds(): { x: number; y: number; width: number; height: number } {
     const [width = 920, height = 640] = this.window.getContentSize();
-    return { x: 220, y: 56, width: Math.max(320, width - 220), height: Math.max(240, height - 56) };
+    const sidebarWidth = width <= 1080 ? 218 : 248;
+    const toolbarHeight = 78;
+    return {
+      x: sidebarWidth,
+      y: toolbarHeight,
+      width: Math.max(320, width - sidebarWidth),
+      height: Math.max(240, height - toolbarHeight),
+    };
   }
 
   private async captureEvidence(managed: ManagedView, stage: string): Promise<string | null> {

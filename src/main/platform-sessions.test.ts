@@ -62,7 +62,7 @@ describe('platform runtime status', () => {
 
     sessions.setUiOverlayOpen(false);
     expect(visibility.at(-1)).toBe(true);
-    expect(bounds.at(-1)).toEqual({ x: 220, y: 56, width: 1140, height: 844 });
+    expect(bounds.at(-1)).toEqual({ x: 248, y: 78, width: 1112, height: 822 });
   });
 });
 

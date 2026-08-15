@@ -12,6 +12,7 @@ describe('WorkBuddy connection prompt', () => {
       profileSkillPath: 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-customer-profile',
       topicSkillPath: 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-topic-planner',
       articleSkillPath: 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-article-writer',
+      materialSkillPath: 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-material-organizer',
       platform: 'win32',
       arch: 'x64',
     });
@@ -24,7 +25,8 @@ describe('WorkBuddy connection prompt', () => {
     expect(prompt).toContain('客户资料 Skill（geo-customer-profile）：C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-customer-profile');
     expect(prompt).toContain('选题规划 Skill（geo-topic-planner）：C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-topic-planner');
     expect(prompt).toContain('文章创作 Skill（geo-article-writer）：C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-article-writer');
-    expect(prompt).toContain('四个 Skill');
+    expect(prompt).toContain('图片素材 Skill（geo-material-organizer）：C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-material-organizer');
+    expect(prompt).toContain('五个 Skill');
     expect(prompt).toContain('只有客户明确确认后');
     expect(prompt).toContain('应用更新或更换安装位置后');
   });
@@ -37,6 +39,7 @@ describe('WorkBuddy connection prompt', () => {
       profileSkillPath: '/Users/demo/Library/Application Support/GEO Publisher Desktop/integrations/workbuddy/geo-customer-profile',
       topicSkillPath: '/Users/demo/Library/Application Support/GEO Publisher Desktop/integrations/workbuddy/geo-topic-planner',
       articleSkillPath: '/Users/demo/Library/Application Support/GEO Publisher Desktop/integrations/workbuddy/geo-article-writer',
+      materialSkillPath: '/Users/demo/Library/Application Support/GEO Publisher Desktop/integrations/workbuddy/geo-material-organizer',
       platform: 'darwin',
     });
     expect(prompt).toContain("CLI 调用前缀：'/Users/demo/Library/Application Support/GEO Publisher Desktop/bin/geo-publisher'");
@@ -58,5 +61,13 @@ describe('WorkBuddy connection prompt', () => {
     expect(writer).toContain('name: geo-article-writer');
     expect(writer).toContain('Do not load all structure files');
     expect(sevenDimension).toContain('Seven-Dimension Structure');
+  });
+
+  it('ships a dedicated one-time image material organizer skill', async () => {
+    const skill = await readFile(join(process.cwd(), 'integrations', 'workbuddy', 'geo-material-organizer', 'SKILL.md'), 'utf8');
+    expect(skill).toContain('name: geo-material-organizer');
+    expect(skill).toContain('material pending');
+    expect(skill).toContain('material analyze');
+    expect(skill).toContain('Do not reanalyze');
   });
 });

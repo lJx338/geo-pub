@@ -4,7 +4,7 @@ import { app, clipboard, shell } from 'electron';
 import type { WorkBuddyIntegrationStatus } from '../shared/protocol.js';
 import { cliExecutablePath, integrationsDirectory } from './runtime-paths.js';
 
-const WORKBUDDY_SKILLS = ['geo-publisher', 'geo-customer-profile', 'geo-topic-planner', 'geo-article-writer'] as const;
+const WORKBUDDY_SKILLS = ['geo-publisher', 'geo-customer-profile', 'geo-topic-planner', 'geo-article-writer', 'geo-material-organizer'] as const;
 
 function sourceSkillPath(name = 'geo-publisher'): string {
   return app.isPackaged
@@ -32,6 +32,7 @@ export function buildWorkBuddyPrompt(options: {
   profileSkillPath: string;
   topicSkillPath: string;
   articleSkillPath: string;
+  materialSkillPath: string;
   platform?: NodeJS.Platform;
   arch?: string;
 }): string {
@@ -41,20 +42,21 @@ export function buildWorkBuddyPrompt(options: {
     ? `& '${options.cliPath.replaceAll("'", "''")}'`
     : `'${options.cliPath.replaceAll("'", `'\\''`)}'`;
   return [
-    '请从下面四个独立目录安装并启用本机 GEO Publisher 的四个 Skill；不要把它们合并成一个 Skill。',
+    '请从下面五个独立目录安装并启用本机 GEO Publisher 的五个 Skill；不要把它们合并成一个 Skill。',
     '以下路径由当前安装自动生成，仅适用于这台电脑；不要替换成其他电脑的路径：',
     `GEO Publisher 安装位置：${options.appPath}`,
     `发布与基础连接 Skill（geo-publisher）：${options.skillPath}`,
     `客户资料 Skill（geo-customer-profile）：${options.profileSkillPath}`,
     `选题规划 Skill（geo-topic-planner）：${options.topicSkillPath}`,
     `文章创作 Skill（geo-article-writer）：${options.articleSkillPath}`,
+    `图片素材 Skill（geo-material-organizer）：${options.materialSkillPath}`,
     `CLI 位置：${options.cliPath}`,
     `CLI 调用前缀：${quotedCli}`,
     `系统与架构：${platform} / ${arch}`,
     '只允许使用上述 production CLI；不要查找或调用 geo-publisher-dev、.dev-cli 或开发诊断命令。',
     'CLI 路径可能包含空格。执行时必须把完整路径作为一个可执行文件参数；Windows PowerShell 必须保留开头的 & 和引号。',
-    '安装时分别完整读取四个目录中的 SKILL.md，并保留每个目录内的 agents 与 references；以后按用户意图调用对应 Skill。',
-    '用户要求收集或修改公司资料时调用 geo-customer-profile；要求意图词、选题或选题池时调用 geo-topic-planner；要求生成或修改文章时调用 geo-article-writer；要求登录、填充、发布或对账时调用 geo-publisher。',
+    '安装时分别完整读取五个目录中的 SKILL.md，并保留每个目录内的 agents 与 references；以后按用户意图调用对应 Skill。',
+    '用户要求收集或修改公司资料时调用 geo-customer-profile；要求整理或识别图片素材时调用 geo-material-organizer；要求意图词、选题或选题池时调用 geo-topic-planner；要求生成或修改文章时调用 geo-article-writer；要求登录、填充、发布或对账时调用 geo-publisher。',
     '每个任务先按 geo-publisher 运行 production CLI 的 doctor、instructions --json 和 project current，不要使用其他任务缓存的客户项目。',
     '客户资料、素材、选题、文章包和分发记录都必须保存在 GEO Publisher 当前客户项目中；不要创建或要求客户维护单独工作空间。',
     '如果客户要求创建项目，先交互式收集资料并展示摘要；只有客户明确确认后，才按 Skill 调用 production CLI 的 project create。',
@@ -83,6 +85,7 @@ export async function workBuddyIntegrationStatus(): Promise<WorkBuddyIntegration
     profileSkillPath: targetPrepared['geo-customer-profile'] ? targets['geo-customer-profile'] : null,
     topicSkillPath: targetPrepared['geo-topic-planner'] ? targets['geo-topic-planner'] : null,
     articleSkillPath: targetPrepared['geo-article-writer'] ? targets['geo-article-writer'] : null,
+    materialSkillPath: targetPrepared['geo-material-organizer'] ? targets['geo-material-organizer'] : null,
     promptPath: await exists(promptPath) ? promptPath : null,
   };
 }
@@ -110,6 +113,7 @@ export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCl
     profileSkillPath: targets['geo-customer-profile'],
     topicSkillPath: targets['geo-topic-planner'],
     articleSkillPath: targets['geo-article-writer'],
+    materialSkillPath: targets['geo-material-organizer'],
   });
   const promptPath = join(directory, 'CONNECT-WORKBUDDY.txt');
   await writeFile(promptPath, `${prompt}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -119,6 +123,26 @@ export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCl
     await shell.openExternal('workbuddy://').catch(() => undefined);
   }
   return { ...(await workBuddyIntegrationStatus()), prompt };
+}
+
+export async function prepareWorkBuddyMaterialOrganization(activeCliPath: string | null = null): Promise<WorkBuddyIntegrationStatus & { prompt: string }> {
+  const cliPath = activeCliPath || cliExecutablePath();
+  const prepared = await prepareWorkBuddyIntegration(false, cliPath);
+  const quotedCli = process.platform === 'win32'
+    ? `& '${cliPath.replaceAll("'", "''")}'`
+    : `'${cliPath.replaceAll("'", `'\\''`)}'`;
+  const prompt = [
+    '请使用 geo-material-organizer Skill 整理 GEO Publisher 当前客户项目中所有待整理图片。',
+    `Skill 路径：${prepared.materialSkillPath}`,
+    `production CLI 调用前缀：${quotedCli}`,
+    '严格先运行 doctor、instructions --json 和 project current；只处理 material pending 返回的图片。',
+    '逐张查看 material get 返回的本地图片，使用 material analyze 写回一次性索引；不要修改原图，不要重复分析已完成素材。',
+    '完成后汇报已整理数量、低置信度数量和仍待整理数量。',
+  ].join('\n');
+  await writeFile(join(integrationsDirectory(), 'workbuddy', 'CONNECT-WORKBUDDY.txt'), `${prompt}\n`, { encoding: 'utf8', mode: 0o600 });
+  clipboard.writeText(prompt);
+  if (process.env.GEO_DISABLE_OPEN_WORKBUDDY !== '1') await shell.openExternal('workbuddy://').catch(() => undefined);
+  return { ...prepared, prompt };
 }
 
 export async function readWorkBuddyPrompt(): Promise<string | null> {

@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.5.0-beta.3"
+var version = "0.6.0-beta.1"
 var buildMode = "production"
 
 var platforms = map[string]bool{
@@ -48,7 +48,10 @@ type controlRequest struct {
 	TopicID        string          `json:"topicId,omitempty"`
 	TaskID         string          `json:"taskId,omitempty"`
 	ArticleID      string          `json:"articleId,omitempty"`
+	MaterialID     string          `json:"materialId,omitempty"`
 	SourcePath     string          `json:"sourcePath,omitempty"`
+	Analysis       json.RawMessage `json:"analysis,omitempty"`
+	Limit          int             `json:"limit,omitempty"`
 	TTLMS          int             `json:"ttlMs,omitempty"`
 	Document       articleDocument `json:"document,omitempty"`
 	CoverPath      string          `json:"coverPath"`
@@ -209,11 +212,13 @@ func run(args []string) (string, json.RawMessage, error) {
 		return command, doctor(), nil
 	case "content":
 		return runContent(args)
+	case "material":
+		return runMaterial(args)
 	case "topic":
 		return runTopic(args)
 	default:
 		if !isDevelopmentBuild() {
-			return command, nil, usageError("命令：doctor | project current|create|update | content list|save|import-material | topic reserve|release|use|variant | instructions --json | schema --json | start | status | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
+			return command, nil, usageError("命令：doctor | project current|create|update | content list|save|import-material | material pending|get|analyze | topic reserve|release|use|variant | instructions --json | schema --json | start | status | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
 		}
 		return command, nil, usageError("命令：discover | doctor | projects | project current|select|create|update|archive | content list|save|import-material | topic reserve|release|use|variant | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
 	}
@@ -222,9 +227,51 @@ func run(args []string) (string, json.RawMessage, error) {
 var productionCommands = map[string]bool{
 	"version": true, "--version": true, "-v": true,
 	"doctor": true, "instructions": true, "schema": true,
-	"start": true, "status": true, "project": true, "content": true,
+	"start": true, "status": true, "project": true, "content": true, "material": true,
 	"topic": true,
 	"login": true, "inspect": true, "validate": true, "fill": true, "publish": true,
+}
+
+func runMaterial(args []string) (string, json.RawMessage, error) {
+	if len(args) < 2 {
+		return "material", nil, usageError("素材命令：material pending <projectId> [--limit 20] | material get <projectId> --material <materialId> | material analyze <projectId> --material <materialId> --input <analysis.json>")
+	}
+	subcommand, projectID := args[0], args[1]
+	flags := flag.NewFlagSet("material "+subcommand, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	materialID := flags.String("material", "", "material id")
+	inputPath := flags.String("input", "", "analysis JSON")
+	limit := flags.Int("limit", 20, "pending image limit")
+	if err := flags.Parse(args[2:]); err != nil {
+		return "material." + subcommand, nil, usageError("素材参数格式错误")
+	}
+	switch subcommand {
+	case "pending":
+		if *limit < 1 || *limit > 50 {
+			return "material.pending", nil, usageError("--limit 必须在 1 到 50 之间")
+		}
+		return call("material.pending", controlRequest{Action: "material.pending", ProjectID: projectID, Limit: *limit}, defaultTimeout)
+	case "get":
+		if *materialID == "" {
+			return "material.get", nil, usageError("请使用 --material <materialId>")
+		}
+		return call("material.get", controlRequest{Action: "material.get", ProjectID: projectID, MaterialID: *materialID}, defaultTimeout)
+	case "analyze":
+		if *materialID == "" || *inputPath == "" {
+			return "material.analyze", nil, usageError("请使用 --material <materialId> --input <analysis.json>")
+		}
+		data, err := os.ReadFile(*inputPath)
+		if err != nil {
+			return "material.analyze", nil, &cliError{code: "INPUT_READ_FAILED", message: err.Error(), suggestion: "检查图片分析 JSON 文件路径"}
+		}
+		var analysis map[string]any
+		if err := json.Unmarshal(data, &analysis); err != nil {
+			return "material.analyze", nil, usageError("图片分析结果必须是有效 JSON 对象")
+		}
+		return call("material.analyze", controlRequest{Action: "material.analyze", ProjectID: projectID, MaterialID: *materialID, Analysis: data}, defaultTimeout)
+	default:
+		return "material", nil, usageError("素材命令：material pending|get|analyze <projectId> ...")
+	}
 }
 
 func isDevelopmentBuild() bool { return buildMode == "development" }
@@ -798,6 +845,7 @@ func instructions() json.RawMessage {
 			"Before generating an article, list topics with auto-selectable=true and reserve exactly one topic with a unique task id",
 			"After saving an article call topic use; if generation fails call topic release; used topics remain searchable but are not automatically selected unless evergreen",
 			"For a long-running subject create a topic variant instead of reusing the same title or body",
+			"Before using image materials, run material pending; analyze each returned local image once through material get and material analyze, then reuse the saved index",
 			"Search material summaries and facts through content list filters; do not scan the whole local content database",
 		},
 		"platformOrder": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
@@ -813,6 +861,7 @@ func commandSchema() json.RawMessage {
 		"doctor":   map[string]any{"input": nil, "sideEffect": false},
 		"project":  map[string]any{"input": "project create JSON with confirmCreate=true, or project update JSON", "sideEffect": "creates and selects a customer project after explicit confirmation, or updates only the current project"},
 		"content":  map[string]any{"input": "content item JSON, filters, or a material file path", "sideEffect": "reads, saves, or imports content for the current customer project"},
+		"material": map[string]any{"input": "pending limit, material id, or validated image analysis JSON", "sideEffect": "reads pending images and saves a one-time visual index for the current customer project"},
 		"topic":    map[string]any{"input": "topic id plus task/article id or a variant JSON", "sideEffect": "reserves, releases, records use of, or creates a topic variant"},
 		"validate": map[string]any{"input": "article", "sideEffect": false},
 		"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},

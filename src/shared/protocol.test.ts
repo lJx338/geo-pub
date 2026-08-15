@@ -53,4 +53,12 @@ describe('control protocol', () => {
   it('accepts indexed content filters', () => {
     expect(controlRequestSchema.safeParse({ id: '1', token: 'x'.repeat(32), action: 'content.list', projectId, kind: 'topic', filter: { status: 'approved', autoSelectable: true } }).success).toBe(true);
   });
+
+  it('limits material analysis to dedicated current-project commands', () => {
+    const base = { id: '1', token: 'x'.repeat(32), projectId };
+    expect(controlRequestSchema.safeParse({ ...base, action: 'material.pending', limit: 20 }).success).toBe(true);
+    expect(controlRequestSchema.safeParse({ ...base, action: 'material.get', materialId: 'image-a' }).success).toBe(true);
+    expect(controlRequestSchema.safeParse({ ...base, action: 'material.analyze', materialId: 'image-a', analysis: { description: '设备图片' } }).success).toBe(true);
+    expect(controlRequestSchema.safeParse({ ...base, action: 'material.pending', limit: 1000 }).success).toBe(false);
+  });
 });

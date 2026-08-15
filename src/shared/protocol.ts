@@ -7,6 +7,21 @@ export type Platform = (typeof PLATFORMS)[number];
 
 export const platformSchema = z.enum(PLATFORMS);
 
+export const desktopDistributionRequestSchema = z.object({
+  projectId: z.string().uuid(),
+  articleId: z.string().min(1),
+  platforms: z.array(platformSchema).min(1).max(PLATFORMS.length).transform((values) => [...new Set(values)]),
+  mode: z.enum(['fill', 'publish']),
+  coverPath: z.string().default(''),
+  confirmPublish: z.boolean().default(false),
+}).superRefine((request, context) => {
+  if (request.mode === 'publish' && !request.confirmPublish) {
+    context.addIssue({ code: 'custom', path: ['confirmPublish'], message: '真实发布需要明确确认' });
+  }
+});
+
+export type DesktopDistributionRequest = z.input<typeof desktopDistributionRequestSchema>;
+
 const requestBase = z.object({
   id: z.string().min(1),
   token: z.string().min(32),
@@ -40,6 +55,9 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
   requestBase.extend({ action: z.literal('content.list'), projectId: z.string().uuid(), kind: z.string().optional(), filter: z.record(z.string(), z.unknown()).optional() }),
   requestBase.extend({ action: z.literal('content.save'), projectId: z.string().uuid(), item: z.record(z.string(), z.unknown()) }),
   requestBase.extend({ action: z.literal('content.import-material'), projectId: z.string().uuid(), sourcePath: z.string().min(1), item: z.record(z.string(), z.unknown()).optional() }),
+  requestBase.extend({ action: z.literal('material.pending'), projectId: z.string().uuid(), limit: z.number().int().min(1).max(50).optional() }),
+  requestBase.extend({ action: z.literal('material.get'), projectId: z.string().uuid(), materialId: z.string().min(1) }),
+  requestBase.extend({ action: z.literal('material.analyze'), projectId: z.string().uuid(), materialId: z.string().min(1), analysis: z.record(z.string(), z.unknown()) }),
   requestBase.extend({ action: z.literal('topic.reserve'), projectId: z.string().uuid(), topicId: z.string().min(1), taskId: z.string().min(1), ttlMs: z.number().int().positive().max(3600000).optional() }),
   requestBase.extend({ action: z.literal('topic.release'), projectId: z.string().uuid(), topicId: z.string().min(1), taskId: z.string().min(1).optional() }),
   requestBase.extend({ action: z.literal('topic.use'), projectId: z.string().uuid(), topicId: z.string().min(1), articleId: z.string().min(1), taskId: z.string().min(1).optional() }),
@@ -143,6 +161,7 @@ export interface WorkBuddyIntegrationStatus {
   profileSkillPath: string | null;
   topicSkillPath: string | null;
   articleSkillPath: string | null;
+  materialSkillPath: string | null;
   promptPath: string | null;
 }
 

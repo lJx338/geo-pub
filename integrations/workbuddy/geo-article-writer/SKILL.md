@@ -12,7 +12,7 @@ Generate content inside the current GEO Publisher project. Never depend on the r
 1. Resolve the production CLI through the sibling `geo-publisher` Skill.
 2. Run `doctor`, `instructions --json`, and `project current`.
 3. Record the exact current project and read its company facts.
-4. Run `content list <projectId> material --query <keywords>`, `content list <projectId> topic --auto-selectable`, and `content list <projectId> article`. Do not scan every original material file. An already-used evergreen topic is not directly selectable: ask the topic planner to create an approved variant first.
+4. Run `material pending <projectId> --limit 20`. If it returns images, load the sibling `geo-material-organizer` Skill and finish the one-time indexing before selecting images. Then run `content list <projectId> material --query <keywords>`, `content list <projectId> topic --auto-selectable`, and `content list <projectId> article`. Do not rescan analyzed original files. An already-used evergreen topic is not directly selectable: ask the topic planner to create an approved variant first.
 5. Select one available topic. If the user supplied a title directly, create and save a topic through the sibling `geo-topic-planner` rules before writing.
 6. Generate a unique task ID and run `topic reserve <projectId> --topic <topicId> --task <taskId>` before writing. If reservation fails, select another available topic; never bypass the reservation.
 7. Read [output-contract.md](references/output-contract.md) completely.

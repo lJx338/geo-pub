@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { BetaActivationResult, DataChangeEvent, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
+import type { BetaActivationResult, DataChangeEvent, DesktopDistributionRequest, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
 import type { Project, ProjectInput } from './main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from './main/content-store.js';
 
@@ -21,6 +21,9 @@ if (typeof window !== 'undefined') {
 contextBridge.exposeInMainWorld('geoPublisher', {
   status: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:status'),
   openPlatform: (platform: Platform): Promise<PlatformStatus> => ipcRenderer.invoke('geo:open-platform', platform),
+  hidePlatform: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:hide-platform'),
+  chooseDistributionCover: (): Promise<{ canceled: boolean; filePath: string }> => ipcRenderer.invoke('geo:distribution-cover-choose'),
+  runDistribution: (input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> => ipcRenderer.invoke('geo:distribution-run', input),
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),
   workspaceSnapshot: (): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[] }> => ipcRenderer.invoke('geo:workspace-snapshot'),
   dataRevision: (): Promise<number> => ipcRenderer.invoke('geo:data-revision'),
@@ -28,6 +31,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   contentSave: (projectId: string, input: ContentInput): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:content-save', projectId, input),
   contentImportMaterial: (projectId: string, sourcePath: string, input?: Omit<ContentInput, 'kind'>): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:content-import-material', projectId, sourcePath, input),
   contentChooseMaterial: (projectId: string): Promise<{ canceled: boolean; items: ContentItem[] }> => ipcRenderer.invoke('geo:content-choose-material', projectId),
+  materialThumbnail: (projectId: string, materialId: string): Promise<{ dataUrl: string; width: number; height: number }> => ipcRenderer.invoke('geo:material-thumbnail', projectId, materialId),
   topicVariant: (projectId: string, topicId: string, input: ContentInput): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:topic-variant', projectId, topicId, input),
   createProject: (input: ProjectInput): Promise<{ project: Project; currentProject: Project }> => ipcRenderer.invoke('geo:project-create', input),
   updateProject: (id: string, input: Partial<ProjectInput>): Promise<{ project: Project }> => ipcRenderer.invoke('geo:project-update', id, input),
@@ -37,6 +41,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   importProject: (): Promise<{ canceled: boolean; project: Project | null; currentProject: Project | null }> => ipcRenderer.invoke('geo:project-import'),
   workBuddyStatus: (): Promise<WorkBuddyIntegrationStatus> => ipcRenderer.invoke('geo:workbuddy-status'),
   connectWorkBuddy: (): Promise<WorkBuddyIntegrationStatus & { prompt: string }> => ipcRenderer.invoke('geo:workbuddy-connect'),
+  organizeMaterialsWithWorkBuddy: (): Promise<WorkBuddyIntegrationStatus & { prompt: string }> => ipcRenderer.invoke('geo:workbuddy-organize-materials'),
   updateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('geo:update-status'),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('geo:update-check'),
   installUpdate: (): Promise<{ accepted: boolean; message: string }> => ipcRenderer.invoke('geo:update-install'),
@@ -46,6 +51,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   launchAtLoginStatus: (): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:launch-at-login-status'),
   setLaunchAtLogin: (enabled: boolean): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:set-launch-at-login', enabled),
   copyDiagnostics: (): Promise<{ copied: true; diagnostic: DiagnosticSummary }> => ipcRenderer.invoke('geo:copy-diagnostics'),
+  copyText: (text: string): Promise<{ copied: true }> => ipcRenderer.invoke('geo:copy-text', text),
   openDataDirectory: (): Promise<{ opened: boolean; error?: string }> => ipcRenderer.invoke('geo:open-data-directory'),
   onUpdateStatus: (listener: (status: UpdateStatus) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);

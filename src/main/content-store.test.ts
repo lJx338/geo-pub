@@ -65,4 +65,35 @@ describe('content store', () => {
     expect(first).toMatchObject({ category: 'product', status: 'active' });
   });
 
+  it('queues image materials for one-time WorkBuddy analysis', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
+    const source = join(directory, '设备现场.jpg');
+    await writeFile(source, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    const store = new ContentStore(join(directory, 'store'));
+    const imported = await store.importMaterial(projectId, source);
+    expect(imported).toMatchObject({ category: 'image', status: 'pending_analysis', payload: { mediaType: 'image', analysisStatus: 'pending', analysisVersion: 0 } });
+    expect((await store.pendingImageMaterials(projectId)).map((item) => item.id)).toEqual([imported.id]);
+
+    const analyzed = await store.analyzeImageMaterial(projectId, imported.id, {
+      description: '彩钢瓦成型设备在工厂内运行的现场照片',
+      category: 'equipment',
+      keywords: ['彩钢瓦', '成型设备', '工厂现场'],
+      uses: ['cover', 'body'],
+      confidence: 'high',
+      warnings: [],
+    });
+    expect(analyzed).toMatchObject({ category: 'equipment', status: 'active', payload: { analysisStatus: 'analyzed', analysisVersion: 1, uses: ['cover', 'body'] } });
+    expect(await store.pendingImageMaterials(projectId)).toHaveLength(0);
+  });
+
+  it('rejects invalid or cross-project image analysis', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
+    const source = join(directory, '产品.png');
+    await writeFile(source, Buffer.from('png'));
+    const store = new ContentStore(join(directory, 'store'));
+    const imported = await store.importMaterial(projectId, source);
+    await expect(store.analyzeImageMaterial(projectId, imported.id, { description: '', category: 'unknown' })).rejects.toThrow();
+    await expect(store.imageMaterial('22222222-2222-4222-8222-222222222222', imported.id)).rejects.toThrow('CONTENT_NOT_FOUND');
+  });
+
 });
