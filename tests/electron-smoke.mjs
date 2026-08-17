@@ -129,7 +129,8 @@ try {
   await window.locator('.ui-badge', { hasText: '已使用' }).waitFor();
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-content-center.png') });
   await window.getByText('使用指南', { exact: true }).click();
-  await window.getByText('从公司资料到自动发布的简易教程', { exact: true }).waitFor();
+  await window.getByText('搭配 WorkBuddy，从公司资料到自动发布', { exact: true }).waitFor();
+  if (await window.locator('.guide-steps').count()) throw new Error('duplicated first-use steps are still visible');
   const promptCards = window.locator('.workbuddy-prompt');
   if (await promptCards.count() !== 6) throw new Error('WorkBuddy tutorial does not contain all six steps');
   await promptCards.first().getByRole('button', { name: '复制提示词' }).click();
@@ -139,7 +140,7 @@ try {
   await window.locator('.content-tabs button.active', { hasText: /素材 1/ }).waitFor();
   await window.getByRole('button', { name: '添加图片' }).waitFor();
   await window.getByText('使用指南', { exact: true }).click();
-  await window.getByText('从公司资料到自动发布的简易教程', { exact: true }).waitFor();
+  await window.getByText('搭配 WorkBuddy，从公司资料到自动发布', { exact: true }).waitFor();
   await window.locator('.workbuddy-prompt').nth(1).getByRole('button', { name: '复制整理提示词' }).click();
   const materialPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
   if (!materialPrompt.includes('所有待整理的图片素材') || !materialPrompt.includes('不要重新识别已经整理过的图片')) throw new Error('material organizer prompt was not copied');
