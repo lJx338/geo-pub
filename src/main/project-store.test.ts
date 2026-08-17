@@ -22,6 +22,19 @@ describe('project store', () => {
     expect(project.industry).toBe(industry);
   });
 
+  it('discards website and contact details from project input', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
+    const store = new ProjectStore(join(directory, 'projects.json'));
+    await store.load();
+    const project = await store.create({
+      name: '无导流信息客户',
+      website: 'https://example.com',
+      contact: '13800000000',
+    } as Parameters<ProjectStore['create']>[0] & { website: string; contact: string });
+    expect(project).not.toHaveProperty('website');
+    expect(project).not.toHaveProperty('contact');
+  });
+
   it('switches projects without merging customer profiles', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
     const store = new ProjectStore(join(directory, 'projects.json'));
@@ -54,9 +67,9 @@ describe('project store', () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
     const store = new ProjectStore(join(directory, 'projects.json'));
     await store.load();
-    const original = await store.create({ name: '客户 A', companyName: '公司 A', contact: 'wx-a' });
+    const original = await store.create({ name: '客户 A', companyName: '公司 A', serviceArea: '华南地区' });
     const imported = await store.import(store.export(original.id));
-    expect(imported).toMatchObject({ name: '客户 A', companyName: '公司 A', contact: 'wx-a' });
+    expect(imported).toMatchObject({ name: '客户 A', companyName: '公司 A', serviceArea: '华南地区' });
     expect(imported.id).not.toBe(original.id);
     await store.archive(original.id);
     expect(store.list().map((project) => project.id)).toEqual([imported.id]);

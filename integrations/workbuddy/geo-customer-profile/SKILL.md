@@ -40,7 +40,7 @@ First collection round, ask only:
 - 核心产品或服务
 - 最突出的 1–3 个优势
 
-Second collection round is optional. Ask in one message whether they want to add any operating years, representative cases, credentials, target customers, service areas, website/contact details, customer questions, allowed sources, or forbidden phrases. They may reply “暂时没有” and continue.
+Second collection round is optional. Ask in one message whether they want to add any operating years, representative cases, credentials, target customers, service areas, customer questions, allowed sources, or forbidden phrases. They may reply “暂时没有” and continue.
 
 Then show the complete summary and ask for one explicit confirmation.
 
@@ -59,8 +59,6 @@ Use only these project fields:
 | `cases` | Real representative customers, projects, results, or permitted anonymous cases |
 | `credentials` | Certifications, patents, licenses, awards, standards, or authoritative endorsements |
 | `valueAndAudience` | Target customers, their needs, and the specific value the product or service provides to them |
-| `website` | Official website or approved public page |
-| `contact` | Approved public contact or call to action |
 | `serviceArea` | Regions, industries, or application scenarios served |
 | `allowedSources` | Sources WorkBuddy may quote or use |
 | `forbiddenPhrases` | Claims, sensitive wording, competitors, or topics that must not appear |
@@ -72,13 +70,13 @@ Do not invent a value merely to fill a field. Optional fields may remain empty.
 ## Extraction and polishing rules
 
 - Separate facts from slogans. Convert “行业领先、品质卓越” into a neutral expression only when the source provides concrete support; otherwise omit it.
-- Preserve names, dates, quantities, certifications, customer names, results, regions, and contact details exactly. Never strengthen or fabricate them.
+- Preserve names, dates, quantities, certifications, customer names, results, and regions exactly. Never strengthen or fabricate them.
 - Rewrite fragmented or repetitive text into reusable, concise project fields without changing meaning.
 - Put each fact in one best field. Do not duplicate one sentence across several fields.
 - Keep `companyName` to the name itself.
 - Summarize long product lists into core categories and retain a few representative items.
 - Treat inferred information as “待确认”, not as fact. Example: a product may suggest an industry, but the industry still needs confirmation if not stated.
-- Remove personal phone numbers, private WeChat IDs, ID numbers, passwords, cookies, and other secrets unless the user explicitly confirms that a contact is intended for public publication.
+- Discard website URLs, phone numbers, email addresses, WeChat IDs, QR-code instructions, and other contact or traffic-diversion details. GEO content must not include them, so never save them in the project even when the source introduction contains them.
 - Do not turn this task into article writing. A polished company introduction is a profile summary, not promotional copy.
 
 ## Confirmation

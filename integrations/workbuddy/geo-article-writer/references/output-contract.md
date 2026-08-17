@@ -6,6 +6,7 @@
 - Use the full company or brand name naturally two to four times; E-E-A-T articles may use it three to four times.
 - Link the company to confirmed products, audiences, scenarios, strengths, cases, or credentials.
 - Never invent company facts, named customers, results, credentials, rankings, prices, policies, or external data.
+- Never include website URLs, phone numbers, email addresses, WeChat IDs, QR-code instructions, or other contact and traffic-diversion details.
 - You may add common scenarios, professional reasoning, checklists, and explicitly hypothetical examples.
 
 ## Title and opening

@@ -16,8 +16,6 @@ const projectSchema = z.object({
   cases: z.string().trim().max(projectProfileFields.cases.maxLength).default(''),
   credentials: z.string().trim().max(projectProfileFields.credentials.maxLength).default(''),
   valueAndAudience: z.string().trim().max(projectProfileFields.valueAndAudience.maxLength).default(''),
-  website: z.string().trim().max(projectProfileFields.website.maxLength).default(''),
-  contact: z.string().trim().max(projectProfileFields.contact.maxLength).default(''),
   serviceArea: z.string().trim().max(projectProfileFields.serviceArea.maxLength).default(''),
   allowedSources: z.string().trim().max(projectProfileFields.allowedSources.maxLength).default(''),
   forbiddenPhrases: z.string().trim().max(projectProfileFields.forbiddenPhrases.maxLength).default(''),

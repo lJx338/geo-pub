@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertTriangle, ArrowLeft, BookOpen, Boxes, BriefcaseBusiness, Building2, CheckCircle2, ChevronDown, CircleAlert, Clock3, ContactRound, Copy, Download, Eye, FileText, FolderOpen, Globe2, ImagePlus, KeyRound, LayoutDashboard, Link2, ListChecks, LogIn, MessageSquareText, PackageOpen, Pencil, Plus, Power, RefreshCw, Rocket, Search, Send, Settings2, ShieldCheck, Sparkles, Tag, UserRound, UsersRound, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, BookOpen, Boxes, BriefcaseBusiness, Building2, CheckCircle2, ChevronDown, CircleAlert, Clock3, Copy, Download, Eye, FileText, FolderOpen, Globe2, ImagePlus, KeyRound, LayoutDashboard, Link2, ListChecks, LogIn, MessageSquareText, PackageOpen, Pencil, Plus, Power, RefreshCw, Rocket, Search, Send, Settings2, ShieldCheck, Sparkles, Tag, UserRound, UsersRound, X } from 'lucide-react';
 import { Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Empty, Field, FieldGroup, Progress, Spinner, Switch } from './components/ui.js';
 import { friendlyProjectSaveError, projectProfileFields, validateProjectProfile, type ProjectProfileField, type ProjectProfileIssue } from '../shared/project-profile.js';
 
@@ -140,7 +140,7 @@ function GuideView({ project, workBuddy, setView, connect, notify }: any) {
   const workBuddyPrompts = [
     {
       number: '1', title: '配置公司资料', badge: '必须', description: '把已有的公司简介直接放在提示词最后。没有简介也可以，WorkBuddy 会用两轮以内的问题帮你补齐。',
-      prompt: `请帮我配置 GEO Publisher 当前客户项目的公司资料。\n\n如果当前没有客户项目，请帮我新建一个；如果已经有项目，只更新当前项目，不要修改其他客户。请从我提供的简介中提取并适度润色公司名称、行业、产品或服务、核心优势、目标客户、案例、资质、服务地区、联系方式、客户常问问题和禁用词。只追问最关键的缺失信息，最多两轮。整理完成后先给我看一份简洁摘要，必须等我明确回复“确认创建”或“确认写入”后再保存。不要编造公司事实。\n\n公司简介：\n【把公司简介粘贴到这里】`,
+      prompt: `请帮我配置 GEO Publisher 当前客户项目的公司资料。\n\n如果当前没有客户项目，请帮我新建一个；如果已经有项目，只更新当前项目，不要修改其他客户。请从我提供的简介中提取并适度润色公司名称、行业、产品或服务、核心优势、目标客户、案例、资质、服务地区、客户常问问题和禁用词。不要收集或写入官网、电话、邮箱、微信等联系方式。只追问最关键的缺失信息，最多两轮。整理完成后先给我看一份简洁摘要，必须等我明确回复“确认创建”或“确认写入”后再保存。不要编造公司事实。\n\n公司简介：\n【把公司简介粘贴到这里】`,
     },
     {
       number: '2', title: '整理图片素材', badge: '有图片时', description: '先在桌面端“内容中心”上传产品、设备、案例或资质图片，再运行这一步。每张图片只需整理一次。',
@@ -490,7 +490,7 @@ function ProjectDialog({ editing, setEditing, save }: any) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [saving, setSaving] = useState(false);
   const [submitIssue, setSubmitIssue] = useState<ProjectProfileIssue | null>(null);
-  const profileFields = ['name', 'companyName', 'industry', 'products', 'strengths', 'valueAndAudience', 'operatingYears', 'cases', 'credentials', 'serviceArea', 'website', 'contact', 'customerQuestions', 'allowedSources', 'forbiddenPhrases'];
+  const profileFields = ['name', 'companyName', 'industry', 'products', 'strengths', 'valueAndAudience', 'operatingYears', 'cases', 'credentials', 'serviceArea', 'customerQuestions', 'allowedSources', 'forbiddenPhrases'];
   const completed = profileFields.filter((field) => String(editing[field] || '').trim()).length;
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -498,7 +498,7 @@ function ProjectDialog({ editing, setEditing, save }: any) {
     return () => { if (dialog?.open) dialog.close(); };
   }, []);
   const fieldIds: Record<ProjectProfileField, string> = {
-    name: 'project-input-name', companyName: 'project-company-name', industry: 'project-industry', products: 'project-products', strengths: 'project-strengths', valueAndAudience: 'project-audience', operatingYears: 'project-years', cases: 'project-cases', credentials: 'project-credentials', serviceArea: 'project-service-area', website: 'project-website', contact: 'project-contact', customerQuestions: 'project-questions', allowedSources: 'project-sources', forbiddenPhrases: 'project-forbidden',
+    name: 'project-input-name', companyName: 'project-company-name', industry: 'project-industry', products: 'project-products', strengths: 'project-strengths', valueAndAudience: 'project-audience', operatingYears: 'project-years', cases: 'project-cases', credentials: 'project-credentials', serviceArea: 'project-service-area', customerQuestions: 'project-questions', allowedSources: 'project-sources', forbiddenPhrases: 'project-forbidden',
   };
   const focusIssue = (issue: ProjectProfileIssue) => {
     if (!issue.field) return;
@@ -571,11 +571,9 @@ function ProjectDialog({ editing, setEditing, save }: any) {
         </details>
 
         <details className="project-form-more">
-          <summary><span className="project-more-icon"><ContactRound size={17} /></span><span><strong>服务范围与联系方式</strong><small>对外展示的信息，可暂时不填</small></span><ChevronDown size={17} /></summary>
+          <summary><span className="project-more-icon"><Globe2 size={17} /></span><span><strong>服务范围</strong><small>服务地区或常见应用场景，可暂时不填</small></span><ChevronDown size={17} /></summary>
           <FieldGroup>
             <Field label="服务地区或应用场景" htmlFor="project-service-area"><input id="project-service-area" {...controlProps('serviceArea')} value={editing.serviceArea || ''} onChange={(event) => update('serviceArea', event.target.value)} placeholder="例如：全国服务、海外市场、工业园区" /></Field>
-            <Field label="官方网站" htmlFor="project-website"><input id="project-website" {...controlProps('website')} value={editing.website || ''} onChange={(event) => update('website', event.target.value)} placeholder="https://" /></Field>
-            <Field label="公开联系方式或行动引导" htmlFor="project-contact"><input id="project-contact" {...controlProps('contact')} value={editing.contact || ''} onChange={(event) => update('contact', event.target.value)} placeholder="仅填写允许出现在文章中的联系方式" /></Field>
           </FieldGroup>
         </details>
 
@@ -583,7 +581,7 @@ function ProjectDialog({ editing, setEditing, save }: any) {
           <summary><span className="project-more-icon"><MessageSquareText size={17} /></span><span><strong>内容偏好与边界</strong><small>帮助 WorkBuddy 选题并避免不合适的表达</small></span><ChevronDown size={17} /></summary>
           <FieldGroup>
             <Field label="客户经常问的问题" htmlFor="project-questions"><textarea id="project-questions" {...controlProps('customerQuestions')} value={editing.customerQuestions || ''} onChange={(event) => update('customerQuestions', event.target.value)} placeholder="销售沟通、搜索或咨询中经常出现的问题" /></Field>
-            <Field label="允许引用的来源" htmlFor="project-sources"><textarea id="project-sources" {...controlProps('allowedSources')} value={editing.allowedSources || ''} onChange={(event) => update('allowedSources', event.target.value)} placeholder="官网、公众号、资料链接或指定行业来源" /></Field>
+            <Field label="允许引用的来源" htmlFor="project-sources"><textarea id="project-sources" {...controlProps('allowedSources')} value={editing.allowedSources || ''} onChange={(event) => update('allowedSources', event.target.value)} placeholder="公众号、资料文件或指定行业来源；不要填写联系方式" /></Field>
             <Field label="禁用词与敏感内容" htmlFor="project-forbidden"><textarea id="project-forbidden" {...controlProps('forbiddenPhrases')} value={editing.forbiddenPhrases || ''} onChange={(event) => update('forbiddenPhrases', event.target.value)} placeholder="不希望出现的承诺、竞品、敏感词或话题" /></Field>
           </FieldGroup>
         </details>

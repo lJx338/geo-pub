@@ -8,8 +8,6 @@ export const projectProfileFields = {
   cases: { label: '代表案例', maxLength: 8_000 },
   credentials: { label: '资质与权威背书', maxLength: 5_000 },
   valueAndAudience: { label: '目标客户与产品/服务价值', maxLength: 5_000 },
-  website: { label: '官方网站', maxLength: 500 },
-  contact: { label: '公开联系方式或行动引导', maxLength: 1_000 },
   serviceArea: { label: '服务地区或应用场景', maxLength: 2_000 },
   allowedSources: { label: '允许引用的来源', maxLength: 10_000 },
   forbiddenPhrases: { label: '禁用词与敏感内容', maxLength: 5_000 },

@@ -84,5 +84,6 @@ After every requested article package has been saved successfully, run `topic us
 - Do not call `fill` or `publish`; hand ready packages to the sibling `geo-publisher` Skill.
 - Do not insert Markdown markers or HTML into block text.
 - Do not expose quality scores, evidence notes, prompts, missing-data notes, cover instructions, or platform operations inside published body blocks.
+- Do not place website URLs, phone numbers, email addresses, WeChat IDs, QR-code instructions, or other contact and traffic-diversion details in the title, summary, body, tags, or images.
 - Never invent company facts, named customers, completed project results, credentials, rankings, policies, or external statistics. You may create clearly framed common scenarios, professional reasoning, checklists, and hypothetical examples.
 - Do not alter an approved topic into an abstract headline during writing.
