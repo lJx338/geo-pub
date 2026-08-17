@@ -557,7 +557,7 @@ function ProjectDialog({ editing, setEditing, save }: any) {
           <FieldGroup>
             <Field label="核心产品或服务" htmlFor="project-products"><textarea id="project-products" {...controlProps('products')} value={editing.products || ''} onChange={(event) => update('products', event.target.value)} placeholder="列出主要产品、服务或解决方案" /></Field>
             <Field label="核心优势" htmlFor="project-strengths"><textarea id="project-strengths" {...controlProps('strengths')} value={editing.strengths || ''} onChange={(event) => update('strengths', event.target.value)} placeholder="填写1-3个最有区分度、可以公开表达的优势" /></Field>
-            <Field label="目标客户与客户价值" htmlFor="project-audience"><textarea id="project-audience" {...controlProps('valueAndAudience')} value={editing.valueAndAudience || ''} onChange={(event) => update('valueAndAudience', event.target.value)} placeholder="客户是谁，他们通常关心什么，公司能提供什么价值" /></Field>
+            <Field label="目标客户与产品/服务价值" htmlFor="project-audience"><textarea id="project-audience" {...controlProps('valueAndAudience')} value={editing.valueAndAudience || ''} onChange={(event) => update('valueAndAudience', event.target.value)} placeholder="客户是谁、通常关心什么，产品或服务能为他们带来什么价值" /></Field>
           </FieldGroup>
         </section>
 

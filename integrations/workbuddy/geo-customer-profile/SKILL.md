@@ -58,7 +58,7 @@ Use only these project fields:
 | `strengths` | Differentiators, capabilities, delivery strengths, or product highlights |
 | `cases` | Real representative customers, projects, results, or permitted anonymous cases |
 | `credentials` | Certifications, patents, licenses, awards, standards, or authoritative endorsements |
-| `valueAndAudience` | Target customers, their needs, and the value provided |
+| `valueAndAudience` | Target customers, their needs, and the specific value the product or service provides to them |
 | `website` | Official website or approved public page |
 | `contact` | Approved public contact or call to action |
 | `serviceArea` | Regions, industries, or application scenarios served |

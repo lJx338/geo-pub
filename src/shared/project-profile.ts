@@ -7,7 +7,7 @@ export const projectProfileFields = {
   strengths: { label: '核心优势', maxLength: 5_000 },
   cases: { label: '代表案例', maxLength: 8_000 },
   credentials: { label: '资质与权威背书', maxLength: 5_000 },
-  valueAndAudience: { label: '目标客户与客户价值', maxLength: 5_000 },
+  valueAndAudience: { label: '目标客户与产品/服务价值', maxLength: 5_000 },
   website: { label: '官方网站', maxLength: 500 },
   contact: { label: '公开联系方式或行动引导', maxLength: 1_000 },
   serviceArea: { label: '服务地区或应用场景', maxLength: 2_000 },
