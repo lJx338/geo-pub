@@ -135,6 +135,14 @@ try {
   await promptCards.first().getByRole('button', { name: '复制提示词' }).click();
   const copiedPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
   if (!copiedPrompt.includes('配置 GEO Publisher 当前客户项目的公司资料') || !copiedPrompt.includes('确认写入')) throw new Error('company profile prompt was not copied');
+  await promptCards.nth(1).getByRole('button', { name: '前往上传图片' }).click();
+  await window.locator('.content-tabs button.active', { hasText: /素材 1/ }).waitFor();
+  await window.getByRole('button', { name: '添加图片' }).waitFor();
+  await window.getByText('使用指南', { exact: true }).click();
+  await window.getByText('从公司资料到自动发布的简易教程', { exact: true }).waitFor();
+  await window.locator('.workbuddy-prompt').nth(1).getByRole('button', { name: '复制整理提示词' }).click();
+  const materialPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
+  if (!materialPrompt.includes('所有待整理的图片素材') || !materialPrompt.includes('不要重新识别已经整理过的图片')) throw new Error('material organizer prompt was not copied');
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-workbuddy-guide.png'), fullPage: true });
   await window.getByText('分发', { exact: true }).first().click();
   await window.getByRole('button', { name: '配置分发' }).click();
