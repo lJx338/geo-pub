@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client';
 import { AlertTriangle, ArrowLeft, BookOpen, Boxes, BriefcaseBusiness, Building2, CheckCircle2, ChevronDown, CircleAlert, Clock3, ContactRound, Copy, Download, Eye, FileText, FolderOpen, Globe2, ImagePlus, KeyRound, LayoutDashboard, Link2, ListChecks, LogIn, MessageSquareText, PackageOpen, Pencil, Plus, Power, RefreshCw, Rocket, Search, Send, Settings2, ShieldCheck, Sparkles, Tag, UserRound, UsersRound, X } from 'lucide-react';
 import { Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Empty, Field, FieldGroup, Progress, Spinner, Switch } from './components/ui.js';
+import { friendlyProjectSaveError, projectProfileFields, validateProjectProfile, type ProjectProfileField, type ProjectProfileIssue } from '../shared/project-profile.js';
 
 const platforms = [['baijia', '百家号'], ['toutiao', '头条号'], ['zhihu', '知乎'], ['penguin', '企鹅号'], ['sohu', '搜狐号'], ['netease', '网易号']] as const;
 const platformLabels = Object.fromEntries(platforms) as Record<string, string>;
@@ -94,7 +95,7 @@ function App() {
   const busy = Boolean(status.busy); const articles = useMemo(() => items.filter((i) => i.kind === 'article'), [items]); const topics = useMemo(() => items.filter((i) => i.kind === 'topic'), [items]); const materials = useMemo(() => items.filter((i) => i.kind === 'material'), [items]); const distributions = useMemo(() => items.filter((i) => i.kind === 'distribution'), [items]);
   const openPlatform = async (id: string) => { if (busy) return notify(`正在执行${platformLabels[status.executingPlatform] || '平台'}任务，不能切换`, true); if (!project) return setEditing({ name: '', companyName: '', industry: '' }); try { await window.geoPublisher.openPlatform(id as any); setStatus(await window.geoPublisher.status()); notify(`${platformLabels[id]}已打开`); } catch (e) { notify((e as Error).message, true); } };
   const hidePlatform = async () => { try { setStatus(await window.geoPublisher.hidePlatform()); notify('已返回工作台，平台页面和登录状态已保留'); } catch (e) { notify((e as Error).message, true); } };
-  const saveProject = async () => { if (!editing?.name?.trim()) return notify('请填写项目名称', true); try { if (editing.id) { const result = await window.geoPublisher.updateProject(editing.id, editing); setEditing(null); notify(`已保存客户资料：${result.project.name}`); } else { const result = await window.geoPublisher.createProject(editing); setEditing(null); notify(`已创建并切换到客户项目：${result.currentProject.name}`); } await refresh(); } catch (e) { notify((e as Error).message, true); } };
+  const saveProject = async () => { try { if (editing.id) { const result = await window.geoPublisher.updateProject(editing.id, editing); setEditing(null); notify(`已保存客户资料：${result.project.name}`); } else { const result = await window.geoPublisher.createProject(editing); setEditing(null); notify(`已创建并切换到客户项目：${result.currentProject.name}`); } await refresh(); } catch (e) { notify(friendlyProjectSaveError(e), true); throw e; } };
   const switchProject = async (projectId: string) => { if (busy) return notify(`正在执行${platformLabels[status.executingPlatform] || '平台'}任务，不能切换客户项目`, true); if (projectId === project?.id) { setSelectingProject(false); return; } try { const result = await window.geoPublisher.selectProject(projectId); setSelectingProject(false); await refresh(); notify(`已切换到客户项目：${result.currentProject.name}`); } catch (e) { notify((e as Error).message, true); } };
   const connect = async () => { try { await window.geoPublisher.connectWorkBuddy(); setWorkBuddy({ prepared: true }); notify('连接指令已复制，请粘贴到 WorkBuddy'); } catch (e) { notify((e as Error).message, true); } };
   const nav = [['overview', '概览', LayoutDashboard], ['projects', '客户项目', UsersRound], ['content', '内容中心', FileText], ['distribution', '分发', Send], ['accounts', '平台账号', Globe2], ['guide', '使用指南', BookOpen], ['settings', '设置', Settings2]] as const;
@@ -487,6 +488,8 @@ function ProjectSelector({ projects, currentProject, busy, close, select, edit, 
 }
 function ProjectDialog({ editing, setEditing, save }: any) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [saving, setSaving] = useState(false);
+  const [submitIssue, setSubmitIssue] = useState<ProjectProfileIssue | null>(null);
   const profileFields = ['name', 'companyName', 'industry', 'products', 'strengths', 'valueAndAudience', 'operatingYears', 'cases', 'credentials', 'serviceArea', 'website', 'contact', 'customerQuestions', 'allowedSources', 'forbiddenPhrases'];
   const completed = profileFields.filter((field) => String(editing[field] || '').trim()).length;
   useEffect(() => {
@@ -494,9 +497,47 @@ function ProjectDialog({ editing, setEditing, save }: any) {
     if (dialog && !dialog.open) dialog.showModal();
     return () => { if (dialog?.open) dialog.close(); };
   }, []);
-  const update = (field: string, value: string) => setEditing({ ...editing, [field]: value });
+  const fieldIds: Record<ProjectProfileField, string> = {
+    name: 'project-input-name', companyName: 'project-company-name', industry: 'project-industry', products: 'project-products', strengths: 'project-strengths', valueAndAudience: 'project-audience', operatingYears: 'project-years', cases: 'project-cases', credentials: 'project-credentials', serviceArea: 'project-service-area', website: 'project-website', contact: 'project-contact', customerQuestions: 'project-questions', allowedSources: 'project-sources', forbiddenPhrases: 'project-forbidden',
+  };
+  const focusIssue = (issue: ProjectProfileIssue) => {
+    if (!issue.field) return;
+    window.requestAnimationFrame(() => {
+      const control = document.getElementById(fieldIds[issue.field!]);
+      const details = control?.closest('details');
+      if (details) details.open = true;
+      control?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      control?.focus({ preventScroll: true });
+    });
+  };
+  const update = (field: ProjectProfileField, value: string) => {
+    setEditing({ ...editing, [field]: value });
+    if (submitIssue?.field === field) setSubmitIssue(null);
+  };
+  const controlProps = (field: ProjectProfileField) => ({
+    maxLength: projectProfileFields[field].maxLength,
+    'aria-invalid': submitIssue?.field === field || undefined,
+  });
+  const submit = async () => {
+    if (saving) return;
+    const issue = validateProjectProfile(editing);
+    if (issue) {
+      setSubmitIssue(issue);
+      focusIssue(issue);
+      return;
+    }
+    setSubmitIssue(null);
+    setSaving(true);
+    try {
+      await save();
+    } catch (error) {
+      setSubmitIssue({ field: null, message: friendlyProjectSaveError(error) });
+    } finally {
+      setSaving(false);
+    }
+  };
   return <dialog ref={dialogRef} id="project-dialog" className="project-sheet" aria-labelledby="project-dialog-title" onCancel={(event) => { event.preventDefault(); setEditing(null); }}>
-    <form className="project-sheet-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+    <form className="project-sheet-form" noValidate onSubmit={(event) => { event.preventDefault(); void submit(); }}>
       <header className="project-sheet-head">
         <div className="project-sheet-identity"><span className="project-sheet-avatar"><Building2 size={20} /></span><div><p className="eyebrow">{editing.id ? '客户项目资料' : '创建客户项目'}</p><h2 id="project-dialog-title">{editing.id ? (editing.name || '编辑客户项目') : '建立客户资料'}</h2><p>{editing.id ? '资料会用于选题、文章生成和平台分发。' : '先填写必要信息，其余资料可以以后继续完善。'}</p></div></div>
         <div className="project-sheet-actions"><Badge tone={completed >= 10 ? 'success' : 'neutral'}>已完善 {completed}/{profileFields.length}</Badge><Button type="button" variant="ghost" icon={X} onClick={() => setEditing(null)} aria-label="关闭客户资料" /></div>
@@ -505,49 +546,49 @@ function ProjectDialog({ editing, setEditing, save }: any) {
         <section className="project-form-section">
           <div className="project-section-head"><span><Building2 size={17} /></span><div><h3>基础信息</h3><p>项目名称仅用于区分客户，不会出现在发布的文章中。</p></div></div>
           <FieldGroup>
-            <Field label="项目名称" description="建议使用客户简称，方便快速切换。" htmlFor="project-input-name"><input id="project-input-name" autoFocus value={editing.name || ''} onChange={(event) => update('name', event.target.value)} placeholder="例如：沧州华晨压瓦机械" /></Field>
-            <Field label="公司或品牌全称" htmlFor="project-company-name"><input id="project-company-name" value={editing.companyName || ''} onChange={(event) => update('companyName', event.target.value)} placeholder="文章中需要使用的正式名称" /></Field>
-            <Field label="行业与核心业务" htmlFor="project-industry"><textarea id="project-industry" value={editing.industry || ''} onChange={(event) => update('industry', event.target.value)} placeholder="公司属于什么行业，主要解决什么问题" /></Field>
+            <Field label="项目名称" description="建议使用客户简称，方便快速切换。" htmlFor="project-input-name"><input id="project-input-name" autoFocus {...controlProps('name')} value={editing.name || ''} onChange={(event) => update('name', event.target.value)} placeholder="例如：沧州华晨压瓦机械" /></Field>
+            <Field label="公司或品牌全称" htmlFor="project-company-name"><input id="project-company-name" {...controlProps('companyName')} value={editing.companyName || ''} onChange={(event) => update('companyName', event.target.value)} placeholder="文章中需要使用的正式名称" /></Field>
+            <Field label="行业与核心业务" htmlFor="project-industry"><textarea id="project-industry" {...controlProps('industry')} value={editing.industry || ''} onChange={(event) => update('industry', event.target.value)} placeholder="公司属于什么行业，主要解决什么问题" /></Field>
           </FieldGroup>
         </section>
 
         <section className="project-form-section">
           <div className="project-section-head"><span><BriefcaseBusiness size={17} /></span><div><h3>业务内容</h3><p>这些信息会直接影响选题是否具体、文章是否像这个行业的人写的。</p></div></div>
           <FieldGroup>
-            <Field label="核心产品或服务" htmlFor="project-products"><textarea id="project-products" value={editing.products || ''} onChange={(event) => update('products', event.target.value)} placeholder="列出主要产品、服务或解决方案" /></Field>
-            <Field label="核心优势" htmlFor="project-strengths"><textarea id="project-strengths" value={editing.strengths || ''} onChange={(event) => update('strengths', event.target.value)} placeholder="填写1-3个最有区分度、可以公开表达的优势" /></Field>
-            <Field label="目标客户与客户价值" htmlFor="project-audience"><textarea id="project-audience" value={editing.valueAndAudience || ''} onChange={(event) => update('valueAndAudience', event.target.value)} placeholder="客户是谁，他们通常关心什么，公司能提供什么价值" /></Field>
+            <Field label="核心产品或服务" htmlFor="project-products"><textarea id="project-products" {...controlProps('products')} value={editing.products || ''} onChange={(event) => update('products', event.target.value)} placeholder="列出主要产品、服务或解决方案" /></Field>
+            <Field label="核心优势" htmlFor="project-strengths"><textarea id="project-strengths" {...controlProps('strengths')} value={editing.strengths || ''} onChange={(event) => update('strengths', event.target.value)} placeholder="填写1-3个最有区分度、可以公开表达的优势" /></Field>
+            <Field label="目标客户与客户价值" htmlFor="project-audience"><textarea id="project-audience" {...controlProps('valueAndAudience')} value={editing.valueAndAudience || ''} onChange={(event) => update('valueAndAudience', event.target.value)} placeholder="客户是谁，他们通常关心什么，公司能提供什么价值" /></Field>
           </FieldGroup>
         </section>
 
         <details className="project-form-more">
           <summary><span className="project-more-icon"><ShieldCheck size={17} /></span><span><strong>案例与信任资料</strong><small>经营年限、真实案例和资质认证</small></span><ChevronDown size={17} /></summary>
           <FieldGroup>
-            <Field label="经营年限或成立时间" htmlFor="project-years"><input id="project-years" value={editing.operatingYears || ''} onChange={(event) => update('operatingYears', event.target.value)} placeholder="例如：成立于2012年" /></Field>
-            <Field label="代表案例" htmlFor="project-cases"><textarea id="project-cases" value={editing.cases || ''} onChange={(event) => update('cases', event.target.value)} placeholder="只填写允许公开的真实客户、项目、动作和结果" /></Field>
-            <Field label="资质与权威背书" htmlFor="project-credentials"><textarea id="project-credentials" value={editing.credentials || ''} onChange={(event) => update('credentials', event.target.value)} placeholder="认证、专利、奖项、许可证或行业标准" /></Field>
+            <Field label="经营年限或成立时间" htmlFor="project-years"><input id="project-years" {...controlProps('operatingYears')} value={editing.operatingYears || ''} onChange={(event) => update('operatingYears', event.target.value)} placeholder="例如：成立于2012年" /></Field>
+            <Field label="代表案例" htmlFor="project-cases"><textarea id="project-cases" {...controlProps('cases')} value={editing.cases || ''} onChange={(event) => update('cases', event.target.value)} placeholder="只填写允许公开的真实客户、项目、动作和结果" /></Field>
+            <Field label="资质与权威背书" htmlFor="project-credentials"><textarea id="project-credentials" {...controlProps('credentials')} value={editing.credentials || ''} onChange={(event) => update('credentials', event.target.value)} placeholder="认证、专利、奖项、许可证或行业标准" /></Field>
           </FieldGroup>
         </details>
 
         <details className="project-form-more">
           <summary><span className="project-more-icon"><ContactRound size={17} /></span><span><strong>服务范围与联系方式</strong><small>对外展示的信息，可暂时不填</small></span><ChevronDown size={17} /></summary>
           <FieldGroup>
-            <Field label="服务地区或应用场景" htmlFor="project-service-area"><input id="project-service-area" value={editing.serviceArea || ''} onChange={(event) => update('serviceArea', event.target.value)} placeholder="例如：全国服务、海外市场、工业园区" /></Field>
-            <Field label="官方网站" htmlFor="project-website"><input id="project-website" value={editing.website || ''} onChange={(event) => update('website', event.target.value)} placeholder="https://" /></Field>
-            <Field label="公开联系方式或行动引导" htmlFor="project-contact"><input id="project-contact" value={editing.contact || ''} onChange={(event) => update('contact', event.target.value)} placeholder="仅填写允许出现在文章中的联系方式" /></Field>
+            <Field label="服务地区或应用场景" htmlFor="project-service-area"><input id="project-service-area" {...controlProps('serviceArea')} value={editing.serviceArea || ''} onChange={(event) => update('serviceArea', event.target.value)} placeholder="例如：全国服务、海外市场、工业园区" /></Field>
+            <Field label="官方网站" htmlFor="project-website"><input id="project-website" {...controlProps('website')} value={editing.website || ''} onChange={(event) => update('website', event.target.value)} placeholder="https://" /></Field>
+            <Field label="公开联系方式或行动引导" htmlFor="project-contact"><input id="project-contact" {...controlProps('contact')} value={editing.contact || ''} onChange={(event) => update('contact', event.target.value)} placeholder="仅填写允许出现在文章中的联系方式" /></Field>
           </FieldGroup>
         </details>
 
         <details className="project-form-more">
           <summary><span className="project-more-icon"><MessageSquareText size={17} /></span><span><strong>内容偏好与边界</strong><small>帮助 WorkBuddy 选题并避免不合适的表达</small></span><ChevronDown size={17} /></summary>
           <FieldGroup>
-            <Field label="客户经常问的问题" htmlFor="project-questions"><textarea id="project-questions" value={editing.customerQuestions || ''} onChange={(event) => update('customerQuestions', event.target.value)} placeholder="销售沟通、搜索或咨询中经常出现的问题" /></Field>
-            <Field label="允许引用的来源" htmlFor="project-sources"><textarea id="project-sources" value={editing.allowedSources || ''} onChange={(event) => update('allowedSources', event.target.value)} placeholder="官网、公众号、资料链接或指定行业来源" /></Field>
-            <Field label="禁用词与敏感内容" htmlFor="project-forbidden"><textarea id="project-forbidden" value={editing.forbiddenPhrases || ''} onChange={(event) => update('forbiddenPhrases', event.target.value)} placeholder="不希望出现的承诺、竞品、敏感词或话题" /></Field>
+            <Field label="客户经常问的问题" htmlFor="project-questions"><textarea id="project-questions" {...controlProps('customerQuestions')} value={editing.customerQuestions || ''} onChange={(event) => update('customerQuestions', event.target.value)} placeholder="销售沟通、搜索或咨询中经常出现的问题" /></Field>
+            <Field label="允许引用的来源" htmlFor="project-sources"><textarea id="project-sources" {...controlProps('allowedSources')} value={editing.allowedSources || ''} onChange={(event) => update('allowedSources', event.target.value)} placeholder="官网、公众号、资料链接或指定行业来源" /></Field>
+            <Field label="禁用词与敏感内容" htmlFor="project-forbidden"><textarea id="project-forbidden" {...controlProps('forbiddenPhrases')} value={editing.forbiddenPhrases || ''} onChange={(event) => update('forbiddenPhrases', event.target.value)} placeholder="不希望出现的承诺、竞品、敏感词或话题" /></Field>
           </FieldGroup>
         </details>
       </div>
-      <footer className="project-sheet-foot"><p>{editing.id ? '保存后，WorkBuddy 下次生成内容时会使用最新资料。' : '创建后会自动切换到这个客户项目。'}</p><div><Button type="button" variant="outline" onClick={() => setEditing(null)}>取消</Button><Button id="project-save" type="submit" icon={editing.id ? CheckCircle2 : Plus}>{editing.id ? '保存修改' : '创建项目'}</Button></div></footer>
+      <footer className="project-sheet-foot"><div className="project-sheet-feedback"><p>{editing.id ? '保存后，WorkBuddy 下次生成内容时会使用最新资料。' : '创建后会自动切换到这个客户项目。'}</p>{submitIssue && <p id="project-submit-error" className="project-submit-error" role="alert"><CircleAlert size={15}/>{submitIssue.message}</p>}</div><div><Button type="button" variant="outline" disabled={saving} onClick={() => setEditing(null)}>取消</Button><Button id="project-save" type="submit" disabled={saving} icon={saving ? undefined : editing.id ? CheckCircle2 : Plus}>{saving && <Spinner/>}{saving ? (editing.id ? '正在保存' : '正在创建') : editing.id ? '保存修改' : '创建项目'}</Button></div></footer>
     </form>
   </dialog>;
 }

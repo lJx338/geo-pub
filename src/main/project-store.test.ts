@@ -13,6 +13,15 @@ describe('project store', () => {
     expect(store.current()).toMatchObject({ id: project.id, companyName: '测试公司' });
   });
 
+  it('accepts a complete long-form company profile', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
+    const store = new ProjectStore(join(directory, 'projects.json'));
+    await store.load();
+    const industry = '体育场馆运营、青少年培训和赛事服务。'.repeat(40);
+    const project = await store.create({ name: '完整资料客户', industry, products: '产品与服务说明。'.repeat(100) });
+    expect(project.industry).toBe(industry);
+  });
+
   it('switches projects without merging customer profiles', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
     const store = new ProjectStore(join(directory, 'projects.json'));

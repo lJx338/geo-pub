@@ -36,6 +36,28 @@ try {
   const projectId = created.data?.project?.id;
   if (!projectId) throw new Error(`project creation failed: ${JSON.stringify(created)}`);
   await window.locator('#current-project-title', { hasText: '冒烟测试客户' }).waitFor();
+  await window.getByText('客户项目', { exact: true }).first().click();
+  await window.getByRole('button', { name: '新建项目' }).click();
+  await window.locator('#project-input-name').fill('界面创建客户');
+  const longIndustryProfile = '体育场馆运营、培训与赛事服务。'.repeat(40);
+  await window.locator('#project-industry').fill(longIndustryProfile);
+  await window.locator('#project-save').click();
+  await window.locator('#project-dialog').waitFor({ state: 'detached' });
+  await window.locator('.project-row', { hasText: '界面创建客户' }).locator('.ui-badge', { hasText: '当前项目' }).waitFor();
+  const uiCreatedProject = await window.evaluate(() => window.geoPublisher.workspaceSnapshot());
+  if (uiCreatedProject.currentProject?.industry !== longIndustryProfile) throw new Error('desktop project form did not save the long-form profile');
+  await window.getByRole('button', { name: '新建项目' }).click();
+  await window.locator('#project-input-name').fill('超长资料校验');
+  await window.locator('#project-industry').evaluate((element, value) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    setter?.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+  }, '行'.repeat(2001));
+  await window.locator('#project-save').click();
+  await window.locator('#project-submit-error', { hasText: '行业与核心业务内容过长' }).waitFor();
+  if (await window.locator('#project-industry').getAttribute('aria-invalid') !== 'true') throw new Error('invalid project field was not identified');
+  await window.getByRole('button', { name: '关闭客户资料' }).click();
+  await window.getByText('概览', { exact: true }).click();
   await writeFile(profilePath, JSON.stringify({ name: '第二测试客户', companyName: '第二测试公司', industry: '工业服务' }));
   const secondProject = await runCli(['project', 'create', '--input', profilePath]);
   if (!secondProject.data?.project?.id) throw new Error(`second project creation failed: ${JSON.stringify(secondProject)}`);
