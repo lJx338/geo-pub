@@ -273,6 +273,10 @@ export class PlatformSessions {
 
   private async fillDraftInternal(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
     const keepVisible = this.window.isVisible() && !this.window.isMinimized();
+    // NetEase Draft.js crashes when an existing document containing atomic
+    // image blocks is replaced across blocks. A fresh WebContents keeps the
+    // project session/login but gives every job a clean editor instance.
+    if (platform === 'netease') await this.resetPlatformViewForFreshDraft(platform);
     let managed = await this.openBackground(platform);
     // If GEO Publisher is already open, show the platform that is running.
     // Hidden or minimized jobs stay on the private execution host so they do
@@ -523,6 +527,17 @@ export class PlatformSessions {
     await managed.partition.flushStorageData();
     if (this.projectId) await snapshotPlatformCookies(managed.partition, this.projectId, managed.platform).catch(() => undefined);
     if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close({ waitForBeforeUnload: false });
+  }
+
+  private async resetPlatformViewForFreshDraft(platform: Platform): Promise<void> {
+    if (this.background?.platform === platform) await this.closeBackground();
+    const interactive = this.views.get(platform);
+    if (!interactive) return;
+    await interactive.partition.flushStorageData();
+    if (this.projectId) {
+      await snapshotPlatformCookies(interactive.partition, this.projectId, platform).catch(() => undefined);
+    }
+    this.closeInteractiveView(interactive);
   }
 
   private async abortTimedOutBackgroundOperation(): Promise<{ platform: Platform | null; url: string | null; screenshotPath: string | null }> {

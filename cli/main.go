@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.6.0-beta.4"
+var version = "0.6.0-beta.5"
 var buildMode = "production"
 
 var platforms = map[string]bool{
@@ -414,12 +414,12 @@ func runTopic(args []string) (string, json.RawMessage, error) {
 func runProject(args []string) (string, json.RawMessage, error) {
 	if len(args) == 0 {
 		if !isDevelopmentBuild() {
-			return "project", nil, usageError("项目命令：project current | create --input <file.json> | update <projectId> --input <file.json>")
+			return "project", nil, usageError("项目命令：project list | current | select <projectId> | create --input <file.json> | update <projectId> --input <file.json>")
 		}
 		return "project", nil, usageError("项目命令：project current | select <projectId> | create/import --input <file.json> | update <projectId> --input <file.json> | export <projectId> --output <file.json> | archive <projectId>")
 	}
 	subcommand := args[0]
-	if !isDevelopmentBuild() && subcommand != "current" && subcommand != "create" && subcommand != "update" {
+	if !isDevelopmentBuild() && subcommand != "list" && subcommand != "current" && subcommand != "select" && subcommand != "create" && subcommand != "update" {
 		return "project." + subcommand, nil, &cliError{
 			code:       "COMMAND_NOT_EXPOSED",
 			message:    "生产 CLI 只允许创建客户项目，或读取、更新当前客户项目",
@@ -427,6 +427,9 @@ func runProject(args []string) (string, json.RawMessage, error) {
 		}
 	}
 	switch subcommand {
+	case "list":
+		_, data, err := call("project.list", controlRequest{Action: "project.list"}, defaultTimeout)
+		return "project.list", data, err
 	case "current":
 		_, data, err := call("project.current", controlRequest{Action: "project.current"}, defaultTimeout)
 		return "project.current", data, err
@@ -835,6 +838,7 @@ func instructions() json.RawMessage {
 		"audience": "WorkBuddy",
 		"workflow": []string{
 			"Run doctor and start the desktop when it is not connected",
+			"For a customer-specific task run project list, select the unique exact-name match with project select, then verify project current",
 			"If no current project exists and the user asks to create one, collect the customer profile, show a summary, obtain explicit confirmation, then run project create with confirmCreate=true",
 			"Run project current and use its exact project.id for every article request",
 			"Run validate with the exact article JSON",
@@ -859,7 +863,7 @@ func instructions() json.RawMessage {
 func commandSchema() json.RawMessage {
 	commands := map[string]any{
 		"doctor":   map[string]any{"input": nil, "sideEffect": false},
-		"project":  map[string]any{"input": "project create JSON with confirmCreate=true, or project update JSON", "sideEffect": "creates and selects a customer project after explicit confirmation, or updates only the current project"},
+		"project":  map[string]any{"input": "project list/current/select, project create JSON with confirmCreate=true, or project update JSON", "sideEffect": "lists projects, selects one exact project, creates and selects after explicit confirmation, or updates only the current project"},
 		"content":  map[string]any{"input": "content item JSON, filters, or a material file path", "sideEffect": "reads, saves, or imports content for the current customer project"},
 		"material": map[string]any{"input": "pending limit, material id, or validated image analysis JSON", "sideEffect": "reads pending images and saves a one-time visual index for the current customer project"},
 		"topic":    map[string]any{"input": "topic id plus task/article id or a variant JSON", "sideEffect": "reserves, releases, records use of, or creates a topic variant"},

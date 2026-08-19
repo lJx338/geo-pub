@@ -9,7 +9,7 @@ Use the desktop application as the execution engine and the current customer pro
 
 ## Customer project context
 
-Run `geo-publisher project current` before generating an article, filling a draft, or publishing. The returned `project` is the current customer project selected in GEO Publisher and is the source of company name, business profile, products, strengths, cases, credentials, customer questions and forbidden phrases.
+For a customer-specific automation, run `geo-publisher project list`, find one exact project-name match, then run `geo-publisher project select <projectId>` and `geo-publisher project current`. Before generating an article, filling a draft, or publishing, verify that the returned current project ID and name still match the task. The returned `project` is the source of company name, business profile, products, strengths, cases, credentials, customer questions and forbidden phrases.
 
 When the user wants to create, complete, extract, polish, or update customer information, load and follow the sibling `geo-customer-profile` Skill. That Skill owns the short collection workflow and confirmation rules; this Skill owns CLI resolution and publishing behavior.
 
@@ -59,6 +59,8 @@ Run `geo-publisher doctor` when the command is available. Otherwise read `discov
 Never copy a path or user name from another computer. If discovery is missing, ask the user to install and open GEO Publisher Desktop once.
 
 Treat the discovered `cliPath` as one executable path even when it contains spaces. On Windows PowerShell invoke it with the call operator, for example `& '<discovered cliPath>' doctor`; do not split or reconstruct the path. Use only the production `geo-publisher` binary supplied by the desktop. Never search for or invoke `geo-publisher-dev`, `.dev-cli`, raw control sockets, control tokens, or developer-only commands.
+
+On Windows, perform one connectivity check and require a JSON response before continuing: `& '<discovered cliPath>' doctor --json`. If the PowerShell tool returns only its own `powershell` path or no stdout, do not retry the same PowerShell command and do not conclude that the CLI is broken. Fall back once to `cmd.exe /d /s /c '"<discovered cliPath>" doctor --json'` or Git Bash with the same complete path, then verify the returned JSON contains `ok` or `command`. Capture stdout, stderr, and exit code for every command; never use `Start-Process` without redirected output.
 
 ## Execute a request
 

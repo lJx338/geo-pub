@@ -20,6 +20,8 @@ describe('WorkBuddy connection prompt', () => {
     expect(prompt).toContain('系统与架构：win32 / x64');
     expect(prompt).toContain("CLI 调用前缀：& 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\bin\\versions\\0.5.0\\geo-publisher.exe'");
     expect(prompt).toContain('Windows PowerShell 必须保留开头的 & 和引号');
+    expect(prompt).toContain('若 PowerShell 工具只回显 powershell 路径');
+    expect(prompt).toContain('cmd.exe /d /s /c');
     expect(prompt).toContain('只允许使用上述 production CLI');
     expect(prompt).toContain('不要替换成其他电脑的路径');
     expect(prompt).toContain('客户资料 Skill（geo-customer-profile）：C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-customer-profile');

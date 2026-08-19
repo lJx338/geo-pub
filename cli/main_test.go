@@ -95,6 +95,20 @@ func TestProductionProfileDoesNotExposeDeveloperCommands(t *testing.T) {
 	}
 }
 
+func TestProductionProfileAllowsProjectListAndSelect(t *testing.T) {
+	previous := buildMode
+	buildMode = "production"
+	t.Cleanup(func() { buildMode = previous })
+	t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", t.TempDir())
+	for _, args := range [][]string{{"project", "list"}, {"project", "select", "11111111-1111-4111-8111-111111111111"}} {
+		_, _, err := run(args)
+		var typed *cliError
+		if errors.As(err, &typed) && typed.code == "COMMAND_NOT_EXPOSED" {
+			t.Fatalf("production CLI rejected required multi-customer command %v", args)
+		}
+	}
+}
+
 func TestProductionProjectCreateRequiresExplicitConfirmation(t *testing.T) {
 	previous := buildMode
 	buildMode = "production"

@@ -125,12 +125,14 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
   ] as const;
   const faqs = [
     ['我只想发一个平台怎么办？', '在分发页面只勾选目标平台即可，不会强制操作其他平台。'],
+    ['两个客户能同时发布吗？', '不建议同时运行。同一台电脑请错峰安排：单平台客户至少间隔 30 分钟，多平台客户至少间隔 90 分钟，避免平台页面和账号操作互相影响。'],
     ['为什么有时需要我处理？', '登录失效、验证码、平台风控、今日次数用完或页面变化需要人工确认。完成处理后回到桌面端重试即可。'],
     ['“仅填充”和“真实发布”有什么区别？', '仅填充只把内容写入平台页面，不点击发布；真实发布会继续点击发布，并在发布后查询管理页进行对账。'],
     ['切换客户会不会串账号？', '不会。切换项目会同时切换对应的平台登录状态和内容库；任务执行期间会锁定切换。'],
     ['关闭窗口后任务会怎样？', '桌面端可以驻留后台。正在执行任务时请不要强制退出；平台页面需要人工处理时，按提示打开对应平台即可。'],
   ] as const;
   const projectName = project?.name || '请填写客户项目名称';
+  const projectId = project?.id || '当前项目 ID';
   const workBuddyPrompts = [
     {
       number: '1', title: '先登录各个平台', badge: '先完成', description: '进入“平台账号”，依次打开准备使用的平台并完成登录。遇到扫码、验证码或安全验证时，请先在平台页面处理完成。',
@@ -165,10 +167,24 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
     try { await window.geoPublisher.copyText(prompt); notify(`${title}提示词已复制`); }
     catch (error) { notify(`复制失败：${(error as Error).message}`, true); }
   };
+  const multiCustomerPrompt = `请为客户项目“${projectName}”创建一条独立的 GEO Publisher 自动发布自动化任务。
+
+固定客户项目：${projectName}
+固定项目 ID：${projectId}
+任务名称建议：${projectName}｜平台｜自动发布
+
+创建前请先运行 geo-publisher project list，确认项目名称和项目 ID 完全匹配；然后运行 geo-publisher project select ${projectId}，再运行 project current 复核当前项目。每次任务触发时都必须重复这一步，不能使用其他任务缓存的客户项目。
+
+这条任务只允许读取和修改上述项目的公司资料、图片素材、选题、文章和分发记录，只允许操作该项目对应的平台登录态。不要修改、读取或发布其他客户项目的内容和账号。
+
+请根据我在 WorkBuddy 中设置的平台和时间运行自动发布：每个目标平台独立生成一篇文章，按平台串行执行；发布前先校验，发布后查询管理页并核对标题和状态。登录失效、验证码、风控、平台次数用完或项目上下文变化时，停止当前平台并说明原因。桌面端忙碌时不要抢占、等待或重复点击，直接报告 PUBLISHER_BUSY。结果不明确时只提醒人工核对，禁止再次点击发布。
+
+我会为每个客户项目分别创建一条自动化任务，请不要把多个客户合并到同一条任务中。`;
   return <div className="guide-page">
     <section className="guide-hero"><div><p className="eyebrow">GEO Publisher 使用指南</p><h2>从客户资料到多平台分发，一步一步完成</h2><p>桌面端负责项目、素材和发布；WorkBuddy 负责理解需求、生成选题和文章。你只需要选择客户、检查内容，再决定是否发布。</p><div className="guide-hero-actions"><Button icon={UsersRound} onClick={() => setView('projects')}>管理客户项目</Button><Button variant="outline" icon={BookOpen} onClick={() => openContent('overview')}>查看内容中心</Button></div></div><div className="guide-status"><Badge tone={project ? 'success' : 'warning'}>{project ? '当前项目已就绪' : '请先创建项目'}</Badge><strong>{project?.name || '尚未选择客户项目'}</strong><small>{workBuddy.prepared ? 'WorkBuddy 连接指令已准备' : '还没有连接 WorkBuddy'}</small></div></section>
     <section className="guide-section"><div className="guide-section-heading"><p className="eyebrow">你可以用它做什么</p><h3>把重复的发布工作集中到一个地方</h3></div><div className="guide-feature-grid">{features.map(([title, description, Icon]) => <Card className="guide-feature" key={title}><Icon size={19}/><h4>{title}</h4><p>{description}</p></Card>)}</div></section>
     <section className="guide-section workbuddy-tutorial"><div className="guide-section-heading"><p className="eyebrow">首次使用</p><h3>搭配 WorkBuddy，从平台登录到自动发布</h3><p>第一次按顺序完成下面 7 步：先登录平台，再连接 WorkBuddy，之后配置资料、准备内容和发布。带【】的内容需要换成自己的平台或资料。</p></div><div className="workbuddy-connect-step"><span className="guide-step-icon"><Link2 size={17}/></span><div><strong>完成平台登录后连接 WorkBuddy</strong><p>{workBuddy.prepared ? '连接指令已经准备好；如果 WorkBuddy 无法读取当前项目，再重新连接一次。' : '请先完成第 1 步的平台登录，再点击按钮，将自动复制的连接指令粘贴到 WorkBuddy 并发送。'}</p></div><Button icon={Link2} onClick={() => void connect()}>{workBuddy.prepared ? '重新连接' : '连接 WorkBuddy'}</Button></div><div className="workbuddy-prompt-list">{workBuddyPrompts.map((item, index) => <article className={index === workBuddyPrompts.length - 1 ? 'workbuddy-prompt automation' : 'workbuddy-prompt'} key={item.number}><header><span className="guide-step-number">{item.number}</span><div><h4>{item.title}</h4><p>{item.description}</p></div><Badge tone={index === workBuddyPrompts.length - 1 ? 'warning' : item.badge === '不会发布' ? 'success' : 'neutral'}>{item.badge}</Badge>{item.action === 'accounts' && <Button variant="outline" icon={LogIn} onClick={() => setView('accounts')}>前往平台账号</Button>}{item.number === '3' && <Button variant="outline" icon={ImagePlus} onClick={() => openContent('material')}>前往上传图片</Button>}{item.prompt && <Button variant="outline" icon={Copy} onClick={() => void copyPrompt(item.title, item.prompt)}>{item.number === '3' ? '复制整理提示词' : '复制提示词'}</Button>}</header>{item.prompt && <details open={index === 1}><summary>查看提示词<span>+</span></summary><p>{item.prompt}</p></details>}</article>)}</div><div className="workbuddy-automation-note"><ShieldCheck size={18}/><div><strong>自动发布不要一开始就开启</strong><p>先完成平台登录、公司资料、一次仅填充和一次真实发布。确认账号与页面都正常后，再创建自动化任务。</p></div></div></section>
+    <section id="multi-customer-guide" className="guide-section multi-customer-guide"><div className="guide-section-heading"><p className="eyebrow">多客户场景</p><h3>多客户发布管理</h3><p>一个客户对应一个客户项目和一条 WorkBuddy 自动化。每个项目独立保存资料、素材、选题、文章、分发记录和平台登录态，不同客户不要共用平台账号。</p></div><div className="multi-customer-rules"><Card className="multi-customer-rule"><CardHeader><BriefcaseBusiness size={18}/><CardTitle>先切换客户</CardTitle></CardHeader><CardContent><p>在左上角切换到目标客户项目，确认名称后，再登录该客户账号、准备内容或配置任务。</p></CardContent></Card><Card className="multi-customer-rule"><CardHeader><UsersRound size={18}/><CardTitle>为客户单独建任务</CardTitle></CardHeader><CardContent><p>参考上面的第 7 步，在 WorkBuddy 中为客户创建独立任务，名称建议使用“客户名｜平台｜自动发布”。</p></CardContent></Card><Card className="multi-customer-rule"><CardHeader><Clock3 size={18}/><CardTitle>错峰安排</CardTitle></CardHeader><CardContent><p>单平台客户至少错开 30 分钟，多平台客户至少错开 90 分钟，避免同一电脑同时操作多个客户账号。</p></CardContent></Card></div><Card className="multi-customer-prompt"><CardHeader><div><CardTitle>当前客户的任务配置提示词</CardTitle><CardDescription>{`复制后，在 WorkBuddy 中为“${projectName}”创建独立自动化。`}</CardDescription></div><Button variant="outline" icon={Copy} onClick={() => void copyPrompt('多客户任务配置', multiCustomerPrompt)}>复制任务提示词</Button></CardHeader><CardContent><pre>{multiCustomerPrompt}</pre></CardContent></Card></section>
     <section className="guide-section guide-two-column"><Card><CardHeader><div><CardTitle>状态怎么理解</CardTitle><CardDescription>看到这些提示时，按对应动作处理即可。</CardDescription></div><CircleAlert size={18}/></CardHeader><CardContent><div className="guide-status-list"><div><Badge tone="success">已填充</Badge><span>内容已经写入平台页面，还没有发布。</span></div><div><Badge tone="success">发布成功</Badge><span>已点击发布，并完成了管理页或文章状态核对。</span></div><div><Badge tone="warning">需要人工处理</Badge><span>需要你完成登录、验证码或风控操作。</span></div><div><Badge tone="warning">结果待确认</Badge><span>不要立即再次点击，先到平台管理页确认是否已经发布。</span></div><div><Badge tone="danger">次数用完</Badge><span>今天不能继续发布该平台，换其他平台或明天再试。</span></div></div></CardContent></Card><Card><CardHeader><div><CardTitle>使用时记住这几件事</CardTitle><CardDescription>这些规则可以避免重复文章和误发布。</CardDescription></div><ShieldCheck size={18}/></CardHeader><CardContent><ul className="guide-bullets"><li>发布任务执行中不要切换客户项目。</li><li>先用“仅填充”检查页面，再执行真实发布。</li><li>真实发布前确认文章标题、封面和目标平台。</li><li>结果不明确时先对账，不要连续点击发布。</li><li>不同客户请分别建立项目，不要共用登录账号。</li></ul></CardContent></Card></section>
     <section className="guide-section"><div className="guide-section-heading"><p className="eyebrow">常见问题</p><h3>遇到问题先看这里</h3></div><div className="guide-faqs">{faqs.map(([question, answer]) => <details key={question}><summary>{question}<span>+</span></summary><p>{answer}</p></details>)}</div></section>
   </div>;
