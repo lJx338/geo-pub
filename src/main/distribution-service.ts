@@ -11,6 +11,14 @@ type DistributionExecutor = {
 
 type DistributionStatus = 'running' | 'filled' | 'success' | 'failed' | 'action_required' | 'result_uncertain';
 
+type DirectDistributionRequest = {
+  projectId: string;
+  platform: Platform;
+  document: ArticleDocument;
+  coverPath: string;
+  mode: 'fill' | 'publish';
+};
+
 const coverRequiredPlatforms = new Set<Platform>(['baijia', 'toutiao', 'netease']);
 
 function errorCode(error: unknown): string {
@@ -35,11 +43,15 @@ function resultEvidence(result: unknown): Record<string, unknown> {
     .map((key) => [key, value[key]]));
 }
 
+function documentHash(document: ArticleDocument): string {
+  return createHash('sha256').update(JSON.stringify(document)).digest('hex');
+}
+
 export class DistributionService {
   constructor(
     private readonly content: ContentStore,
     private readonly executor: DistributionExecutor,
-    private readonly onRecordSaved: (record: ContentItem) => void = () => undefined,
+    private readonly onRecordSaved: (record: ContentItem, source: 'desktop' | 'cli') => void = () => undefined,
   ) {}
 
   async run(rawInput: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> {
@@ -54,7 +66,7 @@ export class DistributionService {
     const coverMissing = input.platforms.filter((platform) => coverRequiredPlatforms.has(platform) && !input.coverPath.trim());
     if (coverMissing.length) throw new Error(`COVER_REQUIRED: ${coverMissing.join('、')} 必须选择封面图片`);
 
-    const contentHash = createHash('sha256').update(JSON.stringify(document)).digest('hex');
+    const contentHash = documentHash(document);
     const history = await this.content.list(input.projectId, 'distribution');
     if (input.mode === 'publish') {
       const finalized = history.find((record) => input.platforms.includes(record.platform as Platform)
@@ -71,9 +83,9 @@ export class DistributionService {
       const startedAt = new Date().toISOString();
       let record = await this.content.save(input.projectId, {
         kind: 'distribution', title: article.title, status: 'running', platform,
-        payload: { taskId, articleId: article.id, contentHash, mode: input.mode, targetPlatforms: input.platforms, startedAt },
+        payload: { taskId, articleId: article.id, contentHash, mode: input.mode, source: 'desktop', targetPlatforms: input.platforms, startedAt },
       });
-      this.onRecordSaved(record);
+      this.onRecordSaved(record, 'desktop');
       try {
         const result = input.mode === 'publish'
           ? await this.executor.publishDraft(platform, document, input.coverPath)
@@ -90,7 +102,7 @@ export class DistributionService {
           payload: { ...record.payload, completedAt: new Date().toISOString(), error: { code: errorCode(error), message } },
         });
       }
-      this.onRecordSaved(record);
+      this.onRecordSaved(record, 'desktop');
       records.push(record);
     }
     if (input.mode === 'publish' && records.length > 0 && records.every((record) => record.status === 'success')) {
@@ -116,8 +128,99 @@ export class DistributionService {
           },
         },
       });
-      this.onRecordSaved(completedArticle);
+      this.onRecordSaved(completedArticle, 'desktop');
     }
     return { records };
+  }
+
+  /** Records WorkBuddy/production CLI actions without changing their response contract. */
+  async runDirect(rawInput: DirectDistributionRequest): Promise<unknown> {
+    const document = articleDocumentSchema.parse(rawInput.document);
+    this.executor.ensureProject(rawInput.projectId);
+    const contentHash = documentHash(document);
+    const articles = await this.content.list(rawInput.projectId, 'article');
+    const hashMatches = articles.filter((item) => {
+      try {
+        return documentHash(articleDocumentSchema.parse(item.payload.document)) === contentHash;
+      } catch {
+        return false;
+      }
+    });
+    const titleMatches = articles.filter((item) => item.title === document.title);
+    const article = hashMatches.length === 1 ? hashMatches[0] : titleMatches.length === 1 ? titleMatches[0] : undefined;
+    const taskId = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    let record = await this.content.save(rawInput.projectId, {
+      kind: 'distribution',
+      title: document.title,
+      status: 'running',
+      platform: rawInput.platform,
+      payload: {
+        taskId,
+        ...(article ? { articleId: article.id } : {}),
+        contentHash,
+        mode: rawInput.mode,
+        source: 'cli',
+        targetPlatforms: [rawInput.platform],
+        startedAt,
+      },
+    });
+    this.onRecordSaved(record, 'cli');
+
+    try {
+      const result = rawInput.mode === 'publish'
+        ? await this.executor.publishDraft(rawInput.platform, document, rawInput.coverPath)
+        : await this.executor.fillDraft(rawInput.platform, document, rawInput.coverPath);
+      const status = resultStatus(rawInput.mode, result);
+      record = await this.content.save(rawInput.projectId, {
+        id: record.id,
+        kind: 'distribution',
+        status,
+        platform: rawInput.platform,
+        payload: { ...record.payload, completedAt: new Date().toISOString(), evidence: resultEvidence(result) },
+      });
+      this.onRecordSaved(record, 'cli');
+      if (article && rawInput.mode === 'publish' && status === 'success') {
+        await this.markArticlePublished(rawInput.projectId, article, taskId, [rawInput.platform], 'cli');
+      }
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      record = await this.content.save(rawInput.projectId, {
+        id: record.id,
+        kind: 'distribution',
+        status: 'failed',
+        platform: rawInput.platform,
+        payload: { ...record.payload, completedAt: new Date().toISOString(), error: { code: errorCode(error), message } },
+      });
+      this.onRecordSaved(record, 'cli');
+      throw error;
+    }
+  }
+
+  private async markArticlePublished(projectId: string, article: ContentItem, taskId: string, platforms: Platform[], source: 'desktop' | 'cli'): Promise<void> {
+    const previous = article.payload.distribution && typeof article.payload.distribution === 'object'
+      ? article.payload.distribution as Record<string, unknown>
+      : {};
+    const successfulPlatforms = [...new Set([
+      ...(Array.isArray(previous.successfulPlatforms) ? previous.successfulPlatforms.filter((value): value is string => typeof value === 'string') : []),
+      ...platforms,
+    ])];
+    const completedArticle = await this.content.save(projectId, {
+      id: article.id,
+      kind: 'article',
+      status: 'published',
+      payload: {
+        ...article.payload,
+        distribution: {
+          ...previous,
+          completedAt: new Date().toISOString(),
+          lastTaskId: taskId,
+          lastTargetPlatforms: platforms,
+          successfulPlatforms,
+        },
+      },
+    });
+    this.onRecordSaved(completedArticle, source);
   }
 }

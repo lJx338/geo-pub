@@ -133,8 +133,8 @@ async function runDesktop(): Promise<void> {
     if (projects.current()?.id !== projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新读取当前项目后再操作内容');
     return project;
   };
-  const distribution = new DistributionService(content, sessions, (record) => {
-    recordDataChange({ entity: 'content', action: 'saved', projectId: record.projectId, itemId: record.id, contentKind: record.kind, source: 'desktop' });
+  const distribution = new DistributionService(content, sessions, (record, source) => {
+    recordDataChange({ entity: 'content', action: 'saved', projectId: record.projectId, itemId: record.id, contentKind: record.kind, source });
   });
   const route = async (request: ControlRequest): Promise<unknown> => {
     if (request.action === 'status') return desktopStatus();
@@ -231,13 +231,11 @@ async function runDesktop(): Promise<void> {
     if (request.action === 'platform.inspect') return await sessions.inspect(request.platform);
     if (request.action === 'draft.fill') {
       if (distributionRunning) throw new Error('PUBLISHER_BUSY: 桌面端分发任务运行中，请等待完成');
-      sessions.ensureProject(request.projectId);
-      return await sessions.fillDraft(request.platform, request.document, request.coverPath);
+      return await distribution.runDirect({ projectId: request.projectId, platform: request.platform, document: request.document, coverPath: request.coverPath, mode: 'fill' });
     }
     if (request.action === 'draft.publish') {
       if (distributionRunning) throw new Error('PUBLISHER_BUSY: 桌面端分发任务运行中，请等待完成');
-      sessions.ensureProject(request.projectId);
-      return await sessions.publishDraft(request.platform, request.document, request.coverPath);
+      return await distribution.runDirect({ projectId: request.projectId, platform: request.platform, document: request.document, coverPath: request.coverPath, mode: 'publish' });
     }
     throw new Error('不支持的控制命令');
   };

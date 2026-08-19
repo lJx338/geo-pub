@@ -79,4 +79,48 @@ describe('desktop distribution service', () => {
     const current = (await content.list(projectId, 'article')).find((item) => item.id === article.id);
     expect(current?.status).toBe('ready');
   });
+
+  it('records a direct CLI fill and links the matching content-center article', async () => {
+    const { article, executor, content } = await setup();
+    const saved: string[] = [];
+    const result = await new DistributionService(content, executor, (record) => saved.push(`${record.kind}:${record.status}`))
+      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '', mode: 'fill' });
+    expect(result).toMatchObject({ stage: 'filled' });
+    const [record] = await content.list(projectId, 'distribution');
+    expect(record).toMatchObject({ title: document.title, platform: 'zhihu', status: 'filled' });
+    expect(record?.payload).toMatchObject({ articleId: article.id, mode: 'fill', source: 'cli' });
+    expect(saved).toEqual(['distribution:running', 'distribution:filled']);
+  });
+
+  it('records a direct CLI publish and marks a matching article published', async () => {
+    const { article, executor, content } = await setup();
+    const result = await new DistributionService(content, executor)
+      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '', mode: 'publish' });
+    expect(result).toMatchObject({ status: 'success' });
+    const [record] = await content.list(projectId, 'distribution');
+    expect(record?.status).toBe('success');
+    const current = (await content.list(projectId, 'article')).find((item) => item.id === article.id);
+    expect(current).toMatchObject({ status: 'published', payload: { distribution: { successfulPlatforms: ['zhihu'] } } });
+  });
+
+  it('records direct CLI failures before preserving the original error', async () => {
+    const { executor, content } = await setup();
+    executor.fillDraft = async () => { throw new Error('LOGIN_REQUIRED: 请先登录'); };
+    await expect(new DistributionService(content, executor)
+      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '', mode: 'fill' }))
+      .rejects.toThrow('LOGIN_REQUIRED');
+    const [record] = await content.list(projectId, 'distribution');
+    expect(record).toMatchObject({ status: 'failed', payload: { source: 'cli', error: { code: 'LOGIN_REQUIRED' } } });
+  });
+
+  it('records an unmatched CLI document and uncertain publish result', async () => {
+    const { executor, content } = await setup();
+    executor.publishDraft = async () => ({ status: 'result_uncertain', stage: 'result_check' });
+    const otherDocument: ArticleDocument = { ...document, title: '一篇未保存到内容中心的文章' };
+    await new DistributionService(content, executor)
+      .runDirect({ projectId, platform: 'sohu', document: otherDocument, coverPath: '', mode: 'publish' });
+    const [record] = await content.list(projectId, 'distribution');
+    expect(record?.status).toBe('result_uncertain');
+    expect(record?.payload.articleId).toBeUndefined();
+  });
 });
