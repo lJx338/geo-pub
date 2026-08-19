@@ -34,8 +34,11 @@ const cos = new COS({
   SecretKey: process.env.TENCENT_CLOUD_SECRET_KEY,
   ChunkSize: 8 * 1024 * 1024,
   SliceSize: 8 * 1024 * 1024,
-  ChunkParallelLimit: 8,
-  ChunkRetryTimes: 5,
+  // Keep retries bounded. A failed multipart part is cheaper to retry than
+  // restarting an entire installer upload, and high parallelism can amplify
+  // traffic badly on a congested runner.
+  ChunkParallelLimit: 3,
+  ChunkRetryTimes: 2,
   FileParallelLimit: 1,
   Timeout: 120_000,
   KeepAlive: true,
@@ -88,10 +91,23 @@ async function retry(label, operation, attempts = 3) {
 
 async function uploadFile(filePath, key, cacheControl) {
   const size = (await stat(filePath)).size;
+  try {
+    const existing = await cos.headObject({ Bucket: bucket, Region: region, Key: key });
+    const existingSize = Number(existing.headers?.['content-length']);
+    if (existingSize === size) {
+      console.log(`Skipping ${path.basename(filePath)}; the immutable object already exists (${size} bytes)`);
+      return;
+    }
+  } catch (error) {
+    // A missing object is the normal path. Other HEAD errors should not be
+    // silently treated as a missing object because that can hide COS outages.
+    const status = Number(error?.statusCode || error?.status);
+    const code = String(error?.code || '');
+    if (status !== 404 && code !== 'NoSuchKey' && code !== 'NotFound') throw error;
+  }
   let lastReported = -1;
   console.log(`Uploading ${path.basename(filePath)} (${Math.ceil(size / 1024 / 1024)} MiB)`);
-  await retry(`Upload ${key}`, () =>
-    cos.uploadFile({
+  const upload = () => cos.uploadFile({
       Bucket: bucket,
       Region: region,
       Key: key,
@@ -105,8 +121,24 @@ async function uploadFile(filePath, key, cacheControl) {
           console.log(`${path.basename(filePath)}: ${percent}%`);
         }
       },
-    }),
-  );
+    });
+  try {
+    await upload();
+  } catch (error) {
+    // The SDK may have completed the object even when the client lost the
+    // final response. Verify before attempting another upload so a timeout
+    // cannot cause a second full installer transfer.
+    try {
+      const existing = await cos.headObject({ Bucket: bucket, Region: region, Key: key });
+      if (Number(existing.headers?.['content-length']) === size) {
+        console.log(`Upload response was lost, but ${path.basename(filePath)} is present and complete`);
+        return;
+      }
+    } catch {
+      // Preserve the original upload error below.
+    }
+    throw error;
+  }
 }
 
 async function putManifest(key, body, cacheControl) {
