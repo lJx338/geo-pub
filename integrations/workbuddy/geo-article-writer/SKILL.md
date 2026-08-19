@@ -68,7 +68,7 @@ Save one content item per platform. A project-level preview may use an empty pla
       "title": "可直接发布的标题",
       "blocks": [],
       "summary": "不超过120字的摘要",
-      "tags": ["#真实话题一", "#真实话题二", "#真实话题三"]
+      "tags": ["真实话题一", "真实话题二", "真实话题三"]
     },
     "quality": { "score": 26, "passed": true, "notes": [] }
   }
@@ -83,6 +83,7 @@ After every requested article package has been saved successfully, run `topic us
 
 - Do not call `fill` or `publish`; hand ready packages to the sibling `geo-publisher` Skill.
 - Do not insert Markdown markers or HTML into block text.
+- Always provide two to five concise, article-specific industry topics in `document.tags`. Prefer two to eight Chinese characters per topic and omit a leading `#`; GEO Publisher appends them to the article ending and also fills a platform-native tag field when one exists.
 - Do not expose quality scores, evidence notes, prompts, missing-data notes, cover instructions, or platform operations inside published body blocks.
 - Do not place website URLs, phone numbers, email addresses, WeChat IDs, QR-code instructions, or other contact and traffic-diversion details in the title, summary, body, tags, or images.
 - Never invent company facts, named customers, completed project results, credentials, rankings, policies, or external statistics. You may create clearly framed common scenarios, professional reasoning, checklists, and hypothetical examples.

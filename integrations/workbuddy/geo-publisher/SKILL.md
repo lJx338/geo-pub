@@ -77,7 +77,7 @@ Run `geo-publisher schema --json` before assembling the first request in a task.
 - Send one `document` object, not top-level `title`、`html` or `tags` fields.
 - `document.title` is the published title. `document.blocks` must use semantic blocks: `paragraph`、`heading`（only level 2 or 3）、`list`、`quote`、`divider`、`image`.
 - Keep text natural. Do not put raw Markdown markers (`##`、`-`、`>`) or raw HTML into block text.
-- `document.summary` and `document.tags` are optional platform metadata. Tags are plain topic strings such as `#企业AI`.
+- `document.summary` is optional platform metadata. Every ready article must provide two to five concise, article-specific topics or keywords in `document.tags`, such as `企业AI` and `流程优化`; omit a leading `#`. GEO Publisher appends them to the article ending and also fills a platform-native topic field when supported.
 - An `image` block needs a real http(s) URL. A local image path belongs only in `coverPath`.
 - Do not rewrite an article to fit a platform after it has been produced. Let GEO Publisher render the same structured content for that platform and return a format-verification result.
 
@@ -96,7 +96,7 @@ Example input for `validate` or `fill`:
       { "type": "quote", "text": "先明确边界，再讨论工具。" }
     ],
     "summary": "用三类流程判断 AI 工具的部署优先级。",
-    "tags": ["#企业AI", "#流程优化", "#数字化"]
+    "tags": ["企业AI", "流程优化", "数字化"]
   },
   "coverPath": ""
 }

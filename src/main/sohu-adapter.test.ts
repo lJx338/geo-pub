@@ -17,4 +17,9 @@ describe('Sohu editor compatibility', () => {
     expect(script).toContain('countStructure');
     expect(script).toContain('formatVerification');
   });
+
+  it('never accepts page or draft-banner text as filled editor content', () => {
+    const script = buildSohuContentScriptForTest('标题', '<p>正文内容</p>');
+    expect(script).toContain("bodyFilled: bodyVerificationSource === 'editor'");
+  });
 });

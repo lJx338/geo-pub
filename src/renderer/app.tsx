@@ -133,27 +133,31 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
   const projectName = project?.name || '请填写客户项目名称';
   const workBuddyPrompts = [
     {
-      number: '1', title: '配置公司资料', badge: '必须', description: '把已有的公司简介直接放在提示词最后。没有简介也可以，WorkBuddy 会用两轮以内的问题帮你补齐。',
+      number: '1', title: '先登录各个平台', badge: '先完成', description: '进入“平台账号”，依次打开准备使用的平台并完成登录。遇到扫码、验证码或安全验证时，请先在平台页面处理完成。',
+      action: 'accounts',
+    },
+    {
+      number: '2', title: '配置公司资料', badge: '必须', description: '把已有的公司简介直接放在提示词最后。没有简介也可以，WorkBuddy 会用两轮以内的问题帮你补齐。',
       prompt: `请帮我配置 GEO Publisher 当前客户项目的公司资料。\n\n如果当前没有客户项目，请帮我新建一个；如果已经有项目，只更新当前项目，不要修改其他客户。请从我提供的简介中提取并适度润色公司名称、行业、产品或服务、核心优势、目标客户、案例、资质、服务地区、客户常问问题和禁用词。不要收集或写入官网、电话、邮箱、微信等联系方式。只追问最关键的缺失信息，最多两轮。整理完成后先给我看一份简洁摘要，必须等我明确回复“确认创建”或“确认写入”后再保存。不要编造公司事实。\n\n公司简介：\n【把公司简介粘贴到这里】`,
     },
     {
-      number: '2', title: '上传并整理图片', badge: '有图片时', description: '先点击“前往上传图片”，在素材页面添加图片。上传完成后复制整理提示词，发给 WorkBuddy。每张图片只需整理一次。',
+      number: '3', title: '上传并整理图片', badge: '有图片时', description: '先点击“前往上传图片”，在素材页面添加图片。上传完成后复制整理提示词，发给 WorkBuddy。每张图片只需整理一次。',
       prompt: '请整理 GEO Publisher 当前客户项目中所有待整理的图片素材。识别每张图片的主体、适用场景和可用方式，区分产品、设备、工厂、案例、资质、团队或品牌素材，并保存整理结果。不要重新识别已经整理过的图片。完成后告诉我整理了多少张、各有多少类。',
     },
     {
-      number: '3', title: '生成选题和第一篇文章', badge: '内容准备', description: '把【平台名称】替换成百家号、头条号、知乎、企鹅号、搜狐号或网易号。',
+      number: '4', title: '生成选题和第一篇文章', badge: '内容准备', description: '把【平台名称】替换成百家号、头条号、知乎、企鹅号、搜狐号或网易号。',
       prompt: '请基于 GEO Publisher 当前客户项目的公司资料和已整理素材，生成未来 7 天的选题，每天 1 个，共 7 个。每条标题只保留一个核心问题，避免空泛、重复和同义改写，检查通过后保存到选题池。然后从第一个可用选题生成 1 篇适合【平台名称】的文章并保存到内容中心。先不要填充，也不要发布。完成后告诉我选题标题和文章标题。',
     },
     {
-      number: '4', title: '先做一次填充检查', badge: '不会发布', description: '这一步只把文章写进平台页面，用来确认登录、正文格式、封面和声明是否正常。',
+      number: '5', title: '先做一次填充检查', badge: '不会发布', description: '这一步只把文章写进平台页面，用来确认登录、正文格式、封面和声明是否正常。',
       prompt: '请读取 GEO Publisher 当前客户项目中最新一篇待分发文章，只填充到【平台名称】，不要点击发布。填充前先检查连接和登录状态；填充后核对标题、正文格式、封面和平台声明是否完成。任何步骤失败都要返回真实原因，不要继续发布。完成后提醒我打开平台页面人工检查。',
     },
     {
-      number: '5', title: '完成一次真实发布', badge: '人工确认', description: '确认上一步页面内容正确后再使用。结果不明确时会先核对，不会连续点击发布。',
+      number: '6', title: '完成一次真实发布', badge: '人工确认', description: '确认上一步页面内容正确后再使用。结果不明确时会先核对，不会连续点击发布。',
       prompt: '我已经人工检查过当前项目最新一篇文章的填充结果。请将这篇文章真实发布到【平台名称】。发布前重新校验当前客户项目、文章、登录状态和必填项；发布后查询管理页并核对标题与文章状态。遇到登录、验证码、风控或发文次数用完时立即停止并提醒我；如果结果不明确，先对账并通知我，禁止再次点击发布。',
     },
     {
-      number: '6', title: '设置自动发布', badge: '最后开启', description: `先在 WorkBuddy 中新建自动化并设置运行时间，再把下面内容粘贴为任务说明。当前教程锁定客户项目“${projectName}”。`,
+      number: '7', title: '设置自动发布', badge: '最后开启', description: `先在 WorkBuddy 中新建自动化并设置运行时间，再把下面内容粘贴为任务说明。当前教程锁定客户项目“${projectName}”。`,
       prompt: `这是一个 GEO Publisher 自动发布任务，只允许操作客户项目【${projectName}】。每次运行时先检查桌面端连接，并在项目列表中查找名称完全一致且唯一的项目；如果不存在、重名或无法确认，立即停止并提醒我，禁止发布。\n\n每次运行按以下顺序执行：\n1. 检查六个平台登录状态和当天可用情况。\n2. 读取该项目的公司资料、已整理素材、历史选题和历史文章。\n3. 为【目标平台，例如：百家号、头条号、知乎】分别生成不重复的选题和文章；不同平台不要共用同一篇改写稿。\n4. 检查标题、正文结构、素材和平台要求，通过后保存文章。\n5. 按百家号、头条号、知乎、企鹅号、搜狐号、网易号的顺序，只处理我指定的平台，并且全程串行。\n6. 每个平台发布后查询管理页，核对标题和文章状态，再记录结果。\n\n安全规则：登录、验证码、风控、发文次数用完时停止对应平台并提醒我；某个平台失败不影响其他平台；同一文章不得重复发布；结果不明确时只提醒人工核对，禁止再次点击发布。任务结束后汇总每个平台的成功、失败和人工处理状态。`,
     },
   ];
@@ -164,7 +168,7 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
   return <div className="guide-page">
     <section className="guide-hero"><div><p className="eyebrow">GEO Publisher 使用指南</p><h2>从客户资料到多平台分发，一步一步完成</h2><p>桌面端负责项目、素材和发布；WorkBuddy 负责理解需求、生成选题和文章。你只需要选择客户、检查内容，再决定是否发布。</p><div className="guide-hero-actions"><Button icon={UsersRound} onClick={() => setView('projects')}>管理客户项目</Button><Button variant="outline" icon={BookOpen} onClick={() => openContent('overview')}>查看内容中心</Button></div></div><div className="guide-status"><Badge tone={project ? 'success' : 'warning'}>{project ? '当前项目已就绪' : '请先创建项目'}</Badge><strong>{project?.name || '尚未选择客户项目'}</strong><small>{workBuddy.prepared ? 'WorkBuddy 连接指令已准备' : '还没有连接 WorkBuddy'}</small></div></section>
     <section className="guide-section"><div className="guide-section-heading"><p className="eyebrow">你可以用它做什么</p><h3>把重复的发布工作集中到一个地方</h3></div><div className="guide-feature-grid">{features.map(([title, description, Icon]) => <Card className="guide-feature" key={title}><Icon size={19}/><h4>{title}</h4><p>{description}</p></Card>)}</div></section>
-    <section className="guide-section workbuddy-tutorial"><div className="guide-section-heading"><p className="eyebrow">首次使用</p><h3>搭配 WorkBuddy，从公司资料到自动发布</h3><p>第一次按顺序完成下面 6 步，之后只需要查看内容和发布结果。带【】的内容需要换成自己的平台或资料。</p></div><div className="workbuddy-connect-step"><span className="guide-step-icon"><Link2 size={17}/></span><div><strong>开始前先连接 WorkBuddy</strong><p>{workBuddy.prepared ? '连接指令已经准备好；如果 WorkBuddy 无法读取当前项目，再重新连接一次。' : '点击按钮后，将自动复制的连接指令粘贴到 WorkBuddy 并发送。'}</p></div><Button icon={Link2} onClick={() => void connect()}>{workBuddy.prepared ? '重新连接' : '连接 WorkBuddy'}</Button></div><div className="workbuddy-prompt-list">{workBuddyPrompts.map((item, index) => <article className={index === workBuddyPrompts.length - 1 ? 'workbuddy-prompt automation' : 'workbuddy-prompt'} key={item.number}><header><span className="guide-step-number">{item.number}</span><div><h4>{item.title}</h4><p>{item.description}</p></div><Badge tone={index === workBuddyPrompts.length - 1 ? 'warning' : item.badge === '不会发布' ? 'success' : 'neutral'}>{item.badge}</Badge>{item.number === '2' && <Button variant="outline" icon={ImagePlus} onClick={() => openContent('material')}>前往上传图片</Button>}<Button variant="outline" icon={Copy} onClick={() => void copyPrompt(item.title, item.prompt)}>{item.number === '2' ? '复制整理提示词' : '复制提示词'}</Button></header><details open={index === 0}><summary>查看提示词<span>+</span></summary><p>{item.prompt}</p></details></article>)}</div><div className="workbuddy-automation-note"><ShieldCheck size={18}/><div><strong>自动发布不要一开始就开启</strong><p>先完成公司资料、平台登录、一次仅填充和一次真实发布。确认账号与页面都正常后，再创建自动化任务。</p></div></div></section>
+    <section className="guide-section workbuddy-tutorial"><div className="guide-section-heading"><p className="eyebrow">首次使用</p><h3>搭配 WorkBuddy，从平台登录到自动发布</h3><p>第一次按顺序完成下面 7 步：先登录平台，再连接 WorkBuddy，之后配置资料、准备内容和发布。带【】的内容需要换成自己的平台或资料。</p></div><div className="workbuddy-connect-step"><span className="guide-step-icon"><Link2 size={17}/></span><div><strong>完成平台登录后连接 WorkBuddy</strong><p>{workBuddy.prepared ? '连接指令已经准备好；如果 WorkBuddy 无法读取当前项目，再重新连接一次。' : '请先完成第 1 步的平台登录，再点击按钮，将自动复制的连接指令粘贴到 WorkBuddy 并发送。'}</p></div><Button icon={Link2} onClick={() => void connect()}>{workBuddy.prepared ? '重新连接' : '连接 WorkBuddy'}</Button></div><div className="workbuddy-prompt-list">{workBuddyPrompts.map((item, index) => <article className={index === workBuddyPrompts.length - 1 ? 'workbuddy-prompt automation' : 'workbuddy-prompt'} key={item.number}><header><span className="guide-step-number">{item.number}</span><div><h4>{item.title}</h4><p>{item.description}</p></div><Badge tone={index === workBuddyPrompts.length - 1 ? 'warning' : item.badge === '不会发布' ? 'success' : 'neutral'}>{item.badge}</Badge>{item.action === 'accounts' && <Button variant="outline" icon={LogIn} onClick={() => setView('accounts')}>前往平台账号</Button>}{item.number === '3' && <Button variant="outline" icon={ImagePlus} onClick={() => openContent('material')}>前往上传图片</Button>}{item.prompt && <Button variant="outline" icon={Copy} onClick={() => void copyPrompt(item.title, item.prompt)}>{item.number === '3' ? '复制整理提示词' : '复制提示词'}</Button>}</header>{item.prompt && <details open={index === 1}><summary>查看提示词<span>+</span></summary><p>{item.prompt}</p></details>}</article>)}</div><div className="workbuddy-automation-note"><ShieldCheck size={18}/><div><strong>自动发布不要一开始就开启</strong><p>先完成平台登录、公司资料、一次仅填充和一次真实发布。确认账号与页面都正常后，再创建自动化任务。</p></div></div></section>
     <section className="guide-section guide-two-column"><Card><CardHeader><div><CardTitle>状态怎么理解</CardTitle><CardDescription>看到这些提示时，按对应动作处理即可。</CardDescription></div><CircleAlert size={18}/></CardHeader><CardContent><div className="guide-status-list"><div><Badge tone="success">已填充</Badge><span>内容已经写入平台页面，还没有发布。</span></div><div><Badge tone="success">发布成功</Badge><span>已点击发布，并完成了管理页或文章状态核对。</span></div><div><Badge tone="warning">需要人工处理</Badge><span>需要你完成登录、验证码或风控操作。</span></div><div><Badge tone="warning">结果待确认</Badge><span>不要立即再次点击，先到平台管理页确认是否已经发布。</span></div><div><Badge tone="danger">次数用完</Badge><span>今天不能继续发布该平台，换其他平台或明天再试。</span></div></div></CardContent></Card><Card><CardHeader><div><CardTitle>使用时记住这几件事</CardTitle><CardDescription>这些规则可以避免重复文章和误发布。</CardDescription></div><ShieldCheck size={18}/></CardHeader><CardContent><ul className="guide-bullets"><li>发布任务执行中不要切换客户项目。</li><li>先用“仅填充”检查页面，再执行真实发布。</li><li>真实发布前确认文章标题、封面和目标平台。</li><li>结果不明确时先对账，不要连续点击发布。</li><li>不同客户请分别建立项目，不要共用登录账号。</li></ul></CardContent></Card></section>
     <section className="guide-section"><div className="guide-section-heading"><p className="eyebrow">常见问题</p><h3>遇到问题先看这里</h3></div><div className="guide-faqs">{faqs.map(([question, answer]) => <details key={question}><summary>{question}<span>+</span></summary><p>{answer}</p></details>)}</div></section>
   </div>;

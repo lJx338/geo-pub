@@ -1,6 +1,7 @@
 import { access } from 'node:fs/promises';
 import type { WebContents } from 'electron';
 import { contentMatchesExpected } from './content-verification.js';
+import { resumeVisibleDraft } from './editor-draft.js';
 
 const PUBLISH_URL = 'https://mp.163.com/subscribe_v4/index.html#/article-publish';
 
@@ -34,21 +35,16 @@ function visibleScript(): string {
 }
 
 async function ensureEditor(webContents: WebContents): Promise<void> {
-  // Recreate the Draft.js editor for every job. Reusing the previous mounted instance after an
-  // image upload can leave stale React selection state and make the next overwrite crash the page.
-  if (webContents.getURL().includes('article-publish')) {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => { cleanup(); reject(new Error('NETEASE_RELOAD_TIMEOUT: 网易号发布页重新加载超时')); }, 90_000);
-      const cleanup = () => { clearTimeout(timeout); webContents.removeListener('did-stop-loading', done); };
-      const done = () => { cleanup(); resolve(); };
-      webContents.once('did-stop-loading', done);
-      webContents.reload();
-    });
-  } else {
+  // The session layer has already loaded a fresh page for a new platform job.
+  // Reloading this hash-routed editor a second time can SIGTRAP Electron on macOS.
+  // Existing content is safely replaced through Draft.js selection in fillText.
+  if (!webContents.getURL().includes('article-publish')) {
     await webContents.loadURL(PUBLISH_URL);
   }
   const deadline = Date.now() + 120_000;
   let transientFailures = 0;
+  let draftChecked = false;
+  let readyStreak = 0;
   while (Date.now() < deadline) {
     let state: { ready: boolean; login: boolean };
     try {
@@ -70,7 +66,16 @@ async function ensureEditor(webContents: WebContents): Promise<void> {
       continue;
     }
     if (state.login) throw new Error('NETEASE_LOGIN_REQUIRED: 请在当前桌面端完成网易号登录');
-    if (state.ready) return;
+    readyStreak = state.ready ? readyStreak + 1 : 0;
+    if (readyStreak >= 3 && !draftChecked) {
+      draftChecked = true;
+      if (await resumeVisibleDraft(webContents)) {
+        readyStreak = 0;
+        await delay(1_200);
+        continue;
+      }
+    }
+    if (readyStreak >= 3) return;
     await delay(800);
   }
   throw new Error('NETEASE_EDITOR_NOT_READY: 网易号图文编辑器 120 秒内未就绪');
@@ -101,13 +106,18 @@ async function fillText(webContents: WebContents, title: string, html: string): 
     // Draft.js only honours a selection made through Chromium's real input
     // pipeline. A DOM Range looks selected to the page, but paste appends to
     // the existing Draft state and every retry creates a duplicate article.
-    const point = await webContents.executeJavaScript(`(() => {
+    const editorState = await webContents.executeJavaScript(`(() => {
+      const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      const contentMatchesExpected=${contentMatchesExpected.toString()};
       const element=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
       if (!(element instanceof HTMLElement)) return null;
+      if (contentMatchesExpected(element.innerText||element.textContent||'', ${JSON.stringify(bodyText)})) return {alreadyMatches:true,point:null};
       element.scrollIntoView({block:'center',inline:'nearest'});
       const rect=element.getBoundingClientRect();
-      return {x:rect.left+Math.min(80,rect.width/2),y:rect.top+Math.min(28,rect.height/2)};
+      return {alreadyMatches:false,point:{x:rect.left+Math.min(80,rect.width/2),y:rect.top+Math.min(28,rect.height/2)}};
     })()`);
+    if (editorState?.alreadyMatches) return true;
+    const point = editorState?.point;
     if (!point) return false;
     webContents.focus();
     webContents.sendInputEvent({type:'mouseMove',x:Math.round(point.x),y:Math.round(point.y)});
@@ -351,19 +361,19 @@ async function applyOptions(webContents: WebContents): Promise<{ autoCoverSelect
     }
   }
 
-  let declaration = await webContents.executeJavaScript(`(() => { const button=document.querySelector('button.custom-switcher'); if(!(button instanceof HTMLElement))return {found:false,enabled:false}; const enabled=button.getAttribute('value')==='true'||/active|checked|open/.test(String(button.className||'')); return {found:true,enabled}; })()`);
+  let declaration = await webContents.executeJavaScript(`(() => { const button=document.querySelector('button.box-trigger.custom-switcher'); if(!(button instanceof HTMLElement))return {found:false,enabled:false}; const enabled=button.getAttribute('value')==='true'||/active|checked|open/.test(String(button.className||'')); return {found:true,enabled}; })()`);
   if (declaration.found && !declaration.enabled) {
-    await clickDomSelector(webContents, 'button.custom-switcher');
+    await clickDomSelector(webContents, 'button.box-trigger.custom-switcher');
     for (let i = 0; i < 15 && !declaration.enabled; i += 1) {
       await delay(300);
-      declaration = await webContents.executeJavaScript(`(() => { const button=document.querySelector('button.custom-switcher'); if(!(button instanceof HTMLElement))return {found:false,enabled:false}; return {found:true,enabled:button.getAttribute('value')==='true'||/active|checked|open/.test(String(button.className||''))}; })()`);
+      declaration = await webContents.executeJavaScript(`(() => { const button=document.querySelector('button.box-trigger.custom-switcher'); if(!(button instanceof HTMLElement))return {found:false,enabled:false}; return {found:true,enabled:button.getAttribute('value')==='true'||/active|checked|open/.test(String(button.className||''))}; })()`);
     }
   }
   const dropdown = declaration.enabled && await clickVisibleText(webContents, 'button,[role="button"],div,span', '选择声明内容');
   if (dropdown) await delay(500);
   const optionClicked = dropdown && await clickVisibleText(webContents, '[role="option"],li,button,div,span', '内容由AI生成');
   if (optionClicked) await delay(700);
-  const aiDeclarationSelected = await webContents.executeJavaScript(`(() => { const norm=(v)=>String(v||'').replace(/\\s+/g,' ').trim(); const toggle=document.querySelector('button.custom-switcher'); if(!(toggle instanceof HTMLElement))return false; return (toggle.getAttribute('value')==='true'||/active|checked|open/.test(String(toggle.className||'')))&&[...document.querySelectorAll('body *')].some(e=>norm(e.textContent)==='内容由AI生成'); })()`);
+  const aiDeclarationSelected = await webContents.executeJavaScript(`(() => { const norm=(v)=>String(v||'').replace(/\\s+/g,' ').trim(); const toggle=document.querySelector('button.box-trigger.custom-switcher'); if(!(toggle instanceof HTMLElement))return false; return (toggle.getAttribute('value')==='true'||/active|checked|open/.test(String(toggle.className||'')))&&[...document.querySelectorAll('body *')].some(e=>norm(e.textContent)==='内容由AI生成'); })()`);
   return { autoCoverSelected, aiDeclarationFound: Boolean(declaration.found), aiDeclarationSelected };
 }
 

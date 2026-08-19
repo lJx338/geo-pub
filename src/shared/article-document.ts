@@ -33,6 +33,25 @@ export type ArticleRender = {
   };
 };
 
+/**
+ * Keep article topics portable between the body renderer and platform-native
+ * tag fields. WorkBuddy may send a leading hash and external callers may send
+ * repeated values, so the publishing boundary normalizes both forms.
+ */
+export function normalizeArticleTags(tags: readonly string[], limit = 5): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const rawTag of tags) {
+    const tag = String(rawTag || '').replace(/^[#＃\s]+|[#＃\s]+$/g, '').trim();
+    const key = tag.toLocaleLowerCase();
+    if (!tag || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(tag);
+    if (normalized.length >= limit) break;
+  }
+  return normalized;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -99,6 +118,15 @@ export function renderArticleDocument(document: ArticleDocument, platform?: Arti
     expectations.images += 1;
     html.push(`<p><img src="${escapeHtml(block.src)}" alt="${escapeHtml(block.alt ?? '')}"></p>`);
     text.push(block.alt || '配图');
+  }
+
+  // The topic line is part of the published article for every platform. It is
+  // intentionally a plain paragraph so editor structure checks only describe
+  // the author's semantic headings/lists and never depend on hashtag support.
+  const topicLine = normalizeArticleTags(document.tags).map((tag) => `#${tag}`).join(' ');
+  if (topicLine) {
+    html.push(paragraphHtml(topicLine));
+    text.push(topicLine);
   }
 
   return { html: html.join(''), text: text.join('\n\n').trim(), structuralExpectations: expectations };

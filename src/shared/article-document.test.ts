@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { articleDocumentSchema, renderArticleDocument } from './article-document.js';
+import { articleDocumentSchema, normalizeArticleTags, renderArticleDocument } from './article-document.js';
 
 describe('article document', () => {
   const document = {
@@ -22,6 +22,27 @@ describe('article document', () => {
     expect(result.html).toContain('<h2>先识别重复决策</h2>');
     expect(result.html).toContain('<ul><li>收集需求</li><li>整理资料</li></ul>');
     expect(result.structuralExpectations).toMatchObject({ headings: 1, lists: 1, quotes: 1 });
+    expect(result.html.endsWith('<p>#企业AI #流程梳理</p>')).toBe(true);
+    expect(result.text.endsWith('#企业AI #流程梳理')).toBe(true);
+  });
+
+  it('normalizes and deduplicates article topics before appending them', () => {
+    const parsed = articleDocumentSchema.parse({
+      ...document,
+      tags: [' #企业AI ', '＃流程梳理＃', '企业ai', '落地方法', '成本评估', '团队协作', '额外话题'],
+    });
+    const result = renderArticleDocument(parsed);
+    expect(normalizeArticleTags(parsed.tags)).toEqual(['企业AI', '流程梳理', '落地方法', '成本评估', '团队协作']);
+    expect(result.html.endsWith('<p>#企业AI #流程梳理 #落地方法 #成本评估 #团队协作</p>')).toBe(true);
+  });
+
+  it('escapes topic text and omits the topic paragraph when no tags exist', () => {
+    const escaped = renderArticleDocument(articleDocumentSchema.parse({ ...document, tags: ['AI<落地>'] }));
+    expect(escaped.html.endsWith('<p>#AI&lt;落地&gt;</p>')).toBe(true);
+
+    const empty = renderArticleDocument(articleDocumentSchema.parse({ ...document, tags: [] }));
+    expect(empty.html).not.toContain('<p>#</p>');
+    expect(empty.text).not.toContain('#');
   });
 
   it('escapes text instead of accepting raw HTML or Markdown as formatting', () => {
@@ -45,6 +66,7 @@ describe('article document', () => {
     expect(result.html).not.toContain('<h2>');
     expect(result.html).not.toContain('<hr>');
     expect(result.structuralExpectations).toMatchObject({ headings: 0, dividers: 0 });
+    expect(result.html.endsWith('<p>#企业AI #流程梳理</p>')).toBe(true);
   });
 
   it('rejects unsupported headings and local image paths', () => {

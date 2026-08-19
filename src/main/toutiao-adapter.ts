@@ -1,6 +1,7 @@
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { WebContents } from 'electron';
+import { resumeVisibleDraft } from './editor-draft.js';
 
 const PUBLISH_URL = 'https://mp.toutiao.com/profile_v4/graphic/publish';
 const TITLE_SELECTOR = 'textarea[placeholder*="标题"],input[placeholder*="标题"]';
@@ -369,7 +370,15 @@ export async function ensureToutiaoEditor(webContents: WebContents, timeoutMs = 
     await webContents.loadURL(PUBLISH_URL);
   }
   const deadline = Date.now() + timeoutMs;
+  let draftChecked = false;
   while (Date.now() < deadline) {
+    if (!draftChecked) {
+      draftChecked = true;
+      if (await resumeVisibleDraft(webContents)) {
+        await delay(800);
+        continue;
+      }
+    }
     const ready = await webContents.executeJavaScript(`(() => {
       const visible = (element) => {
         if (!(element instanceof HTMLElement)) return false;
@@ -392,8 +401,9 @@ async function writeToutiaoContent(
   html: string,
 ): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'formatVerification' | 'url'>> {
   return await webContents.executeJavaScript(`(() => {
-    const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
-    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+    const title = [...document.querySelectorAll(${JSON.stringify(TITLE_SELECTOR)})].find(visible);
+    const body = [...document.querySelectorAll(${JSON.stringify(BODY_SELECTOR)})].find(visible);
     if (!(title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement) || !(body instanceof HTMLElement)) {
       return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, formatVerification: { expected: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] }, url: location.href };
     }
@@ -458,8 +468,9 @@ async function verifyToutiaoContent(
     const expectedBody = normalize(parser.innerText || parser.textContent);
     const countStructure = (root) => ({ headings: root.querySelectorAll('h1,h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
     const expectedStructure = countStructure(parser);
-    const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
-    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+    const title = [...document.querySelectorAll(${JSON.stringify(TITLE_SELECTOR)})].find(visible);
+    const body = [...document.querySelectorAll(${JSON.stringify(BODY_SELECTOR)})].find(visible);
     const actualTitle = title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement ? normalize(title.value) : '';
     const actualBody = body instanceof HTMLElement ? normalize(body.innerText || body.textContent) : '';
     const actualStructure = body instanceof HTMLElement ? countStructure(body) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };

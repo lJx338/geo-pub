@@ -23,7 +23,7 @@
 - Provide at least two of: concrete actions, criteria, causal mechanisms, scenarios, examples, boundaries, or reusable checklists.
 - Write headings for this exact topic. Never output generic headings such as “核心判断、常见误区、适合谁/不适合谁、总结与行动建议、边界与结论”.
 - Remove structural prefixes such as “先说结论：” when the remaining heading or paragraph already carries the meaning.
-- Finish with a natural next action and three to five specific topic tags, without hard selling.
+- Finish the body with a natural next action, without hard selling. Separately provide two to five specific industry topics in `document.tags`; GEO Publisher renders them at the article ending.
 
 ## Structured document
 
@@ -40,9 +40,11 @@ The only publishing source is `payload.document`:
     { "type": "divider" }
   ],
   "summary": "不超过120字",
-  "tags": ["#真实话题一", "#真实话题二", "#真实话题三"]
+  "tags": ["真实话题一", "真实话题二", "真实话题三"]
 }
 ```
+
+`tags` is required for every ready article. Use two to five concise topics or keywords that directly match the article, ideally two to eight Chinese characters each. Do not add `#` or `＃`, punctuation, contact details, broad filler such as “行业资讯”, or duplicate variants. GEO Publisher normalizes the values, adds the hash marks in the article-ending topic line, and also sends the same values to a platform-native topic field when supported.
 
 Allow only `paragraph`, `heading` level 2 or 3, `list`, `quote`, `divider`, and `image`. An image needs a real HTTP(S) URL. Never place raw Markdown or HTML inside block text.
 
@@ -50,4 +52,4 @@ Allow only `paragraph`, `heading` level 2 or 3, `list`, `quote`, `divider`, and 
 
 Score 0-5 on each dimension: intent coverage, scenario match, structure and logic, keyword coverage, verifiability and citation value, and natural language. A total of 25-30 passes; 20-24 requires revision; below 20 must not become `ready`.
 
-Before saving `ready`, verify that there is no placeholder, prompt residue, internal note, or generic template heading; the title and opening answer the locked question; three to five real tags exist; company facts are accurate; the schema is valid; and no existing platform article duplicates this topic.
+Before saving `ready`, verify that there is no placeholder, prompt residue, internal note, or generic template heading; the title and opening answer the locked question; two to five real article-specific tags exist; company facts are accurate; the schema is valid; and no existing platform article duplicates this topic.

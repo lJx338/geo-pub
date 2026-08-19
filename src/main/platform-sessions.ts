@@ -14,7 +14,7 @@ import { evidenceDirectory } from './runtime-paths.js';
 import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
-import { renderArticleDocument, type ArticleDocument } from '../shared/article-document.js';
+import { normalizeArticleTags, renderArticleDocument, type ArticleDocument } from '../shared/article-document.js';
 import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
 
 const defaultPlatformUrls: Record<Platform, string> = {
@@ -292,7 +292,7 @@ export class PlatformSessions {
           : platform === 'zhihu'
             ? await fillZhihuDraft(managed.view.webContents, document.title, rendered.html)
             : platform === 'penguin'
-              ? await fillPenguinDraft(managed.view.webContents, document.title, rendered.html, document.tags)
+              ? await fillPenguinDraft(managed.view.webContents, document.title, rendered.html, normalizeArticleTags(document.tags))
               : platform === 'sohu'
                 ? await fillSohuDraft(managed.view.webContents, document.title, rendered.html)
                 : await fillNeteaseDraft(managed.view.webContents, document.title, rendered.html, coverPath);
@@ -608,6 +608,16 @@ export class PlatformSessions {
     if (managed.platform === 'toutiao') {
       const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
       await managed.view.webContents.executeJavaScript(`(() => {
+        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+        const title = [...document.querySelectorAll('textarea[placeholder*="标题"],input[placeholder*="标题"]')].find(visible);
+        if (!(title instanceof HTMLElement)) return false;
+        title.scrollIntoView({ block: 'start', inline: 'nearest' });
+        window.scrollBy({ top: -100, behavior: 'instant' });
+        return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const contentScreenshotPath = await this.captureEvidence(managed, 'fill-content');
+      await managed.view.webContents.executeJavaScript(`(() => {
         const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
         const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
         const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')].filter(visible).find((element) => normalize(element.textContent) === '单图');
@@ -616,7 +626,7 @@ export class PlatformSessions {
         if (!(root instanceof HTMLElement)) return false; root.scrollIntoView({ block: 'center', inline: 'nearest' }); return true;
       })()`);
       await new Promise((resolve) => setTimeout(resolve, 500));
-      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-cover'), settingsScreenshotPath };
+      return { ...result, screenshotPath: contentScreenshotPath, coverScreenshotPath: await this.captureEvidence(managed, 'fill-cover'), settingsScreenshotPath };
     }
     if (managed.platform === 'zhihu') {
       const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');

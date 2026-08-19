@@ -1,5 +1,6 @@
 import type { WebContents } from 'electron';
 import { contentMatchesExpected } from './content-verification.js';
+import { resumeVisibleDraft } from './editor-draft.js';
 
 const PUBLISH_URL = 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1';
 
@@ -135,7 +136,7 @@ function contentScript(title: string, html: string, write: boolean): string {
     const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
     const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
     if (bodyVerificationSource !== 'editor' && degradedBlocks.length === 0 && Object.values(expectedStructure).some(Boolean)) degradedBlocks.push('编辑器结构无法确认');
-    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource !== 'none', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks }, editorFound: Boolean(titleElement && bodyElement), documentCount: documents.length, bodyCandidateCount: bodyCandidates.length };
+    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource === 'editor', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks }, editorFound: Boolean(titleElement && bodyElement), documentCount: documents.length, bodyCandidateCount: bodyCandidates.length };
   })()`;
 }
 
@@ -145,6 +146,7 @@ export function buildSohuContentScriptForTest(title: string, html: string, write
 
 export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
   if (!webContents.getURL().includes('/contentManagement/news/addarticle')) await webContents.loadURL(PUBLISH_URL);
+  await resumeVisibleDraft(webContents);
   const deadline = Date.now() + timeoutMs;
   let streak = 0;
   while (Date.now() < deadline) {
