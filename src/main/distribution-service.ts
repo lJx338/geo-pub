@@ -21,6 +21,13 @@ type DirectDistributionRequest = {
 
 const coverRequiredPlatforms = new Set<Platform>(['baijia', 'toutiao', 'netease']);
 
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function isRetryableFillError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /NETWORK_SLOW|TIMEOUT|EVIDENCE_CAPTURE_TIMEOUT|NETEASE_(?:CLEAR|TEXT_RESET|TEXT_FILL)_FAILED|Execution context was destroyed|Render frame was disposed|frame was detached|ERR_ABORTED|target closed/i.test(message);
+}
+
 function errorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] || 'DISTRIBUTION_FAILED';
@@ -63,33 +70,51 @@ export class DistributionService {
     if (article.payload.quality && typeof article.payload.quality === 'object' && (article.payload.quality as { passed?: unknown }).passed === false) throw new Error('ARTICLE_QUALITY_REJECTED: 文章质量检查未通过');
     const document = articleDocumentSchema.parse(article.payload.document);
     if (input.platforms.includes('toutiao') && [...document.title].length > 30) throw new Error('TOUTIAO_TITLE_TOO_LONG: 头条号标题不能超过 30 个字符');
-    const coverMissing = input.platforms.filter((platform) => coverRequiredPlatforms.has(platform) && !input.coverPath.trim());
-    if (coverMissing.length) throw new Error(`COVER_REQUIRED: ${coverMissing.join('、')} 必须选择封面图片`);
-
     const contentHash = documentHash(document);
     const history = await this.content.list(input.projectId, 'distribution');
+    const finalizedPlatforms = new Set<Platform>();
     if (input.mode === 'publish') {
-      const finalized = history.find((record) => input.platforms.includes(record.platform as Platform)
+      for (const record of history) {
+        if (input.platforms.includes(record.platform as Platform)
         && record.payload.articleId === article.id
         && record.payload.contentHash === contentHash
         && record.payload.mode === 'publish'
-        && (record.status === 'success' || record.status === 'result_uncertain'));
-      if (finalized) throw new Error(`DISTRIBUTION_ALREADY_FINALIZED: ${finalized.platform} 已成功发布或结果待确认，禁止重复发布`);
+        && (record.status === 'success' || record.status === 'result_uncertain')) {
+          finalizedPlatforms.add(record.platform as Platform);
+        }
+      }
+      if (finalizedPlatforms.size === input.platforms.length) {
+        const platform = [...finalizedPlatforms][0];
+        throw new Error(`DISTRIBUTION_ALREADY_FINALIZED: ${platform} 已成功发布或结果待确认，禁止重复发布`);
+      }
     }
+
+    const targetPlatforms = input.platforms.filter((platform) => !finalizedPlatforms.has(platform));
+    const coverMissing = targetPlatforms.filter((platform) => coverRequiredPlatforms.has(platform) && !input.coverPath.trim());
+    if (coverMissing.length) throw new Error(`COVER_REQUIRED: ${coverMissing.join('、')} 必须选择封面图片`);
 
     const taskId = crypto.randomUUID();
     const records: ContentItem[] = [];
-    for (const platform of input.platforms) {
+    for (const platform of targetPlatforms) {
       const startedAt = new Date().toISOString();
       let record = await this.content.save(input.projectId, {
         kind: 'distribution', title: article.title, status: 'running', platform,
-        payload: { taskId, articleId: article.id, contentHash, mode: input.mode, source: 'desktop', targetPlatforms: input.platforms, startedAt },
+        payload: { taskId, articleId: article.id, contentHash, mode: input.mode, source: 'desktop', targetPlatforms, startedAt },
       });
       this.onRecordSaved(record, 'desktop');
       try {
-        const result = input.mode === 'publish'
-          ? await this.executor.publishDraft(platform, document, input.coverPath)
-          : await this.executor.fillDraft(platform, document, input.coverPath);
+        let result: unknown;
+        if (input.mode === 'publish') {
+          result = await this.executor.publishDraft(platform, document, input.coverPath);
+        } else {
+          try {
+            result = await this.executor.fillDraft(platform, document, input.coverPath);
+          } catch (error) {
+            if (!isRetryableFillError(error)) throw error;
+            await delay(1_000);
+            result = await this.executor.fillDraft(platform, document, input.coverPath);
+          }
+        }
         const status = resultStatus(input.mode, result);
         record = await this.content.save(input.projectId, {
           id: record.id, kind: 'distribution', status, platform,
@@ -111,7 +136,7 @@ export class DistributionService {
         : {};
       const successfulPlatforms = [...new Set([
         ...(Array.isArray(previous.successfulPlatforms) ? previous.successfulPlatforms.filter((value): value is string => typeof value === 'string') : []),
-        ...input.platforms,
+        ...targetPlatforms,
       ])];
       const completedArticle = await this.content.save(input.projectId, {
         id: article.id,
@@ -123,7 +148,7 @@ export class DistributionService {
             ...previous,
             completedAt: new Date().toISOString(),
             lastTaskId: taskId,
-            lastTargetPlatforms: input.platforms,
+            lastTargetPlatforms: targetPlatforms,
             successfulPlatforms,
           },
         },

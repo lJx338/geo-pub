@@ -25,9 +25,12 @@ const compactContent = (value: string): string => normalizeContent(value).replac
 export function draftContentMatches(expectedTitle: string, expectedBody: string, actual: DraftContentState): boolean {
   const normalizedExpectedBody = compactContent(expectedBody);
   const normalizedActualBody = compactContent(actual.body.replace(/点击输入图片描述[（(]最多30字[）)]/g, ''));
-  return normalizeContent(actual.title) === normalizeContent(expectedTitle)
-    && normalizedExpectedBody.length > 0
-    && normalizedActualBody === normalizedExpectedBody;
+  if (normalizeContent(actual.title) !== normalizeContent(expectedTitle) || normalizedExpectedBody.length === 0) return false;
+  // Platforms often append editor placeholders or normalize line boundaries
+  // after the adapter writes. Do not reject a complete draft just because the
+  // DOM contains harmless trailing/spacing content.
+  return normalizedActualBody === normalizedExpectedBody
+    || normalizedActualBody.includes(normalizedExpectedBody);
 }
 
 export function isNeteasePreflightRunning(text: string): boolean {

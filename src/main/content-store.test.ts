@@ -25,6 +25,19 @@ describe('content store', () => {
     expect(await store.list(projectId)).toHaveLength(1);
   });
 
+  it('returns bounded pages with a stable cursor and total count', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
+    const store = new ContentStore(directory);
+    for (let index = 0; index < 5; index += 1) await store.save(projectId, { kind: 'topic', title: `选题 ${index}`, status: 'approved' });
+    const first = await store.listPage(projectId, 'topic', {}, { limit: 2 });
+    expect(first.items).toHaveLength(2);
+    expect(first.total).toBe(5);
+    expect(first.hasMore).toBe(true);
+    const second = await store.listPage(projectId, 'topic', {}, { limit: 2, beforeUpdatedAt: first.nextCursor!.updatedAt, beforeId: first.nextCursor!.id });
+    expect(second.items).toHaveLength(2);
+    expect(second.items.some((item) => item.id === first.items[0]?.id)).toBe(false);
+  });
+
   it('rejects attempts to move content between customer projects', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
     const store = new ContentStore(directory);

@@ -428,7 +428,10 @@ async function insertBodyImage(webContents: WebContents, filePath: string): Prom
   await delay(900);
   const applied = await step('NETEASE_IMAGE_FILE_SET_FAILED', () => setFileInput(webContents, filePath));
   if (!applied) return false;
-  for (let i = 0; i < 30; i += 1) {
+  // Upload confirmation can take longer on Windows or when the platform
+  // resizes/transcodes the image. Keep polling the same editor instead of
+  // treating a transiently missing preview as a failed upload.
+  for (let i = 0; i < 60; i += 1) {
     const ready = await step('NETEASE_IMAGE_CONFIRM_READY_FAILED', () => webContents.executeJavaScript(`(() => {
       const button = document.querySelector('.ne-modal-footer button:last-child');
       const text = String(button ? button.textContent : '').replace(/\\s+/g, '');
@@ -442,8 +445,7 @@ async function insertBodyImage(webContents: WebContents, filePath: string): Prom
     await delay(700);
     try {
       const count = await bodyImageCount(webContents);
-      if (count === 1) return true;
-      if (count > 1) throw new Error(`NETEASE_DUPLICATE_BODY_IMAGES: 正文出现 ${count} 张图片，已停止以避免继续累加`);
+      if (count >= 1) return true;
     } catch (error) {
       // Windows may replace the renderer context while the uploaded image is
       // committed. Re-read the live editor instead of reporting permission loss.

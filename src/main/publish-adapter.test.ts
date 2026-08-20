@@ -16,6 +16,10 @@ describe('pre-publish content verification', () => {
     expect(draftContentMatches('标题', '第一段\n第二段', { title: '标题', body: '第一段  第二段' })).toBe(true);
   });
 
+  it('accepts harmless editor text appended after the complete body', () => {
+    expect(draftContentMatches('标题', '第一段第二段', { title: '标题', body: '第一段第二段保存中' })).toBe(true);
+  });
+
   it('ignores the NetEase image description placeholder added by the editor', () => {
     expect(draftContentMatches('标题', '第一段第二段', {
       title: '标题',

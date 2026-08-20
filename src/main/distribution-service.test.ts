@@ -28,6 +28,36 @@ async function setup() {
 }
 
 describe('desktop distribution service', () => {
+  it('keeps fill-only execution serial when one platform is slow', async () => {
+    const { article, executor, content, calls } = await setup();
+    const order: string[] = [];
+    executor.fillDraft = async (platform: Platform): Promise<unknown> => {
+      order.push(`${platform}:start`);
+      await new Promise((resolve) => setTimeout(resolve, platform === 'zhihu' ? 45 : 5));
+      order.push(`${platform}:end`);
+      calls.push({ mode: 'fill', platform });
+      return { stage: 'filled', networkDelayMs: platform === 'zhihu' ? 45 : 5 };
+    };
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '', confirmPublish: false });
+    expect(result.records.map((record) => record.status)).toEqual(['filled', 'filled']);
+    expect(order).toEqual(['zhihu:start', 'zhihu:end', 'sohu:start', 'sohu:end']);
+    expect(calls.every((call) => call.mode === 'fill')).toBe(true);
+  });
+
+  it('retries one transient fill failure without starting any publish action', async () => {
+    const { article, executor, content, calls } = await setup();
+    let attempts = 0;
+    executor.fillDraft = async (platform: Platform): Promise<unknown> => {
+      calls.push({ mode: 'fill', platform });
+      if (platform === 'zhihu' && attempts++ === 0) throw new Error('NETWORK_SLOW: simulated renderer timeout');
+      return { stage: 'filled' };
+    };
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '', confirmPublish: false });
+    expect(result.records.map((record) => record.status)).toEqual(['filled', 'filled']);
+    expect(calls.filter((call) => call.platform === 'zhihu')).toHaveLength(2);
+    expect(calls.some((call) => call.mode === 'publish')).toBe(false);
+  });
+
   it('fills selected platforms serially and records each result', async () => {
     const { content, article, calls, executor } = await setup();
     const saved: string[] = [];
@@ -65,6 +95,22 @@ describe('desktop distribution service', () => {
     const completed = (await content.list(projectId, 'article')).find((item) => item.id === article.id);
     expect(completed).toMatchObject({ status: 'published', payload: { distribution: { successfulPlatforms: ['zhihu'], lastTargetPlatforms: ['zhihu'] } } });
     await expect(service.run({ projectId, articleId: article.id, platforms: ['zhihu'], mode: 'publish', coverPath: '', confirmPublish: true })).rejects.toThrow('DISTRIBUTION_ALREADY_FINALIZED');
+  });
+
+  it('retries only the unfinished platform after a partial publish', async () => {
+    const { article, executor, content, calls } = await setup();
+    executor.publishDraft = async (platform: Platform): Promise<unknown> => {
+      calls.push({ mode: 'publish', platform });
+      return platform === 'zhihu'
+        ? { status: 'success', stage: 'reconciled' }
+        : { status: 'action_required', stage: 'manual' };
+    };
+    await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'publish', coverPath: '', confirmPublish: true });
+    calls.length = 0;
+    executor.publishDraft = async (platform: Platform): Promise<unknown> => { calls.push({ mode: 'publish', platform }); return { status: 'success', stage: 'reconciled' }; };
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'publish', coverPath: '', confirmPublish: true });
+    expect(calls).toEqual([{ mode: 'publish', platform: 'sohu' }]);
+    expect(result.records.map((record) => record.platform)).toEqual(['sohu']);
   });
 
   it('keeps the article available when any selected publish target fails', async () => {

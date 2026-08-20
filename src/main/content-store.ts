@@ -17,7 +17,24 @@ const contentItemSchema = z.object({
 export type ContentKind = z.infer<typeof contentItemSchema>['kind'];
 export type ContentItem = z.infer<typeof contentItemSchema>;
 export type ContentInput = Partial<Pick<ContentItem, 'id' | 'title' | 'status' | 'platform' | 'category' | 'topicFamilyId' | 'parentTopicId' | 'variantNumber' | 'usageCount' | 'lastUsedAt' | 'reusePolicy' | 'cooldownDays' | 'reservedBy' | 'reservedUntil' | 'payload'>> & { kind: ContentKind };
-export type ContentFilter = { status?: string; category?: string; platform?: string; reusePolicy?: 'standard' | 'evergreen'; query?: string; autoSelectable?: boolean };
+export type ContentFilter = {
+  status?: string;
+  category?: string;
+  platform?: string;
+  reusePolicy?: 'standard' | 'evergreen';
+  query?: string;
+  autoSelectable?: boolean;
+  limit?: number;
+  beforeUpdatedAt?: string;
+  beforeId?: string;
+};
+
+export type ContentPage = {
+  items: ContentItem[];
+  total: number;
+  hasMore: boolean;
+  nextCursor: { updatedAt: string; id: string } | null;
+};
 
 export const materialAnalysisSchema = z.object({
   description: z.string().trim().min(2).max(500),
@@ -40,7 +57,7 @@ export class ContentStore {
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft', platform TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
       topic_family_id TEXT NOT NULL DEFAULT '', parent_topic_id TEXT NOT NULL DEFAULT '', variant_number INTEGER NOT NULL DEFAULT 1, usage_count INTEGER NOT NULL DEFAULT 0, last_used_at TEXT,
       reuse_policy TEXT NOT NULL DEFAULT 'standard', cooldown_days INTEGER NOT NULL DEFAULT 0, reserved_by TEXT NOT NULL DEFAULT '', reserved_until TEXT, payload TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    ); CREATE INDEX IF NOT EXISTS idx_content_project_kind ON content_items(project_id, kind); CREATE INDEX IF NOT EXISTS idx_content_topic_family ON content_items(project_id, topic_family_id);`);
+    ); CREATE INDEX IF NOT EXISTS idx_content_project_kind ON content_items(project_id, kind); CREATE INDEX IF NOT EXISTS idx_content_project_kind_updated ON content_items(project_id, kind, updated_at DESC, id DESC); CREATE INDEX IF NOT EXISTS idx_content_topic_family ON content_items(project_id, topic_family_id);`);
   }
 
   async list(projectId: string, kind?: ContentKind, filter: ContentFilter = {}): Promise<ContentItem[]> {
@@ -50,8 +67,30 @@ export class ContentStore {
     if (filter.category) { conditions.push('category = ?'); values.push(filter.category); }
     if (filter.platform) { conditions.push('platform = ?'); values.push(filter.platform); }
     if (filter.reusePolicy) { conditions.push('reuse_policy = ?'); values.push(filter.reusePolicy); }
-    const rows = this.database.prepare(`SELECT ${columns} FROM content_items WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC`).all(...values) as Record<string, unknown>[]; const now = Date.now();
+    const rows = this.database.prepare(`SELECT ${columns} FROM content_items WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, id DESC`).all(...values) as Record<string, unknown>[]; const now = Date.now();
     return rows.map((row) => this.fromRow(row)).filter((item) => (!filter.query || `${item.title} ${JSON.stringify(item.payload)}`.toLowerCase().includes(filter.query.toLowerCase())) && (!filter.autoSelectable || this.isTopicAutoSelectable(item, now)));
+  }
+
+  async listPage(projectId: string, kind: ContentKind | undefined, filter: Omit<ContentFilter, 'limit' | 'beforeUpdatedAt' | 'beforeId'> = {}, options: { limit?: number; beforeUpdatedAt?: string; beforeId?: string } = {}): Promise<ContentPage> {
+    const conditions = ['project_id = ?']; const values: SQLInputValue[] = [projectId];
+    if (kind) { conditions.push('kind = ?'); values.push(kind); }
+    if (filter.status) { conditions.push('status = ?'); values.push(filter.status); }
+    if (filter.category) { conditions.push('category = ?'); values.push(filter.category); }
+    if (filter.platform) { conditions.push('platform = ?'); values.push(filter.platform); }
+    if (filter.reusePolicy) { conditions.push('reuse_policy = ?'); values.push(filter.reusePolicy); }
+    if (options.beforeUpdatedAt && options.beforeId) {
+      conditions.push('(updated_at < ? OR (updated_at = ? AND id < ?))');
+      values.push(options.beforeUpdatedAt, options.beforeUpdatedAt, options.beforeId);
+    }
+    const limit = Math.max(1, Math.min(100, options.limit ?? 30));
+    const rows = this.database.prepare(`SELECT ${columns} FROM content_items WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, id DESC LIMIT ?`).all(...values, limit + 1) as Record<string, unknown>[];
+    const now = Date.now();
+    const parsed = rows.map((row) => this.fromRow(row)).filter((item) => (!filter.query || `${item.title} ${JSON.stringify(item.payload)}`.toLowerCase().includes(filter.query.toLowerCase())) && (!filter.autoSelectable || this.isTopicAutoSelectable(item, now)));
+    const items = parsed.slice(0, limit);
+    const last = items.at(-1);
+    const totalValues = values.slice(0, options.beforeUpdatedAt && options.beforeId ? -3 : undefined);
+    const total = Number((this.database.prepare(`SELECT COUNT(*) AS count FROM content_items WHERE ${conditions.slice(0, options.beforeUpdatedAt && options.beforeId ? -1 : conditions.length).join(' AND ')}`).get(...totalValues) as { count: number }).count);
+    return { items, total, hasMore: parsed.length > limit, nextCursor: last ? { updatedAt: last.updatedAt, id: last.id } : null };
   }
 
   async save(projectId: string, input: ContentInput): Promise<ContentItem> {

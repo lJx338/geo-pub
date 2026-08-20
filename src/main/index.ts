@@ -16,6 +16,7 @@ import { setupStealthSession } from './stealth.js';
 import { UpdateManager } from './update-manager.js';
 import { prepareWorkBuddyIntegration, prepareWorkBuddyMaterialOrganization, workBuddyIntegrationStatus } from './workbuddy-integration.js';
 import { DistributionService } from './distribution-service.js';
+import { runIdleMaintenance } from './maintenance.js';
 
 app.setName('GEO Publisher');
 app.setPath('userData', dataDirectory());
@@ -113,15 +114,19 @@ async function runDesktop(): Promise<void> {
     return event;
   };
   const workspaceSnapshot = async () => {
-    let snapshot = { revision: dataChanges.current(), projects: projects.list(), currentProject: projects.current(), items: [] as Awaited<ReturnType<ContentStore['list']>> };
+    let snapshot = { revision: dataChanges.current(), projects: projects.list(), currentProject: projects.current(), items: [] as Awaited<ReturnType<ContentStore['list']>>, contentCounts: {} as Record<string, number> };
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const revision = dataChanges.current();
       const currentProject = projects.current();
+      const project = currentProject;
+      const kinds: ContentKind[] = ['article', 'topic', 'material', 'distribution'];
+      const pages = project ? await Promise.all(kinds.map((kind) => content.listPage(project.id, kind, {}, { limit: kind === 'distribution' ? 12 : 50 }))) : [];
       snapshot = {
         revision,
         projects: projects.list(),
         currentProject,
-        items: currentProject ? await content.list(currentProject.id) : [],
+        items: pages.flatMap((page) => page.items),
+        contentCounts: Object.fromEntries(kinds.map((kind, index) => [kind, pages[index]?.total ?? 0])),
       };
       if (dataChanges.current() === revision) break;
     }
@@ -172,7 +177,12 @@ async function runDesktop(): Promise<void> {
     }
     if (request.action === 'content.list') {
       ensureCurrentContentProject(request.projectId);
-      return { items: await content.list(request.projectId, request.kind as ContentKind | undefined, (request.filter || {}) as ContentFilter) };
+      const filter = (request.filter || {}) as ContentFilter;
+      if (filter.limit || filter.beforeUpdatedAt || filter.beforeId) {
+        const { limit, beforeUpdatedAt, beforeId, ...baseFilter } = filter;
+        return await content.listPage(request.projectId, request.kind as ContentKind | undefined, baseFilter, { limit, beforeUpdatedAt, beforeId });
+      }
+      return { items: await content.list(request.projectId, request.kind as ContentKind | undefined, filter) };
     }
     if (request.action === 'content.save') {
       ensureCurrentContentProject(request.projectId);
@@ -248,7 +258,13 @@ async function runDesktop(): Promise<void> {
   ipcMain.handle('geo:projects-list', () => ({ projects: projects.list(), currentProject: projects.current() }));
   ipcMain.handle('geo:workspace-snapshot', workspaceSnapshot);
   ipcMain.handle('geo:data-revision', () => dataChanges.current());
-  ipcMain.handle('geo:content-list', async (_event, projectId: string, kind?: ContentKind, filter?: ContentFilter) => ({ items: await content.list(projectId, kind, filter) }));
+  ipcMain.handle('geo:content-list', async (_event, projectId: string, kind?: ContentKind, filter: ContentFilter = {}) => {
+    if (filter.limit || filter.beforeUpdatedAt || filter.beforeId) {
+      const { limit, beforeUpdatedAt, beforeId, ...baseFilter } = filter;
+      return await content.listPage(projectId, kind, baseFilter, { limit, beforeUpdatedAt, beforeId });
+    }
+    return { items: await content.list(projectId, kind, filter) };
+  });
   ipcMain.handle('geo:content-save', async (_event, projectId: string, input: ContentInput) => {
     const item = await content.save(projectId, input);
     recordDataChange({ entity: 'content', action: 'saved', projectId, itemId: item.id, contentKind: item.kind, source: 'desktop' });
@@ -444,10 +460,19 @@ async function runDesktop(): Promise<void> {
   await window.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
   if (!startsInBackground) showWindow();
   updateManager.start();
+  // Evidence and updater downloads are diagnostic/temporary data. Clean them
+  // after startup, but never while a platform or distribution task is active.
+  const runMaintenanceIfIdle = () => {
+    if (!sessions.isBusy() && !distributionRunning) void runIdleMaintenance().catch(() => undefined);
+  };
+  setTimeout(runMaintenanceIfIdle, 15_000).unref();
+  const maintenanceTimer = setInterval(runMaintenanceIfIdle, 24 * 60 * 60 * 1000);
+  maintenanceTimer.unref();
   app.on('before-quit', (event) => {
     if (shuttingDown) return;
     event.preventDefault();
     shuttingDown = true;
+    clearInterval(maintenanceTimer);
     updateManager.stop();
     void Promise.all([
       sessions.flushStorage(),

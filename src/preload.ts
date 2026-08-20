@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   chooseDistributionCover: (): Promise<{ canceled: boolean; filePath: string }> => ipcRenderer.invoke('geo:distribution-cover-choose'),
   runDistribution: (input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> => ipcRenderer.invoke('geo:distribution-run', input),
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),
-  workspaceSnapshot: (): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[] }> => ipcRenderer.invoke('geo:workspace-snapshot'),
+  workspaceSnapshot: (): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[]; contentCounts: Record<string, number> }> => ipcRenderer.invoke('geo:workspace-snapshot'),
   dataRevision: (): Promise<number> => ipcRenderer.invoke('geo:data-revision'),
   contentList: (projectId: string, kind?: ContentKind, filter?: ContentFilter): Promise<{ items: ContentItem[] }> => ipcRenderer.invoke('geo:content-list', projectId, kind, filter),
   contentSave: (projectId: string, input: ContentInput): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:content-save', projectId, input),

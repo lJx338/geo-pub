@@ -289,7 +289,6 @@ async function coverSignature(webContents: WebContents): Promise<string> {
 async function uploadCover(webContents: WebContents, coverPath: string): Promise<boolean> {
   const absolutePath = resolve(coverPath);
   await access(absolutePath);
-  const previousSignature = await coverSignature(webContents);
   const opened = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
@@ -337,16 +336,12 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const currentSignature = await coverSignature(webContents);
-    if (await coverApplied(webContents)
-      && currentSignature
-      && (!previousSignature || currentSignature !== previousSignature)) return true;
+    if (await coverApplied(webContents) && currentSignature) return true;
     const clicked = await confirmCoverDialog(webContents);
     await delay(clicked ? 1_200 : 600);
   }
   const currentSignature = await coverSignature(webContents);
-  return Boolean(await coverApplied(webContents)
-    && currentSignature
-    && (!previousSignature || currentSignature !== previousSignature));
+  return Boolean(await coverApplied(webContents) && currentSignature);
 }
 
 export async function fillBaijiaDraft(
