@@ -29,6 +29,28 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
+const SOHU_AI_DECLARATION_LABEL = '含有AI生成内容';
+
+function aiDeclarationStateScript(scroll = false): string {
+  return `(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+    const text = [...document.querySelectorAll('label.el-radio')].filter(visible).find((element) => normalize(element.textContent) === ${JSON.stringify(SOHU_AI_DECLARATION_LABEL)});
+    const root = text;
+    if (!(root instanceof HTMLElement)) return { found: false, selected: false, point: null, label: '' };
+    const input = root.matches('input[type="radio"]') ? root : root.querySelector('input[type="radio"]');
+    const selected = (input instanceof HTMLInputElement && input.checked) || root.getAttribute('aria-checked') === 'true' || /(?:^|\\s)(?:is-checked|checked|selected|active)(?:\\s|$)/.test(String(root.className || ''));
+    if (${scroll}) root.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const target = root.querySelector('.el-radio__inner') || root;
+    const rect = target.getBoundingClientRect();
+    return { found: true, selected, point: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }, label: normalize(text?.textContent) };
+  })()`;
+}
+
+export function buildSohuAiDeclarationStateScriptForTest(scroll = false): string {
+  return aiDeclarationStateScript(scroll);
+}
+
 async function clickPoint(webContents: WebContents, point: { x: number; y: number }): Promise<void> {
   const x = Math.round(point.x);
   const y = Math.round(point.y);
@@ -180,34 +202,16 @@ async function fillContent(webContents: WebContents, title: string, html: string
 }
 
 async function applyOptionalSettings(webContents: WebContents): Promise<{ summaryClicked: boolean; summaryGenerated: boolean; summaryUnavailable: boolean; aiContentFound: boolean; aiContentSelected: boolean }> {
-  const ai = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-    const text = [...document.querySelectorAll('label,[role="radio"],span,div')].filter(visible).find((element) => normalize(element.textContent) === '包含AI创作内容');
-    const root = text?.closest('label,[role="radio"],.ant-radio-wrapper,.radio-item') || text?.parentElement;
-    if (!(root instanceof HTMLElement)) return { found: false, selected: false, point: null };
-    const input = root.querySelector('input[type="radio"]'); const selected = (input instanceof HTMLInputElement && input.checked) || root.getAttribute('aria-checked') === 'true' || /checked|selected|active/.test(String(root.className || ''));
-    root.scrollIntoView({ block: 'center' }); const rect = root.getBoundingClientRect(); return { found: true, selected, point: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } };
-  })()`);
-  if (ai.found && !ai.selected && ai.point) {
-    await delay(350);
-    const currentAiPoint = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-      const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-      const text = [...document.querySelectorAll('label,[role="radio"],span,div')].filter(visible).find((element) => normalize(element.textContent) === '包含AI创作内容');
-      const root = text?.closest('label,[role="radio"],.ant-radio-wrapper,.radio-item') || text?.parentElement;
-      if (!(root instanceof HTMLElement)) return null; const rect = root.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    })()`);
-    if (currentAiPoint) await clickPoint(webContents, currentAiPoint);
-    await delay(900);
+  let ai = await webContents.executeJavaScript(aiDeclarationStateScript(true));
+  for (let attempt = 0; ai.found && !ai.selected && attempt < 3; attempt += 1) {
+    await delay(350 + attempt * 250);
+    ai = await webContents.executeJavaScript(aiDeclarationStateScript(true));
+    if (ai.selected) break;
+    if (ai.point) await clickPoint(webContents, ai.point);
+    await delay(700 + attempt * 300);
+    ai = await webContents.executeJavaScript(aiDeclarationStateScript(false));
   }
-  const aiContentSelected = ai.found ? await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-    const text = [...document.querySelectorAll('label,[role="radio"],span,div')].find((element) => normalize(element.textContent) === '包含AI创作内容');
-    const root = text?.closest('label,[role="radio"],.ant-radio-wrapper,.radio-item') || text?.parentElement; const input = root?.querySelector('input[type="radio"]');
-    return Boolean((input instanceof HTMLInputElement && input.checked) || root?.getAttribute('aria-checked') === 'true' || /checked|selected|active/.test(String(root?.className || '')));
-  })()`) : false;
-  return { summaryClicked: false, summaryGenerated: false, summaryUnavailable: false, aiContentFound: ai.found, aiContentSelected };
+  return { summaryClicked: false, summaryGenerated: false, summaryUnavailable: false, aiContentFound: ai.found, aiContentSelected: ai.selected };
 }
 
 export async function fillSohuDraft(webContents: WebContents, title: string, html: string): Promise<SohuDraftFillResult> {
@@ -226,7 +230,7 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim(); const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     const publishButtonDetected = [...document.querySelectorAll('li.publish-report-btn,li[report-attr],button,[role="button"]')].filter(visible).some((element) => { const text = normalize(element.textContent); return text === '发布' && !text.includes('定时发布') && !element.hasAttribute('disabled'); });
-    const ai = [...document.querySelectorAll('label,[role="radio"],span,div')].filter(visible).find((element) => normalize(element.textContent) === '包含AI创作内容'); if (ai instanceof HTMLElement) ai.scrollIntoView({ block: 'center' });
+    const ai = [...document.querySelectorAll('label.el-radio')].filter(visible).find((element) => normalize(element.textContent) === ${JSON.stringify(SOHU_AI_DECLARATION_LABEL)}); if (ai instanceof HTMLElement) ai.scrollIntoView({ block: 'center' });
     return { publishButtonDetected, url: location.href };
   })()`);
   await delay(500);

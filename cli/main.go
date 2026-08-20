@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.6.0-beta.5"
+var version = "0.6.0-beta.6"
 var buildMode = "production"
 
 var platforms = map[string]bool{

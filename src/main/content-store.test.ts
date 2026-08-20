@@ -67,6 +67,14 @@ describe('content store', () => {
     expect(variant).toMatchObject({ parentTopicId: parent.id, topicFamilyId: parent.topicFamilyId, variantNumber: 2, reusePolicy: 'evergreen' });
   });
 
+  it('can remove evergreen reuse without losing topic history', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
+    const store = new ContentStore(directory);
+    const topic = await store.save(projectId, { kind: 'topic', title: '长期主题', status: 'used', reusePolicy: 'evergreen', usageCount: 3, payload: { usageHistory: [{ articleId: 'article-a', usedAt: '2026-08-20T00:00:00.000Z' }] } });
+    const updated = await store.save(projectId, { id: topic.id, kind: 'topic', reusePolicy: 'standard' });
+    expect(updated).toMatchObject({ reusePolicy: 'standard', status: 'used', usageCount: 3, payload: topic.payload });
+  });
+
   it('copies and deduplicates original material files', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
     const source = join(directory, '产品资料.txt');
