@@ -1,10 +1,11 @@
-import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { z } from 'zod';
 import { dataDirectory } from './runtime-paths.js';
+import { articleDocumentSchema, type ArticleDocument } from '../shared/article-document.js';
 
 const contentItemSchema = z.object({
   id: z.string().min(1), projectId: z.string().uuid(), kind: z.enum(['material', 'topic', 'article', 'distribution']),
@@ -107,6 +108,43 @@ export class ContentStore {
     return item;
   }
 
+  async delete(projectId: string, id: string): Promise<ContentItem> {
+    const item = this.findSync(projectId, id);
+    if (item.kind === 'distribution') throw new Error('CONTENT_DELETE_FORBIDDEN: 分发记录用于发布对账，不能删除');
+    if (item.kind === 'topic' && item.reservedBy && item.reservedUntil && Date.parse(item.reservedUntil) > Date.now()) {
+      throw new Error('TOPIC_RESERVED: 选题正在生成文章，暂时不能删除');
+    }
+    if (item.kind === 'material') {
+      const articles = await this.list(projectId, 'article');
+      const referencedBy = articles.filter((article) => {
+        const document = articleDocumentSchema.safeParse(article.payload.document);
+        return document.success && document.data.blocks.some((block) => block.type === 'image' && block.materialId === id);
+      });
+      if (referencedBy.length) {
+        throw new Error(`MATERIAL_IN_USE: 该图片正在被 ${referencedBy.length} 篇文章使用，请先在文章中替换或移除图片`);
+      }
+    }
+    this.database.prepare('DELETE FROM content_items WHERE project_id = ? AND id = ?').run(projectId, id);
+    if (item.kind === 'material' && typeof item.payload.sourcePath === 'string') {
+      const materialRoot = join(this.root, projectId, 'materials');
+      const sourcePath = item.payload.sourcePath;
+      if (sourcePath.startsWith(`${materialRoot}/`) || sourcePath.startsWith(`${materialRoot}\\`)) await rm(sourcePath, { force: true });
+    }
+    return item;
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare('DELETE FROM content_items WHERE project_id = ?').run(projectId);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+    await rm(join(this.root, projectId), { recursive: true, force: true });
+  }
+
   async reserveTopic(projectId: string, topicId: string, taskId: string, ttlMs = 10 * 60 * 1000): Promise<ContentItem> {
     this.database.exec('BEGIN IMMEDIATE');
     try {
@@ -168,6 +206,21 @@ export class ContentStore {
     const item = await this.find(projectId, materialId, 'material');
     if (item.payload.mediaType !== 'image' || typeof item.payload.sourcePath !== 'string') throw new Error('MATERIAL_NOT_IMAGE: 该素材不是可识别的图片');
     return item;
+  }
+
+  async resolveArticleImages(projectId: string, document: ArticleDocument): Promise<ArticleDocument> {
+    const blocks = await Promise.all(document.blocks.map(async (block) => {
+      if (block.type !== 'image' || !block.materialId) return block;
+      const material = await this.imageMaterial(projectId, block.materialId);
+      const sourcePath = String(material.payload.sourcePath);
+      const bytes = await readFile(sourcePath);
+      const extension = String(material.payload.extension || sourcePath.split('.').pop() || '').toLowerCase();
+      const mime = extension === 'jpg' || extension === 'jpeg'
+        ? 'image/jpeg'
+        : extension === 'webp' ? 'image/webp' : 'image/png';
+      return { ...block, src: `data:${mime};base64,${bytes.toString('base64')}` };
+    }));
+    return articleDocumentSchema.parse({ ...document, blocks });
   }
 
   async analyzeImageMaterial(projectId: string, materialId: string, rawAnalysis: unknown): Promise<ContentItem> {

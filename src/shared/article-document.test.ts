@@ -73,4 +73,12 @@ describe('article document', () => {
     expect(articleDocumentSchema.safeParse({ ...document, blocks: [{ type: 'heading', level: 1, text: '标题' }] }).success).toBe(false);
     expect(articleDocumentSchema.safeParse({ ...document, blocks: [{ type: 'image', src: '/tmp/image.png' }] }).success).toBe(false);
   });
+
+  it('accepts a project material reference without leaking a computer path into the article', () => {
+    const parsed = articleDocumentSchema.parse({
+      ...document,
+      blocks: [{ type: 'image', materialId: 'material-01', alt: '设备现场图', caption: '设备运行现场' }],
+    });
+    expect(parsed.blocks[0]).toMatchObject({ type: 'image', materialId: 'material-01' });
+  });
 });

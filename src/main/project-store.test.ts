@@ -66,6 +66,18 @@ describe('project store', () => {
     expect(store.current()).toMatchObject({ id: second.id, name: '客户 B' });
   });
 
+  it('permanently deletes a project and selects the next available project', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
+    const store = new ProjectStore(join(directory, 'projects.json'));
+    await store.load();
+    const first = await store.create({ name: '客户 A', companyName: '公司 A' });
+    const second = await store.create({ name: '客户 B', companyName: '公司 B' });
+    await store.delete(second.id);
+    expect(store.get(second.id)).toBeNull();
+    expect(store.list()).toEqual([expect.objectContaining({ id: first.id })]);
+    expect(store.current()).toMatchObject({ id: first.id });
+  });
+
   it('does not silently replace an unreadable project file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
     const path = join(directory, 'projects.json');

@@ -15,6 +15,7 @@ declare global {
       dataRevision(): Promise<number>;
       contentList(projectId: string, kind?: ContentKind, filter?: ContentFilter): Promise<{ items: ContentItem[] }>;
       contentSave(projectId: string, input: ContentInput): Promise<{ item: ContentItem }>;
+      contentDelete(projectId: string, itemId: string): Promise<{ item: ContentItem }>;
       contentImportMaterial(projectId: string, sourcePath: string, input?: Omit<ContentInput, 'kind'>): Promise<{ item: ContentItem }>;
       contentChooseMaterial(projectId: string): Promise<{ canceled: boolean; items: ContentItem[] }>;
       materialThumbnail(projectId: string, materialId: string): Promise<{ dataUrl: string; width: number; height: number }>;
@@ -23,6 +24,7 @@ declare global {
       updateProject(id: string, input: Partial<ProjectInput>): Promise<{ project: Project }>;
       selectProject(id: string): Promise<{ project: Project; currentProject: Project }>;
       archiveProject(id: string): Promise<{ projects: Project[]; currentProject: Project | null }>;
+      deleteProject(id: string): Promise<{ projects: Project[]; currentProject: Project | null }>;
       exportProject(id: string): Promise<{ canceled: boolean; filePath?: string }>;
       importProject(): Promise<{ canceled: boolean; project: Project | null; currentProject: Project | null }>;
       workBuddyStatus(): Promise<WorkBuddyIntegrationStatus>;

@@ -6,7 +6,13 @@ export const articleBlockSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('list'), ordered: z.boolean().default(false), items: z.array(z.string().trim().min(1).max(500)).min(1).max(30) }),
   z.object({ type: z.literal('quote'), text: z.string().trim().min(1).max(2_000) }),
   z.object({ type: z.literal('divider') }),
-  z.object({ type: z.literal('image'), src: z.string().trim().url(), alt: z.string().trim().max(200).optional() }),
+  z.object({
+    type: z.literal('image'),
+    src: z.string().trim().url().optional(),
+    materialId: z.string().trim().min(1).optional(),
+    alt: z.string().trim().max(200).optional(),
+    caption: z.string().trim().max(200).optional(),
+  }),
 ]);
 
 export const articleDocumentSchema = z.object({
@@ -14,6 +20,12 @@ export const articleDocumentSchema = z.object({
   blocks: z.array(articleBlockSchema).min(1).max(120),
   summary: z.string().trim().max(120).optional(),
   tags: z.array(z.string().trim().min(1).max(30)).max(9).default([]),
+}).superRefine((document, context) => {
+  document.blocks.forEach((block, index) => {
+    if (block.type === 'image' && !block.materialId && !block.src) {
+      context.addIssue({ code: 'custom', path: ['blocks', index], message: '请选择正文图片' });
+    }
+  });
 });
 
 export type ArticleBlock = z.infer<typeof articleBlockSchema>;
@@ -115,9 +127,11 @@ export function renderArticleDocument(document: ArticleDocument, platform?: Arti
       }
       continue;
     }
+    if (!block.src) throw new Error(`ARTICLE_IMAGE_UNRESOLVED: 正文图片 ${block.materialId || ''} 尚未解析`);
     expectations.images += 1;
     html.push(`<p><img src="${escapeHtml(block.src)}" alt="${escapeHtml(block.alt ?? '')}"></p>`);
-    text.push(block.alt || '配图');
+    if (block.caption) html.push(paragraphHtml(block.caption));
+    text.push(block.caption || block.alt || '配图');
   }
 
   // The topic line is part of the published article for every platform. It is

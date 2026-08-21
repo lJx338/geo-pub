@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -115,6 +115,63 @@ describe('content store', () => {
     const imported = await store.importMaterial(projectId, source);
     await expect(store.analyzeImageMaterial(projectId, imported.id, { description: '', category: 'unknown' })).rejects.toThrow();
     await expect(store.imageMaterial('22222222-2222-4222-8222-222222222222', imported.id)).rejects.toThrow('CONTENT_NOT_FOUND');
+  });
+
+  it('deletes content within its project and removes copied material files', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
+    const source = join(directory, '待删除.png');
+    await writeFile(source, Buffer.from('png'));
+    const store = new ContentStore(join(directory, 'store'));
+    const material = await store.importMaterial(projectId, source);
+    const storedPath = String(material.payload.sourcePath);
+    await store.delete(projectId, material.id);
+    expect(await store.list(projectId, 'material')).toHaveLength(0);
+    await expect(access(storedPath)).rejects.toThrow();
+    await expect(store.delete('22222222-2222-4222-8222-222222222222', material.id)).rejects.toThrow('CONTENT_NOT_FOUND');
+  });
+
+  it('keeps distribution audit records and active topic reservations protected', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
+    const store = new ContentStore(directory);
+    const distribution = await store.save(projectId, { kind: 'distribution', title: '发布记录' });
+    const topic = await store.save(projectId, { kind: 'topic', title: '正在使用', status: 'approved' });
+    await store.reserveTopic(projectId, topic.id, 'task-a');
+    await expect(store.delete(projectId, distribution.id)).rejects.toThrow('CONTENT_DELETE_FORBIDDEN');
+    await expect(store.delete(projectId, topic.id)).rejects.toThrow('TOPIC_RESERVED');
+  });
+
+  it('deletes every content kind and copied file when its customer project is deleted', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
+    const source = join(directory, '项目素材.png');
+    await writeFile(source, Buffer.from('png'));
+    const root = join(directory, 'store');
+    const store = new ContentStore(root);
+    await store.importMaterial(projectId, source);
+    await store.save(projectId, { kind: 'topic', title: '选题' });
+    await store.save(projectId, { kind: 'article', title: '文章' });
+    await store.save(projectId, { kind: 'distribution', title: '分发记录' });
+
+    await store.deleteProject(projectId);
+
+    expect(await store.list(projectId)).toHaveLength(0);
+    await expect(access(join(root, projectId))).rejects.toThrow();
+  });
+
+  it('resolves a referenced material only for execution and prevents deleting it while an article uses it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
+    const source = join(directory, '正文图片.png');
+    await writeFile(source, Buffer.from('png'));
+    const store = new ContentStore(join(directory, 'store'));
+    const material = await store.importMaterial(projectId, source);
+    await store.save(projectId, {
+      kind: 'article',
+      title: '含图文章',
+      payload: { document: { title: '含图文章', blocks: [{ type: 'image', materialId: material.id, alt: '图片' }] } },
+    });
+
+    const resolved = await store.resolveArticleImages(projectId, { title: '含图文章', tags: [], blocks: [{ type: 'image', materialId: material.id, alt: '图片' }] });
+    expect(resolved.blocks[0]).toMatchObject({ type: 'image', materialId: material.id, src: 'data:image/png;base64,cG5n' });
+    await expect(store.delete(projectId, material.id)).rejects.toThrow('MATERIAL_IN_USE');
   });
 
 });

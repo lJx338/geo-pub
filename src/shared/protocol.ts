@@ -89,7 +89,7 @@ export type { ContentFilter };
 export interface DataChangeEvent {
   revision: number;
   entity: 'project' | 'content';
-  action: 'created' | 'updated' | 'selected' | 'archived' | 'imported' | 'saved';
+  action: 'created' | 'updated' | 'selected' | 'archived' | 'imported' | 'saved' | 'deleted';
   projectId: string;
   itemId?: string;
   contentKind?: ContentKind;

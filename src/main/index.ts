@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
@@ -272,6 +272,13 @@ async function runDesktop(): Promise<void> {
     recordDataChange({ entity: 'content', action: 'saved', projectId, itemId: item.id, contentKind: item.kind, source: 'desktop' });
     return { item };
   });
+  ipcMain.handle('geo:content-delete', async (_event, projectId: string, itemId: string) => {
+    ensureAppIdle('分发任务运行中，暂时不能删除内容');
+    ensureCurrentContentProject(projectId);
+    const item = await content.delete(projectId, itemId);
+    recordDataChange({ entity: 'content', action: 'deleted', projectId, itemId: item.id, contentKind: item.kind, source: 'desktop' });
+    return { item };
+  });
   ipcMain.handle('geo:content-import-material', async (_event, projectId: string, sourcePath: string, input?: Omit<ContentInput, 'kind'>) => {
     if (!projects.get(projectId)) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
     const item = await content.importMaterial(projectId, sourcePath, input);
@@ -337,6 +344,24 @@ async function runDesktop(): Promise<void> {
     if (current) await sessions.selectProject(current.id);
     else await sessions.clearProject();
     recordDataChange({ entity: 'project', action: 'archived', projectId: id, source: 'desktop' });
+    return { projects: projects.list(), currentProject: current };
+  });
+  ipcMain.handle('geo:project-delete', async (_event, id: string) => {
+    ensureAppIdle('发布任务运行中，暂时不能删除客户项目');
+    const project = projects.get(id);
+    if (!project) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
+
+    // Keep the project record until every dependent store is gone. If a disk
+    // operation fails, the user can still see the project and retry deletion.
+    await sessions.deleteProjectData(id);
+    await content.deleteProject(id);
+    await rm(join(dataDirectory(), 'projects', id), { recursive: true, force: true });
+    await projects.delete(id);
+
+    const current = projects.current();
+    if (current) await sessions.selectProject(current.id);
+    else await sessions.clearProject();
+    recordDataChange({ entity: 'project', action: 'deleted', projectId: id, source: 'desktop' });
     return { projects: projects.list(), currentProject: current };
   });
   ipcMain.handle('geo:project-export', async (_event, id: string) => {

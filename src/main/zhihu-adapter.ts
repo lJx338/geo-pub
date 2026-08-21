@@ -12,6 +12,7 @@ export interface ZhihuDraftFillResult {
   bodyExpectedLength: number;
   draftWordCount: number;
   draftStateVerified: boolean;
+  draftVerificationSource: ZhihuDraftVerificationSource;
   formatVerification: FormatVerification;
   publishSettingsOpened: boolean;
   aiDeclarationFound: boolean;
@@ -28,6 +29,21 @@ type FormatVerification = {
 };
 
 type FormatCounts = { headings: number; lists: number; quotes: number; dividers: number; images: number };
+export type ZhihuDraftVerificationSource = 'word_count' | 'stable_editor' | 'none';
+
+export function verifyZhihuDraftState(input: {
+  titleFilled: boolean;
+  bodyFilled: boolean;
+  stableSamples: number;
+  wordCount: number;
+  expectedTextLength: number;
+}): { verified: boolean; source: ZhihuDraftVerificationSource } {
+  if (!input.titleFilled || !input.bodyFilled) return { verified: false, source: 'none' };
+  const wordCountThreshold = Math.max(1, Math.floor(input.expectedTextLength * 0.6));
+  if (input.wordCount >= wordCountThreshold) return { verified: true, source: 'word_count' };
+  if (input.stableSamples >= 3) return { verified: true, source: 'stable_editor' };
+  return { verified: false, source: 'none' };
+}
 type ZhihuInputBlock =
   | { type: 'paragraph'; text: string }
   | { type: 'heading'; text: string; level: 2 | 3 }
@@ -37,6 +53,74 @@ type ZhihuInputBlock =
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+async function withDebugger<T>(webContents: WebContents, task: () => Promise<T>): Promise<T> {
+  const debuggerApi = webContents.debugger;
+  const attachedHere = !debuggerApi.isAttached();
+  if (attachedHere) debuggerApi.attach('1.3');
+  try {
+    return await task();
+  } finally {
+    if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
+  }
+}
+
+async function cdpClick(webContents: WebContents, point: { x: number; y: number }): Promise<void> {
+  await withDebugger(webContents, async () => {
+    await webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+    await webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+  });
+}
+
+async function cdpEscape(webContents: WebContents): Promise<void> {
+  await withDebugger(webContents, async () => {
+    await webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  });
+}
+
+async function waitForEditorCommit(webContents: WebContents, expectedText = '', timeoutMs = 12_000): Promise<void> {
+  const expected = expectedText.replace(/[\s\-•·]/g, '');
+  const deadline = Date.now() + timeoutMs;
+  let previous = '';
+  let stableSamples = 0;
+  while (Date.now() < deadline) {
+    const state = await webContents.executeJavaScript(`(() => {
+      const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+      if (!(body instanceof HTMLElement)) return { focused: false, text: '' };
+      const active = document.activeElement;
+      const selection = window.getSelection();
+      const selectionInEditor = Boolean(selection?.anchorNode && body.contains(selection.anchorNode));
+      return {
+        focused: active === body || body.contains(active),
+        selectionInEditor,
+        text: String(body.innerText || body.textContent || '').replace(/[\\s\\-•·]/g, ''),
+      };
+    })()`);
+    const hasExpectedText = !expected || String(state.text).includes(expected);
+    stableSamples = state.focused && state.selectionInEditor && hasExpectedText && state.text === previous ? stableSamples + 1 : 0;
+    if (stableSamples >= 2) return;
+    previous = state.text;
+    await delay(120);
+  }
+  throw new Error('ZHIHU_EDITOR_COMMIT_TIMEOUT: 知乎编辑器未完成上一段输入，请检查页面加载状态后重试');
+}
+
+async function waitForEditorEmpty(webContents: WebContents, timeoutMs = 12_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let stableSamples = 0;
+  while (Date.now() < deadline) {
+    const empty = await webContents.executeJavaScript(`(() => {
+      const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+      return body instanceof HTMLElement && !String(body.innerText || body.textContent || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').trim();
+    })()`);
+    stableSamples = empty ? stableSamples + 1 : 0;
+    if (stableSamples >= 3) return;
+    await delay(120);
+  }
+  throw new Error('ZHIHU_CLEAR_FAILED: 旧正文未清空，已停止以避免内容追加');
 }
 
 async function clickEditorControl(webContents: WebContents, labels: string[], scope: 'toolbar' | 'menu' = 'toolbar'): Promise<boolean> {
@@ -61,10 +145,8 @@ async function clickEditorControl(webContents: WebContents, labels: string[], sc
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   })()`);
   if (!point) return false;
-  webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(point.x), y: Math.round(point.y) });
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
-  await delay(350);
+  await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
+  await delay(120);
   return true;
 }
 
@@ -73,18 +155,26 @@ async function setHeadingLevel(webContents: WebContents, level: 2 | 3): Promise<
   const labels = level === 2
     ? ['二级标题', '标题 2', '标题2', 'H2', '标题二']
     : ['三级标题', '标题 3', '标题3', 'H3', '标题三'];
-  return await clickEditorControl(webContents, labels, 'menu');
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (await clickEditorControl(webContents, labels, 'menu')) return true;
+    await delay(120);
+  }
+  return false;
 }
 
 async function setListStyle(webContents: WebContents, ordered: boolean): Promise<boolean> {
   if (!await clickEditorControl(webContents, ['列表'])) return false;
-  return await clickEditorControl(webContents, ordered ? ['有序列表', '编号列表'] : ['无序列表', '项目列表'], 'menu');
+  const labels = ordered ? ['有序列表', '编号列表'] : ['无序列表', '项目列表'];
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (await clickEditorControl(webContents, labels, 'menu')) return true;
+    await delay(120);
+  }
+  return false;
 }
 
 async function closeFormattingMenu(webContents: WebContents): Promise<void> {
-  webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
-  webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
-  await delay(120);
+  await cdpEscape(webContents);
+  await delay(80);
 }
 
 export async function ensureZhihuEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
@@ -121,8 +211,7 @@ export async function ensureZhihuEditor(webContents: WebContents, timeoutMs = 12
     })()`);
     if (state.loginBlocked) throw new Error('ZHIHU_LOGIN_REQUIRED: 请在桌面端完成知乎登录或验证');
     if (state.dismiss) {
-      webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(state.dismiss.x), y: Math.round(state.dismiss.y), button: 'left', clickCount: 1 });
-      webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(state.dismiss.x), y: Math.round(state.dismiss.y), button: 'left', clickCount: 1 });
+      await cdpClick(webContents, { x: Math.round(state.dismiss.x), y: Math.round(state.dismiss.y) });
       readyStreak = 0;
       await delay(1000);
       continue;
@@ -142,6 +231,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
   bodyExpectedLength: number;
   draftWordCount: number;
   draftStateVerified: boolean;
+  draftVerificationSource: ZhihuDraftVerificationSource;
   formatVerification: FormatVerification;
 }> {
   const prepared = await webContents.executeJavaScript(`(() => {
@@ -187,16 +277,12 @@ async function fillContent(webContents: WebContents, title: string, html: string
     return { ready: true, expected, requestedBody, blocks, point: { x: rect.left + Math.min(rect.width / 2, 320), y: rect.top + Math.min(rect.height / 2, 120) } };
   })()`);
   if (!prepared.ready || !prepared.point) {
-    return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
+    return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, draftVerificationSource: 'none', formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
   }
 
-  // Draft.js only persists its React ContentState. Directly replacing the DOM
-  // can look correct while the server saves only the final block. Electron's
-  // native paste command follows the same editor pipeline as a user paste.
-  webContents.focus();
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(prepared.point.x), y: Math.round(prepared.point.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(prepared.point.x), y: Math.round(prepared.point.y), button: 'left', clickCount: 1 });
-  await delay(250);
+  // Draft.js persists React ContentState, not direct DOM assignments. Use one
+  // Chromium input path throughout so a hidden Windows WebContents cannot lose
+  // focus between an Electron event and a CDP event.
   await webContents.executeJavaScript(`(() => {
     const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
     if (!(body instanceof HTMLElement)) return false;
@@ -205,11 +291,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
     const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
     return true;
   })()`);
-  await delay(150);
   const debuggerApi = webContents.debugger;
   const attachedHere = !debuggerApi.isAttached();
   try {
     if (attachedHere) debuggerApi.attach('1.3');
+    await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: prepared.point.x, y: prepared.point.y });
     await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: prepared.point.x, y: prepared.point.y, button: 'left', clickCount: 1 });
     await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: prepared.point.x, y: prepared.point.y, button: 'left', clickCount: 1 });
     const modifiers = process.platform === 'darwin' ? 4 : 2;
@@ -217,30 +303,15 @@ async function fillContent(webContents: WebContents, title: string, html: string
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers });
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, commands: ['deleteBackward'] });
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
-    await delay(400);
-    let cleared = await webContents.executeJavaScript(`(() => {
-      const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-      return body instanceof HTMLElement && !String(body.innerText || body.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
-    })()`);
-    if (!cleared) {
-      webContents.selectAll();
-      await delay(120);
-      webContents.delete();
-      await delay(400);
-      cleared = await webContents.executeJavaScript(`(() => {
-        const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-        return body instanceof HTMLElement && !String(body.innerText || body.textContent || '').replace(/[\u200b-\u200d\ufeff]/g, '').trim();
-      })()`);
-    }
-    if (!cleared) throw new Error('ZHIHU_CLEAR_FAILED: 旧正文未清空，已停止以避免内容追加');
+    await waitForEditorEmpty(webContents);
     const enter = async () => {
       await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-      await delay(120);
+      await waitForEditorCommit(webContents);
     };
     const insert = async (text: string) => {
       await debuggerApi.sendCommand('Input.insertText', { text });
-      await delay(120);
+      await waitForEditorCommit(webContents, text);
     };
     const blocks = prepared.blocks as ZhihuInputBlock[];
     for (let index = 0; index < blocks.length; index += 1) {
@@ -307,13 +378,25 @@ async function fillContent(webContents: WebContents, title: string, html: string
         bodyExpectedLength: requestedBody.length,
         draftWordCount: wordCount,
         draftStateVerified,
+        draftVerificationSource: draftStateVerified ? 'word_count' : 'none',
         formatVerification: { expected, actual, preserved: degradedBlocks.length === 0, degradedBlocks },
       };
     })()`);
     stableStreak = result.titleFilled && result.bodyFilled ? stableStreak + 1 : 0;
-    if (stableStreak >= 3) return result;
+    if (stableStreak >= 3) {
+      const verification = verifyZhihuDraftState({
+        titleFilled: result.titleFilled,
+        bodyFilled: result.bodyFilled,
+        stableSamples: stableStreak,
+        wordCount: result.draftWordCount,
+        expectedTextLength: result.bodyExpectedLength,
+      });
+      return { ...result, draftStateVerified: verification.verified, draftVerificationSource: verification.source };
+    }
   }
   result.bodyFilled = false;
+  result.draftStateVerified = false;
+  result.draftVerificationSource = 'none';
   return result;
 }
 
@@ -338,8 +421,7 @@ async function openPublishSettings(webContents: WebContents): Promise<boolean> {
     })()`);
     if (state.opened) return true;
     if (state.target) {
-      webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(state.target.x), y: Math.round(state.target.y), button: 'left', clickCount: 1 });
-      webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(state.target.x), y: Math.round(state.target.y), button: 'left', clickCount: 1 });
+      await cdpClick(webContents, { x: Math.round(state.target.x), y: Math.round(state.target.y) });
     }
     await delay(600 + attempt * 250);
   }
@@ -414,8 +496,7 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
   if (!control.found) return { found: false, selected: false };
   if (control.selected) return { found: true, selected: true };
   if (control.target) {
-    webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(control.target.x), y: Math.round(control.target.y), button: 'left', clickCount: 1 });
-    webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(control.target.x), y: Math.round(control.target.y), button: 'left', clickCount: 1 });
+    await cdpClick(webContents, { x: Math.round(control.target.x), y: Math.round(control.target.y) });
     await delay(700);
   }
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -448,8 +529,7 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
     if (!state.found) return { found: false, selected: false };
     if (state.selected) return { found: true, selected: true };
     if (state.target) {
-      webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(state.target.x), y: Math.round(state.target.y), button: 'left', clickCount: 1 });
-      webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(state.target.x), y: Math.round(state.target.y), button: 'left', clickCount: 1 });
+      await cdpClick(webContents, { x: Math.round(state.target.x), y: Math.round(state.target.y) });
     }
     await delay(700 + attempt * 250);
     const verified = await readCurrentSelection();
@@ -477,7 +557,15 @@ export async function fillZhihuDraft(
         return Number(text.match(/字数[：:]\\s*(\\d+)/)?.[1] || 0);
       })()`);
       content.draftWordCount = wordCount;
-      content.draftStateVerified = wordCount >= Math.max(1, Math.floor(content.bodyExpectedLength * 0.6));
+      const verification = verifyZhihuDraftState({
+        titleFilled: content.titleFilled,
+        bodyFilled: content.bodyFilled,
+        stableSamples: 3,
+        wordCount,
+        expectedTextLength: content.bodyExpectedLength,
+      });
+      content.draftStateVerified = verification.verified;
+      content.draftVerificationSource = verification.source;
       if (content.draftStateVerified) break;
       await delay(500 + attempt * 150);
     }

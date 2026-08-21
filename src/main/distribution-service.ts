@@ -96,6 +96,7 @@ export class DistributionService {
     const options = this.optionsFor(input.projectId, input.platformOptions);
     const coverMissing = targetPlatforms.filter((platform) => coverRequiredPlatforms.has(platform) && !input.coverPath.trim());
     if (coverMissing.length) throw new Error(`COVER_REQUIRED: ${coverMissing.join('、')} 必须选择封面图片`);
+    const executionDocument = await this.content.resolveArticleImages(input.projectId, document);
 
     const taskId = crypto.randomUUID();
     const records: ContentItem[] = [];
@@ -109,14 +110,14 @@ export class DistributionService {
       try {
         let result: unknown;
         if (input.mode === 'publish') {
-          result = await this.executor.publishDraft(platform, document, input.coverPath, options);
+          result = await this.executor.publishDraft(platform, executionDocument, input.coverPath, options);
         } else {
           try {
-            result = await this.executor.fillDraft(platform, document, input.coverPath, options);
+            result = await this.executor.fillDraft(platform, executionDocument, input.coverPath, options);
           } catch (error) {
             if (!isRetryableFillError(error)) throw error;
             await delay(1_000);
-            result = await this.executor.fillDraft(platform, document, input.coverPath, options);
+            result = await this.executor.fillDraft(platform, executionDocument, input.coverPath, options);
           }
         }
         const status = resultStatus(input.mode, result);
@@ -166,6 +167,7 @@ export class DistributionService {
   async runDirect(rawInput: DirectDistributionRequest): Promise<unknown> {
     const document = articleDocumentSchema.parse(rawInput.document);
     this.executor.ensureProject(rawInput.projectId);
+    const executionDocument = await this.content.resolveArticleImages(rawInput.projectId, document);
     const contentHash = documentHash(document);
     const articles = await this.content.list(rawInput.projectId, 'article');
     const hashMatches = articles.filter((item) => {
@@ -199,8 +201,8 @@ export class DistributionService {
 
     try {
       const result = rawInput.mode === 'publish'
-        ? await this.executor.publishDraft(rawInput.platform, document, rawInput.coverPath, this.optionsFor(rawInput.projectId, rawInput.platformOptions))
-        : await this.executor.fillDraft(rawInput.platform, document, rawInput.coverPath, this.optionsFor(rawInput.projectId, rawInput.platformOptions));
+        ? await this.executor.publishDraft(rawInput.platform, executionDocument, rawInput.coverPath, this.optionsFor(rawInput.projectId, rawInput.platformOptions))
+        : await this.executor.fillDraft(rawInput.platform, executionDocument, rawInput.coverPath, this.optionsFor(rawInput.projectId, rawInput.platformOptions));
       const status = resultStatus(rawInput.mode, result);
       record = await this.content.save(rawInput.projectId, {
         id: record.id,

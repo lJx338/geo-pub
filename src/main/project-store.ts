@@ -97,6 +97,16 @@ export class ProjectStore {
     await this.save();
   }
 
+  async delete(id: string): Promise<void> {
+    const index = this.state.projects.findIndex((project) => project.id === id);
+    if (index < 0) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');
+    this.state.projects.splice(index, 1);
+    if (this.state.currentProjectId === id) {
+      this.state.currentProjectId = this.state.projects.find((project) => !project.archivedAt)?.id ?? null;
+    }
+    await this.save();
+  }
+
   export(id: string): Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archivedAt'> {
     const project = this.find(id);
     if (!project || project.archivedAt) throw new Error('PROJECT_NOT_FOUND: 找不到客户项目');

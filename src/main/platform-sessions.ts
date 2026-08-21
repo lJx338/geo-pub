@@ -203,6 +203,17 @@ export class PlatformSessions {
     this.attentionRequired = null;
   }
 
+  async deleteProjectData(projectId: string): Promise<void> {
+    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能删除客户项目');
+    if (this.projectId === projectId) await this.clearProject();
+    for (const platform of PLATFORMS) {
+      const partition = session.fromPartition(projectPartitionName(projectId, platform));
+      await partition.clearStorageData();
+      await partition.clearCache();
+      await partition.flushStorageData();
+    }
+  }
+
   ensureProject(projectId?: string): string {
     if (!this.projectId) throw new Error('PROJECT_REQUIRED: 请先在 GEO Publisher 中新建并选择客户项目');
     if (projectId && projectId !== this.projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新生成文章后再发布');
