@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.6.0-beta.6"
+var version = "0.6.0-beta.7"
 var buildMode = "production"
 
 var platforms = map[string]bool{
@@ -36,26 +36,27 @@ var platforms = map[string]bool{
 }
 
 type controlRequest struct {
-	ID             string          `json:"id"`
-	Token          string          `json:"token"`
-	Action         string          `json:"action"`
-	Platform       string          `json:"platform,omitempty"`
-	ProjectID      string          `json:"projectId,omitempty"`
-	Project        json.RawMessage `json:"project,omitempty"`
-	Item           json.RawMessage `json:"item,omitempty"`
-	Kind           string          `json:"kind,omitempty"`
-	Filter         map[string]any  `json:"filter,omitempty"`
-	TopicID        string          `json:"topicId,omitempty"`
-	TaskID         string          `json:"taskId,omitempty"`
-	ArticleID      string          `json:"articleId,omitempty"`
-	MaterialID     string          `json:"materialId,omitempty"`
-	SourcePath     string          `json:"sourcePath,omitempty"`
-	Analysis       json.RawMessage `json:"analysis,omitempty"`
-	Limit          int             `json:"limit,omitempty"`
-	TTLMS          int             `json:"ttlMs,omitempty"`
-	Document       articleDocument `json:"document,omitempty"`
-	CoverPath      string          `json:"coverPath"`
-	ConfirmPublish bool            `json:"confirmPublish,omitempty"`
+	ID              string          `json:"id"`
+	Token           string          `json:"token"`
+	Action          string          `json:"action"`
+	Platform        string          `json:"platform,omitempty"`
+	ProjectID       string          `json:"projectId,omitempty"`
+	Project         json.RawMessage `json:"project,omitempty"`
+	Item            json.RawMessage `json:"item,omitempty"`
+	Kind            string          `json:"kind,omitempty"`
+	Filter          map[string]any  `json:"filter,omitempty"`
+	TopicID         string          `json:"topicId,omitempty"`
+	TaskID          string          `json:"taskId,omitempty"`
+	ArticleID       string          `json:"articleId,omitempty"`
+	MaterialID      string          `json:"materialId,omitempty"`
+	SourcePath      string          `json:"sourcePath,omitempty"`
+	Analysis        json.RawMessage `json:"analysis,omitempty"`
+	Limit           int             `json:"limit,omitempty"`
+	TTLMS           int             `json:"ttlMs,omitempty"`
+	Document        articleDocument `json:"document,omitempty"`
+	CoverPath       string          `json:"coverPath"`
+	ConfirmPublish  bool            `json:"confirmPublish,omitempty"`
+	PlatformOptions platformOptions `json:"platformOptions,omitempty"`
 }
 
 type controlResponse struct {
@@ -70,11 +71,23 @@ type controlResponse struct {
 }
 
 type fillInput struct {
-	ProjectID      string          `json:"projectId"`
-	Platform       string          `json:"platform"`
-	Document       articleDocument `json:"document"`
-	CoverPath      string          `json:"coverPath"`
-	ConfirmPublish bool            `json:"confirmPublish,omitempty"`
+	ProjectID       string          `json:"projectId"`
+	Platform        string          `json:"platform"`
+	Document        articleDocument `json:"document"`
+	CoverPath       string          `json:"coverPath"`
+	ConfirmPublish  bool            `json:"confirmPublish,omitempty"`
+	PlatformOptions platformOptions `json:"platformOptions,omitempty"`
+}
+
+type platformOptions struct {
+	Baijia *baijiaOptions `json:"baijia,omitempty"`
+}
+
+type baijiaOptions struct {
+	SmartCreation  []string `json:"smartCreation,omitempty"`
+	Declarations   []string `json:"declarations,omitempty"`
+	SourceDate     string   `json:"sourceDate,omitempty"`
+	SourceLocation string   `json:"sourceLocation,omitempty"`
 }
 
 type articleDocument struct {
@@ -206,7 +219,7 @@ func run(args []string) (string, json.RawMessage, error) {
 		}
 		return call(command, controlRequest{
 			Action: action, ProjectID: input.ProjectID, Platform: input.Platform, Document: input.Document,
-			CoverPath: input.CoverPath, ConfirmPublish: input.ConfirmPublish,
+			CoverPath: input.CoverPath, ConfirmPublish: input.ConfirmPublish, PlatformOptions: input.PlatformOptions,
 		}, publishTimeout)
 	case "doctor":
 		return command, doctor(), nil
@@ -609,7 +622,7 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 projectId、platform、document、coverPath（可选）、confirmPublish（publish 必须为 true）"}
+		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 projectId、platform、document、coverPath（可选）、confirmPublish（publish 必须为 true）、platformOptions（仅明确覆盖单次发布时使用）"}
 	}
 	if input.Document.Tags == nil {
 		input.Document.Tags = []string{}
@@ -623,6 +636,40 @@ func validateFill(input fillInput) error {
 	}
 	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && input.Platform != "netease" {
 		return usageError("当前 alpha 版 fill 支持 platform=toutiao、baijia、zhihu、penguin、sohu 或 netease")
+	}
+	if input.PlatformOptions.Baijia != nil {
+		if input.Platform != "baijia" {
+			return usageError("platformOptions.baijia 只能用于百家号单次填充或发布")
+		}
+		options := input.PlatformOptions.Baijia
+		validateOptions := func(values []string, allowed map[string]bool, label string) error {
+			seen := map[string]bool{}
+			for _, value := range values {
+				if !allowed[value] || seen[value] {
+					return usageError(fmt.Sprintf("百家号%s包含无效或重复选项：%s", label, value))
+				}
+				seen[value] = true
+			}
+			return nil
+		}
+		if err := validateOptions(options.SmartCreation, map[string]bool{"autoPodcast": true, "convertToDynamic": true}, "智能创作"); err != nil {
+			return err
+		}
+		if err := validateOptions(options.Declarations, map[string]bool{"aiGenerated": true, "source": true}, "创作声明"); err != nil {
+			return err
+		}
+		hasSource := false
+		for _, value := range options.Declarations {
+			hasSource = hasSource || value == "source"
+		}
+		if hasSource {
+			if _, err := time.Parse("2006-01-02", options.SourceDate); err != nil || len(options.SourceDate) != 10 {
+				return usageError("选择百家号来源说明后，sourceDate 必须为 YYYY-MM-DD")
+			}
+			if strings.TrimSpace(options.SourceLocation) == "" {
+				return usageError("选择百家号来源说明后，必须填写 sourceLocation")
+			}
+		}
 	}
 	if err := validateDocument(input.Document); err != nil {
 		return err
@@ -897,6 +944,14 @@ func commandSchema() json.RawMessage {
 			},
 			"coverPath":      "absolute local path; required for baijia, toutiao, netease",
 			"confirmPublish": "must be true for publish",
+			"platformOptions": map[string]any{
+				"usage": "omit to use current project defaults; only send when the user explicitly requests a one-shot override",
+				"baijia": map[string]any{
+					"smartCreation": "optional array: autoPodcast, convertToDynamic; empty selects none",
+					"declarations":  "optional array: aiGenerated, source; empty selects none",
+					"sourceDate":    "YYYY-MM-DD; required with source", "sourceLocation": "required with source; use province / city / district",
+				},
+			},
 		},
 	})
 }

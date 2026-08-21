@@ -63,6 +63,7 @@ export function buildWorkBuddyPrompt(options: {
     '客户资料、素材、选题、文章包和分发记录都必须保存在 GEO Publisher 当前客户项目中；不要创建或要求客户维护单独工作空间。',
     '如果客户要求创建项目，先交互式收集资料并展示摘要；只有客户明确确认后，才按 Skill 调用 production CLI 的 project create。',
     '百家号、头条号、知乎、企鹅号、搜狐号、网易号的填充与发布只按 geo-publisher Skill 执行；选题和文章 Skill 不得直接控制平台页面。',
+    '平台发布选项默认使用 GEO Publisher 当前客户项目中保存的默认值。只有用户明确要求“这一次”修改某个选项时，才在 draft.fill 或 draft.publish 请求中传 platformOptions 作为单次覆盖；未明确提出时禁止猜测或传覆盖值。',
     '应用更新或更换安装位置后，重新点击 GEO Publisher 的“连接 WorkBuddy”，以刷新本机路径和 Skill。',
   ].join('\n');
 }

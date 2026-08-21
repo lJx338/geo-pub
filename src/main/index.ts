@@ -17,7 +17,9 @@ import { UpdateManager } from './update-manager.js';
 import { prepareWorkBuddyIntegration, prepareWorkBuddyMaterialOrganization, workBuddyIntegrationStatus } from './workbuddy-integration.js';
 import { DistributionService } from './distribution-service.js';
 import { runIdleMaintenance } from './maintenance.js';
+import { diagnosticError, guardProcessOutputStreams } from './diagnostics.js';
 
+guardProcessOutputStreams();
 app.setName('GEO Publisher');
 app.setPath('userData', dataDirectory());
 
@@ -33,7 +35,7 @@ async function runDesktop(): Promise<void> {
   const content = new ContentStore();
   const dataChanges = new DataChangeTracker();
   const cliPath = await installBundledCli(packageJson.version).catch((error) => {
-    console.error('Failed to install bundled CLI:', error);
+    diagnosticError(`Failed to install bundled CLI: ${error instanceof Error ? error.stack || error.message : String(error)}`);
     return null;
   });
 
@@ -140,7 +142,7 @@ async function runDesktop(): Promise<void> {
   };
   const distribution = new DistributionService(content, sessions, (record, source) => {
     recordDataChange({ entity: 'content', action: 'saved', projectId: record.projectId, itemId: record.id, contentKind: record.kind, source });
-  });
+  }, (projectId) => projects.get(projectId)?.publishingDefaults ?? null);
   const route = async (request: ControlRequest): Promise<unknown> => {
     if (request.action === 'status') return desktopStatus();
     if (request.action === 'project.list') return { projects: projects.list(), currentProject: projects.current() };
@@ -241,11 +243,11 @@ async function runDesktop(): Promise<void> {
     if (request.action === 'platform.inspect') return await sessions.inspect(request.platform);
     if (request.action === 'draft.fill') {
       if (distributionRunning) throw new Error('PUBLISHER_BUSY: 桌面端分发任务运行中，请等待完成');
-      return await distribution.runDirect({ projectId: request.projectId, platform: request.platform, document: request.document, coverPath: request.coverPath, mode: 'fill' });
+      return await distribution.runDirect({ projectId: request.projectId, platform: request.platform, document: request.document, coverPath: request.coverPath, mode: 'fill', platformOptions: request.platformOptions });
     }
     if (request.action === 'draft.publish') {
       if (distributionRunning) throw new Error('PUBLISHER_BUSY: 桌面端分发任务运行中，请等待完成');
-      return await distribution.runDirect({ projectId: request.projectId, platform: request.platform, document: request.document, coverPath: request.coverPath, mode: 'publish' });
+      return await distribution.runDirect({ projectId: request.projectId, platform: request.platform, document: request.document, coverPath: request.coverPath, mode: 'publish', platformOptions: request.platformOptions });
     }
     throw new Error('不支持的控制命令');
   };
@@ -488,7 +490,7 @@ async function runDesktop(): Promise<void> {
 }
 
 runDesktop().catch((error) => {
-  console.error('GEO Publisher failed to start:', error);
+  diagnosticError(`GEO Publisher failed to start: ${error instanceof Error ? error.stack || error.message : String(error)}`);
   process.exitCode = 1;
   app.quit();
 });

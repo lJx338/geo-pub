@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +30,50 @@ func TestReadFillInputFromStdin(t *testing.T) {
 	}
 	if input.Platform != "toutiao" || input.Document.Title != "标题" || len(input.Document.Blocks) != 1 {
 		t.Fatalf("unexpected input: %#v", input)
+	}
+}
+
+func TestReadBaijiaOneShotPlatformOptions(t *testing.T) {
+	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg","platformOptions":{"baijia":{"smartCreation":["autoPodcast"],"declarations":["aiGenerated","source"],"sourceDate":"2026-08-20","sourceLocation":"河北省 / 沧州市"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.PlatformOptions.Baijia == nil || len(input.PlatformOptions.Baijia.SmartCreation) != 1 || len(input.PlatformOptions.Baijia.Declarations) != 2 {
+		t.Fatalf("unexpected platform options: %#v", input.PlatformOptions)
+	}
+}
+
+func TestRejectsInvalidBaijiaOneShotPlatformOption(t *testing.T) {
+	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg","platformOptions":{"baijia":{"declarations":["sometimes"]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFill(input); err == nil {
+		t.Fatal("expected invalid platform option to be rejected")
+	}
+}
+
+func TestBaijiaPlatformOptionsAllowEmptyGroups(t *testing.T) {
+	coverPath := filepath.Join(t.TempDir(), "cover.jpg")
+	if err := os.WriteFile(coverPath, []byte("cover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := readFillInput(nil, strings.NewReader(fmt.Sprintf(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":%q,"platformOptions":{"baijia":{"smartCreation":[],"declarations":[]}}}`, coverPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFill(input); err != nil {
+		t.Fatalf("empty option groups should be valid: %v", err)
+	}
+}
+
+func TestBaijiaSourceDeclarationRequiresDetails(t *testing.T) {
+	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg","platformOptions":{"baijia":{"declarations":["source"]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFill(input); err == nil {
+		t.Fatal("source declaration without date and location should be rejected")
 	}
 }
 

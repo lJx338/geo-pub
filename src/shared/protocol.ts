@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { articleDocumentSchema } from './article-document.js';
 import type { ContentFilter, ContentKind } from '../main/content-store.js';
+import { platformOptionsSchema, type PlatformOptions } from './platform-settings.js';
 
 export const PLATFORMS = ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease'] as const;
 export type Platform = (typeof PLATFORMS)[number];
@@ -14,6 +15,8 @@ export const desktopDistributionRequestSchema = z.object({
   mode: z.enum(['fill', 'publish']),
   coverPath: z.string().default(''),
   confirmPublish: z.boolean().default(false),
+  /** One-shot WorkBuddy override. Omitted means use the current project defaults. */
+  platformOptions: platformOptionsSchema,
 }).superRefine((request, context) => {
   if (request.mode === 'publish' && !request.confirmPublish) {
     context.addIssue({ code: 'custom', path: ['confirmPublish'], message: '真实发布需要明确确认' });
@@ -21,6 +24,7 @@ export const desktopDistributionRequestSchema = z.object({
 });
 
 export type DesktopDistributionRequest = z.input<typeof desktopDistributionRequestSchema>;
+export type { PlatformOptions };
 
 const requestBase = z.object({
   id: z.string().min(1),
@@ -32,6 +36,7 @@ const articleRequest = {
   projectId: z.string().uuid(),
   document: articleDocumentSchema,
   coverPath: z.string().default(''),
+  platformOptions: platformOptionsSchema,
 } as const;
 
 const articleRefinements = <T extends { platform: string; document: { title: string }; coverPath: string }>(request: T, context: z.RefinementCtx) => {

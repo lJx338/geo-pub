@@ -11,6 +11,16 @@ describe('project store', () => {
     await store.load();
     const project = await store.create({ name: '测试客户', companyName: '测试公司', industry: '企业服务' });
     expect(store.current()).toMatchObject({ id: project.id, companyName: '测试公司' });
+    expect(project.publishingDefaults.baijia.declarations).toEqual(['aiGenerated']);
+  });
+
+  it('stores platform defaults per customer project', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-project-store-'));
+    const store = new ProjectStore(join(directory, 'projects.json'));
+    await store.load();
+    const project = await store.create({ name: '百家号客户' });
+    const updated = await store.update(project.id, { publishingDefaults: { baijia: { smartCreation: ['autoPodcast'], declarations: [], sourceDate: '', sourceLocation: '' } } });
+    expect(updated.publishingDefaults.baijia).toMatchObject({ smartCreation: ['autoPodcast'], declarations: [] });
   });
 
   it('accepts a complete long-form company profile', async () => {

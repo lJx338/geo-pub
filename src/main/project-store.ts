@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { dataDirectory } from './runtime-paths.js';
 import { projectProfileFields } from '../shared/project-profile.js';
+import { publishingDefaultsSchema } from '../shared/platform-settings.js';
 
 const projectSchema = z.object({
   id: z.string().uuid(),
@@ -21,6 +22,7 @@ const projectSchema = z.object({
   forbiddenPhrases: z.string().trim().max(projectProfileFields.forbiddenPhrases.maxLength).default(''),
   customerQuestions: z.string().trim().max(projectProfileFields.customerQuestions.maxLength).default(''),
   accountNotes: z.record(z.string(), z.string().trim().max(120)).default({}),
+  publishingDefaults: publishingDefaultsSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   archivedAt: z.string().datetime().nullable().default(null),

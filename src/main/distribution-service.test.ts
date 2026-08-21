@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ArticleDocument } from '../shared/article-document.js';
 import type { Platform } from '../shared/protocol.js';
+import type { PlatformOptions } from '../shared/platform-settings.js';
 import { ContentStore } from './content-store.js';
 import { DistributionService } from './distribution-service.js';
 
@@ -73,6 +74,23 @@ describe('desktop distribution service', () => {
     const service = new DistributionService(content, executor);
     await expect(service.run({ projectId, articleId: article.id, platforms: ['baijia'], mode: 'fill', coverPath: '', confirmPublish: false })).rejects.toThrow('COVER_REQUIRED');
     expect(calls).toEqual([]);
+  });
+
+  it('uses project defaults unless a single distribution explicitly overrides them', async () => {
+    const { article, executor, content } = await setup();
+    const received: PlatformOptions[] = [];
+    executor.fillDraft = async (_platform: Platform, _document?: ArticleDocument, _coverPath?: string, options?: PlatformOptions): Promise<unknown> => {
+      received.push(options || {});
+      return { stage: 'filled' };
+    };
+    const defaults = () => ({ baijia: { smartCreation: ['autoPodcast' as const], declarations: ['aiGenerated' as const], sourceDate: '', sourceLocation: '' } });
+    const service = new DistributionService(content, executor, undefined, defaults);
+    await service.run({ projectId, articleId: article.id, platforms: ['baijia'], mode: 'fill', coverPath: '/tmp/cover.png', confirmPublish: false });
+    await service.run({ projectId, articleId: article.id, platforms: ['baijia'], mode: 'fill', coverPath: '/tmp/cover.png', confirmPublish: false, platformOptions: { baijia: { declarations: [] } } });
+    expect(received).toEqual([
+      { baijia: { smartCreation: ['autoPodcast'], declarations: ['aiGenerated'], sourceDate: '', sourceLocation: '' } },
+      { baijia: { smartCreation: ['autoPodcast'], declarations: [], sourceDate: '', sourceLocation: '' } },
+    ]);
   });
 
   it('continues with the next platform after one platform fails', async () => {

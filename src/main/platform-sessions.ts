@@ -6,6 +6,7 @@ import { PLATFORMS } from '../shared/protocol.js';
 import { BackgroundExecutionHost } from './background-execution-host.js';
 import { AttentionRequiredError, type AttentionCode, type AttentionRequired } from './attention-required.js';
 import { fillBaijiaDraft } from './baijia-adapter.js';
+import { diagnosticError } from './diagnostics.js';
 import { fillNeteaseDraft } from './netease-adapter.js';
 import { fillPenguinDraft } from './penguin-adapter.js';
 import { publishFilledDraft, type PublishResult } from './publish-adapter.js';
@@ -16,6 +17,7 @@ import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
 import { normalizeArticleTags, renderArticleDocument, type ArticleDocument } from '../shared/article-document.js';
 import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
+import type { PlatformOptions } from '../shared/platform-settings.js';
 
 const defaultPlatformUrls: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -266,12 +268,12 @@ export class PlatformSessions {
     if (!open) managed.view.setBounds(this.interactiveViewBounds());
   }
 
-  async fillDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
+  async fillDraft(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
     this.ensureProject();
-    return await this.runExclusive(() => this.fillDraftInternal(platform, document, coverPath));
+    return await this.runExclusive(() => this.fillDraftInternal(platform, document, coverPath, options));
   }
 
-  private async fillDraftInternal(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
+  private async fillDraftInternal(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
     const keepVisible = this.window.isVisible() && !this.window.isMinimized();
     // NetEase Draft.js crashes when an existing document containing atomic
     // image blocks is replaced across blocks. A fresh WebContents keeps the
@@ -290,7 +292,7 @@ export class PlatformSessions {
     const rendered = renderArticleDocument(document, platform);
     try {
       const result = platform === 'baijia'
-        ? await fillBaijiaDraft(managed.view.webContents, document.title, rendered.html, coverPath)
+        ? await fillBaijiaDraft(managed.view.webContents, document.title, rendered.html, coverPath, options.baijia)
         : platform === 'toutiao'
           ? await fillToutiaoDraft(managed.view.webContents, document.title, rendered.html, coverPath)
           : platform === 'zhihu'
@@ -308,10 +310,10 @@ export class PlatformSessions {
     }
   }
 
-  async publishDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown> {
+  async publishDraft(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
     this.ensureProject();
     return await this.runExclusive(async () => {
-      const fill = await this.fillDraftInternal(platform, document, coverPath);
+      const fill = await this.fillDraftInternal(platform, document, coverPath, options);
       const managed = this.background || this.views.get(platform);
       if (!managed || managed.platform !== platform) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
       try {
@@ -419,9 +421,14 @@ export class PlatformSessions {
       return { action: 'deny' };
     });
     view.webContents.on('did-start-loading', () => { managed.loading = true; });
-    view.webContents.on('console-message', (_event, level, message) => { if (level >= 2) console.error(`[${platform}] renderer: ${message}`); });
+    // Publisher pages routinely emit third-party console warnings. Forward
+    // them only during explicit adapter debugging; a desktop app must not
+    // depend on the terminal that happened to launch it remaining attached.
+    if (process.env.GEO_PUBLISHER_DEBUG_CONSOLE === '1') {
+      view.webContents.on('console-message', (_event, level, message) => { if (level >= 2) diagnosticError(`[${platform}] renderer: ${message}`); });
+    }
     view.webContents.on('render-process-gone', (_event, details) => {
-      console.error(`[${platform}] renderer process gone: ${details.reason}`);
+      diagnosticError(`[${platform}] renderer process gone: ${details.reason}`);
       const retained = this.background === managed || this.views.get(platform) === managed;
       if (retained && !view.webContents.isDestroyed()) setTimeout(() => void this.loadUrl(managed, view.webContents.getURL() || PLATFORM_URLS[platform]), 800);
     });

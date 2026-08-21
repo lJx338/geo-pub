@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { AlertTriangle, ArrowLeft, BookOpen, Boxes, BriefcaseBusiness, Building2, CheckCircle2, ChevronDown, CircleAlert, Clock3, Copy, Download, Eye, FileText, FolderOpen, Globe2, ImagePlus, KeyRound, LayoutDashboard, Link2, ListChecks, LogIn, MessageSquareText, PackageOpen, Pencil, Plus, Power, RefreshCw, Rocket, Search, Send, Settings2, ShieldCheck, Sparkles, Tag, UserRound, UsersRound, X } from 'lucide-react';
 import { Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Empty, Field, FieldGroup, Progress, Spinner, Switch } from './components/ui.js';
 import { friendlyProjectSaveError, projectProfileFields, validateProjectProfile, type ProjectProfileField, type ProjectProfileIssue } from '../shared/project-profile.js';
+import { defaultBaijiaSettings, type BaijiaSettings } from '../shared/platform-settings.js';
 
 const platforms = [['baijia', '百家号'], ['toutiao', '头条号'], ['zhihu', '知乎'], ['penguin', '企鹅号'], ['sohu', '搜狐号'], ['netease', '网易号']] as const;
 const platformLabels = Object.fromEntries(platforms) as Record<string, string>;
@@ -112,9 +113,9 @@ function View({ view, project, projects, status, items, articles, topics, materi
   if (view === 'projects') return <Card><div className="card-head"><div><h3>客户项目</h3><p>每个项目都有独立的账号、资料和内容库。</p></div><Button icon={Plus} disabled={busy} onClick={() => edit({ name: '', companyName: '', industry: '' })}>新建项目</Button></div>{projects.length ? <div className="item-list">{projects.map((p:any) => <div className="item-row project-row" key={p.id}><span className="project-avatar"><UserRound size={15}/></span><span><strong>{p.name}</strong><small>{p.companyName || '未填写公司全称'}</small></span><div className="project-row-actions">{p.id === project?.id ? <Badge tone="success">当前项目</Badge> : <Button variant="outline" disabled={busy} onClick={() => void switchProject(p.id)}>切换</Button>}<Button variant="ghost" icon={Pencil} disabled={busy} onClick={() => edit(p)}>编辑</Button></div></div>)}</div> : <Empty icon={UsersRound} title="暂无客户项目" description="创建第一个客户项目后即可配置平台账号。"/>}</Card>;
   if (view === 'content') return <ContentCenter project={project} items={items} materials={materials} topics={topics} articles={articles} contentCounts={contentCounts} busy={busy} refresh={refresh} notify={notify} initialTab={contentTab}/>;
   if (view === 'distribution') return <DistributionView project={project} articles={articles} distributions={distributions} status={status} busy={busy} refresh={refresh} notify={notify}/>;
-  if (view === 'accounts') return <Card><div className="card-head"><div><h3>平台账号</h3><p>请在对应平台页面完成登录；发布任务进行中暂时不能切换。</p></div><Badge tone={busy ? 'warning' : 'success'}>{busy ? '任务进行中' : '可以操作'}</Badge></div><div className="account-grid">{platforms.map(([id,label])=><section key={id}><span className="platform-dot"/><strong>{label}</strong><p>打开平台后可以查看登录状态</p><Button variant="outline" icon={LogIn} disabled={busy} onClick={() => openPlatform(id)}>打开平台</Button></section>)}</div></Card>;
+  if (view === 'accounts') return <AccountsView project={project} busy={busy} openPlatform={openPlatform} refresh={refresh} notify={notify}/>;
   if (view === 'guide') return <GuideView project={project} workBuddy={workBuddy} setView={setView} openContent={openContent} connect={connect} notify={notify}/>;
-  return <SettingsView status={status} workBuddy={workBuddy} setWorkBuddy={setWorkBuddy} update={update} setUpdate={setUpdate} connect={connect} notify={notify} />;
+  return <SettingsView project={project} busy={busy} refresh={refresh} status={status} workBuddy={workBuddy} setWorkBuddy={setWorkBuddy} update={update} setUpdate={setUpdate} connect={connect} notify={notify} />;
 }
 
 function GuideView({ project, workBuddy, setView, openContent, connect, notify }: any) {
@@ -396,6 +397,67 @@ function friendlyUpdateStatus(update: any): { title: string; description: string
   return { title: '自动更新已开启', description: '发现新版本后会自动下载，任务执行期间不会重启。' };
 }
 
+const baijiaSmartCreationItems = [
+  ['autoPodcast', '自动生成播客', '由平台为文章自动生成播客'],
+  ['convertToDynamic', '图文转动态', '由平台将图文同步转为动态'],
+] as const;
+const baijiaDeclarationItems = [
+  ['aiGenerated', '采用 AI 生成内容', '声明正文包含 AI 辅助生成内容'],
+  ['source', '来源说明', '补充内容的来源时间和地点'],
+] as const;
+
+function AccountsView({ project, busy, openPlatform, refresh, notify }: any) {
+  const [baijiaDefaults, setBaijiaDefaults] = useState<BaijiaSettings>(project?.publishingDefaults?.baijia || defaultBaijiaSettings);
+  const [saving, setSaving] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  useEffect(() => {
+    setBaijiaDefaults(project?.publishingDefaults?.baijia || defaultBaijiaSettings);
+  }, [project?.id, project?.updatedAt]);
+  const savePublishingDefaults = async () => {
+    if (!project) return;
+    setSaving(true);
+    try {
+      await window.geoPublisher.updateProject(project.id, { publishingDefaults: { ...(project.publishingDefaults || {}), baijia: baijiaDefaults } });
+      await refresh();
+      notify('已保存百家号默认发布设置');
+      setSettingsOpen(false);
+    } catch (error) {
+      notify((error as Error).message, true);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <div className="platform-accounts-view">
+    <Card><div className="card-head"><div><h3>平台账号</h3><p>请在对应平台页面完成登录；发布任务进行中暂时不能切换。</p></div><Badge tone={busy ? 'warning' : 'success'}>{busy ? '任务进行中' : '可以操作'}</Badge></div><div className="account-grid">{platforms.map(([id,label])=><section key={id}><span className="platform-dot"/><strong>{label}</strong><p>{id === 'baijia' ? '已支持设置默认发布选项' : '打开平台后可以查看登录状态'}</p><div className="account-actions"><Button variant="outline" icon={LogIn} disabled={busy} onClick={() => openPlatform(id)}>打开平台</Button>{id === 'baijia' && <Button variant="ghost" icon={Settings2} disabled={busy} aria-label="设置百家号发布默认值" title="发布默认值" onClick={() => setSettingsOpen(true)}/>}</div></section>)}</div></Card>
+    {settingsOpen && <BaijiaDefaultsDialog values={baijiaDefaults} setValues={setBaijiaDefaults} saving={saving} close={() => !saving && setSettingsOpen(false)} save={savePublishingDefaults}/>}
+  </div>;
+}
+
+function BaijiaDefaultsDialog({ values, setValues, saving, close, save }: any) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+    return () => { if (dialog?.open) dialog.close(); };
+  }, []);
+  const toggle = (group: 'smartCreation' | 'declarations', key: string) => {
+    const selected = values[group] as string[];
+    setValues({ ...values, [group]: selected.includes(key) ? selected.filter((value) => value !== key) : [...selected, key] });
+  };
+  const sourceSelected = values.declarations.includes('source');
+  const sourceInvalid = sourceSelected && (!/^\d{4}-\d{2}-\d{2}$/.test(values.sourceDate) || !values.sourceLocation.trim());
+  return <dialog ref={dialogRef} className="platform-settings-dialog" aria-labelledby="baijia-settings-title" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }} onCancel={(event) => { event.preventDefault(); close(); }}>
+    <section className="platform-settings-dialog-layout">
+      <CardHeader><div><CardTitle><span id="baijia-settings-title">百家号发布默认值</span></CardTitle><CardDescription>当前客户的百家号文章默认使用这些设置。单篇文章只有在明确要求时才会临时覆盖。</CardDescription></div><Button variant="ghost" icon={X} disabled={saving} aria-label="关闭百家号发布设置" onClick={close}/></CardHeader>
+      <CardContent><div className="platform-setting-groups">
+        <fieldset className="platform-setting-group"><legend>智能创作</legend><p>可以多选，也可以全部不选。</p><div className="platform-setting-options">{baijiaSmartCreationItems.map(([key, label, description]) => <label key={key} className="platform-setting-option" htmlFor={`baijia-default-${key}`}><input id={`baijia-default-${key}`} type="checkbox" checked={values.smartCreation.includes(key)} disabled={saving} onChange={() => toggle('smartCreation', key)}/><span><strong>{label}</strong><small>{description}</small></span></label>)}</div></fieldset>
+        <fieldset className="platform-setting-group"><legend>创作声明</legend><p>可以多选，也可以全部不选。</p><div className="platform-setting-options">{baijiaDeclarationItems.map(([key, label, description]) => <label key={key} className="platform-setting-option" htmlFor={`baijia-default-${key}`}><input id={`baijia-default-${key}`} type="checkbox" checked={values.declarations.includes(key)} disabled={saving} onChange={() => toggle('declarations', key)}/><span><strong>{label}</strong><small>{description}</small></span></label>)}</div>{sourceSelected && <FieldGroup><Field label="来源时间" description="选择内容对应的来源日期" htmlFor="baijia-default-source-date"><input id="baijia-default-source-date" type="date" value={values.sourceDate} disabled={saving} aria-invalid={!/^\d{4}-\d{2}-\d{2}$/.test(values.sourceDate)} onChange={(event) => setValues({ ...values, sourceDate: event.target.value })}/></Field><Field label="来源地点" description="填写平台选择器中可找到的行政区域" htmlFor="baijia-default-source-location"><input id="baijia-default-source-location" type="text" value={values.sourceLocation} disabled={saving} aria-invalid={!values.sourceLocation.trim()} placeholder="例如：河北省 / 沧州市 / 泊头市" onChange={(event) => setValues({ ...values, sourceLocation: event.target.value })}/></Field></FieldGroup>}</fieldset>
+      </div></CardContent>
+      <CardFooter><Button variant="outline" disabled={saving} onClick={close}>取消</Button><Button icon={CheckCircle2} disabled={saving || sourceInvalid} title={sourceInvalid ? '请先填写来源时间和来源地点' : undefined} onClick={() => void save()}>{saving ? '正在保存' : '保存默认值'}</Button></CardFooter>
+    </section>
+  </dialog>;
+}
+
 function SettingsView({ status, workBuddy, setWorkBuddy, update, setUpdate, connect, notify }: any) {
   const [launchAtLogin, setLaunchAtLogin] = useState({ available: false, enabled: false });
   const [betaCode, setBetaCode] = useState('');
@@ -469,7 +531,6 @@ function SettingsView({ status, workBuddy, setWorkBuddy, update, setUpdate, conn
     notify(result.opened ? '已打开本地数据目录' : `无法打开数据目录：${result.error || '未知错误'}`, !result.opened);
   };
   const updateCopy = friendlyUpdateStatus(update);
-
   return <div className="settings-grid">
     <div className="settings-column">
       <Card className="settings-card">

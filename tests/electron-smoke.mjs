@@ -163,6 +163,20 @@ try {
   if (!(await window.locator('#distribution-run').isEnabled())) throw new Error('confirmed publish did not become available');
   await window.screenshot({ path: join(evidenceDirectory, 'desktop-distribution-dialog.png') });
   await window.getByRole('button', { name: '关闭分发配置' }).click();
+  await window.getByText('平台账号', { exact: true }).first().click();
+  if (await window.locator('[id^="baijia-default-"]').count() !== 0) throw new Error('Baijia defaults should be hidden until opened');
+  await window.getByRole('button', { name: '设置百家号发布默认值' }).click();
+  if (await window.locator('[id^="baijia-default-"]').count() !== 4) throw new Error('Baijia publishing defaults are missing from settings dialog');
+  await window.locator('#baijia-default-aiGenerated').uncheck();
+  await window.locator('#baijia-default-autoPodcast').check();
+  await window.locator('#baijia-default-source').check();
+  await window.locator('#baijia-default-source-date').fill('2026-08-20');
+  await window.locator('#baijia-default-source-location').fill('河北省 / 沧州市');
+  await window.getByRole('button', { name: '保存默认值' }).click();
+  await window.locator('#action-message', { hasText: '已保存百家号默认发布设置' }).waitFor();
+  const savedDefaults = await window.evaluate(async () => (await window.geoPublisher.projects()).currentProject?.publishingDefaults?.baijia);
+  if (!savedDefaults?.smartCreation?.includes('autoPodcast') || savedDefaults?.declarations?.includes('aiGenerated') || !savedDefaults?.declarations?.includes('source')) throw new Error(`Baijia defaults were not persisted: ${JSON.stringify(savedDefaults)}`);
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-platform-accounts.png'), fullPage: true });
   await window.getByText('设置', { exact: true }).click();
   await window.locator('#settings-connect-workbuddy').waitFor();
   const settings = await window.evaluate(async () => {

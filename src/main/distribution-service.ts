@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto';
 import { articleDocumentSchema, type ArticleDocument } from '../shared/article-document.js';
 import { desktopDistributionRequestSchema, type DesktopDistributionRequest, type Platform } from '../shared/protocol.js';
 import { ContentStore, type ContentItem } from './content-store.js';
+import { resolveBaijiaSettings, type PlatformOptions, type PublishingDefaults } from '../shared/platform-settings.js';
 
 type DistributionExecutor = {
   ensureProject(projectId?: string): string;
-  fillDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown>;
-  publishDraft(platform: Platform, document: ArticleDocument, coverPath: string): Promise<unknown>;
+  fillDraft(platform: Platform, document: ArticleDocument, coverPath: string, options?: PlatformOptions): Promise<unknown>;
+  publishDraft(platform: Platform, document: ArticleDocument, coverPath: string, options?: PlatformOptions): Promise<unknown>;
 };
 
 type DistributionStatus = 'running' | 'filled' | 'success' | 'failed' | 'action_required' | 'result_uncertain';
@@ -17,6 +18,7 @@ type DirectDistributionRequest = {
   document: ArticleDocument;
   coverPath: string;
   mode: 'fill' | 'publish';
+  platformOptions?: PlatformOptions;
 };
 
 const coverRequiredPlatforms = new Set<Platform>(['baijia', 'toutiao', 'netease']);
@@ -59,6 +61,7 @@ export class DistributionService {
     private readonly content: ContentStore,
     private readonly executor: DistributionExecutor,
     private readonly onRecordSaved: (record: ContentItem, source: 'desktop' | 'cli') => void = () => undefined,
+    private readonly publishingDefaults: (projectId: string) => PublishingDefaults | null = () => null,
   ) {}
 
   async run(rawInput: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> {
@@ -90,6 +93,7 @@ export class DistributionService {
     }
 
     const targetPlatforms = input.platforms.filter((platform) => !finalizedPlatforms.has(platform));
+    const options = this.optionsFor(input.projectId, input.platformOptions);
     const coverMissing = targetPlatforms.filter((platform) => coverRequiredPlatforms.has(platform) && !input.coverPath.trim());
     if (coverMissing.length) throw new Error(`COVER_REQUIRED: ${coverMissing.join('、')} 必须选择封面图片`);
 
@@ -105,14 +109,14 @@ export class DistributionService {
       try {
         let result: unknown;
         if (input.mode === 'publish') {
-          result = await this.executor.publishDraft(platform, document, input.coverPath);
+          result = await this.executor.publishDraft(platform, document, input.coverPath, options);
         } else {
           try {
-            result = await this.executor.fillDraft(platform, document, input.coverPath);
+            result = await this.executor.fillDraft(platform, document, input.coverPath, options);
           } catch (error) {
             if (!isRetryableFillError(error)) throw error;
             await delay(1_000);
-            result = await this.executor.fillDraft(platform, document, input.coverPath);
+            result = await this.executor.fillDraft(platform, document, input.coverPath, options);
           }
         }
         const status = resultStatus(input.mode, result);
@@ -188,14 +192,15 @@ export class DistributionService {
         source: 'cli',
         targetPlatforms: [rawInput.platform],
         startedAt,
+        ...(rawInput.platformOptions && Object.keys(rawInput.platformOptions).length > 0 ? { platformOptions: rawInput.platformOptions } : {}),
       },
     });
     this.onRecordSaved(record, 'cli');
 
     try {
       const result = rawInput.mode === 'publish'
-        ? await this.executor.publishDraft(rawInput.platform, document, rawInput.coverPath)
-        : await this.executor.fillDraft(rawInput.platform, document, rawInput.coverPath);
+        ? await this.executor.publishDraft(rawInput.platform, document, rawInput.coverPath, this.optionsFor(rawInput.projectId, rawInput.platformOptions))
+        : await this.executor.fillDraft(rawInput.platform, document, rawInput.coverPath, this.optionsFor(rawInput.projectId, rawInput.platformOptions));
       const status = resultStatus(rawInput.mode, result);
       record = await this.content.save(rawInput.projectId, {
         id: record.id,
@@ -221,6 +226,10 @@ export class DistributionService {
       this.onRecordSaved(record, 'cli');
       throw error;
     }
+  }
+
+  private optionsFor(projectId: string, override?: PlatformOptions): PlatformOptions {
+    return { baijia: resolveBaijiaSettings(this.publishingDefaults(projectId), override?.baijia) };
   }
 
   private async markArticlePublished(projectId: string, article: ContentItem, taskId: string, platforms: Platform[], source: 'desktop' | 'cli'): Promise<void> {

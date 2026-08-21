@@ -38,6 +38,23 @@ Example confirmed project input:
 }
 ```
 
+By default, omit `platformOptions` so the desktop uses the current customer's saved defaults. Only when the user explicitly asks to change this one Baijia article may you add a one-shot override:
+
+```json
+{
+  "platformOptions": {
+    "baijia": {
+      "smartCreation": ["autoPodcast"],
+      "declarations": ["aiGenerated", "source"],
+      "sourceDate": "2026-08-20",
+      "sourceLocation": "河北省 / 沧州市"
+    }
+  }
+}
+```
+
+`smartCreation` may contain `autoPodcast` and `convertToDynamic`; `declarations` may contain `aiGenerated` and `source`. Both arrays may be empty, and both choices in a group may be selected together. Selecting `source` requires `sourceDate` in `YYYY-MM-DD` format and a `sourceLocation` path. Never infer an override from article content, never reuse it for another article, and never send DOM selectors or page scripts. Activity submission is not supported.
+
 ## Content center
 
 All materials, topics, article packages, and distribution records belong to the current desktop project. Never create a parallel worktree, company-information Markdown file, or template state as a source of truth.
