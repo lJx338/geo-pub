@@ -1,6 +1,8 @@
-import { access } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { extname, join, resolve } from 'node:path';
 import type { WebContents } from 'electron';
+import { baijiaSettingsSchema, defaultBaijiaSettings, type BaijiaSettings } from '../shared/platform-settings.js';
 
 const PUBLISH_URL = 'https://baijiahao.baidu.com/builder/rc/edit';
 
@@ -9,14 +11,73 @@ export interface BaijiaDraftFillResult {
   bodyFilled: boolean;
   title: string;
   bodyTextLength: number;
+  formatVerification: {
+    expected: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    actual: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    preserved: boolean;
+    degradedBlocks: string[];
+  };
   coverUploaded: boolean;
   aiDeclarationSelected: boolean;
+  settings?: Record<string, 'enabled' | 'disabled' | 'unsupported'>;
   publishButtonDetected: boolean;
   url: string;
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+export function baijiaCoverUploadFormat(filePath: string): 'original' | 'convert-webp' | 'unsupported' {
+  const extension = extname(filePath).toLowerCase();
+  if (['.jpg', '.jpeg', '.png'].includes(extension)) return 'original';
+  if (extension === '.webp') return 'convert-webp';
+  return 'unsupported';
+}
+
+async function prepareBaijiaCoverUpload(
+  webContents: WebContents,
+  filePath: string,
+): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
+  const absolutePath = resolve(filePath);
+  await access(absolutePath);
+  const format = baijiaCoverUploadFormat(absolutePath);
+  if (format === 'original') return { filePath: absolutePath, cleanup: async () => undefined };
+  if (format === 'unsupported') {
+    throw new Error('BAIJIA_COVER_FORMAT_UNSUPPORTED: 百家号封面仅支持 JPG、JPEG、PNG 或 WebP');
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), 'geo-publisher-baijia-cover-'));
+  const convertedPath = join(directory, 'cover.png');
+  try {
+    const source = await readFile(absolutePath);
+    const pngBase64 = await webContents.executeJavaScript(`(async () => {
+      const encoded = ${JSON.stringify(source.toString('base64'))};
+      const binary = atob(encoded);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/webp' }));
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('canvas context unavailable');
+        context.drawImage(bitmap, 0, 0);
+        const dataUrl = canvas.toDataURL('image/png');
+        if (!dataUrl.startsWith('data:image/png;base64,')) throw new Error('PNG encoding failed');
+        return dataUrl.slice('data:image/png;base64,'.length);
+      } finally {
+        bitmap.close();
+      }
+    })()`);
+    const png = Buffer.from(String(pngBase64), 'base64');
+    if (png.length < 8 || png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error('invalid PNG');
+    await writeFile(convertedPath, png, { mode: 0o600 });
+    return { filePath: convertedPath, cleanup: async () => { await rm(directory, { recursive: true, force: true }); } };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw new Error(`BAIJIA_COVER_CONVERSION_FAILED: WebP 封面转换失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function setFileInput(webContents: WebContents, selector: string, filePath: string): Promise<void> {
@@ -73,6 +134,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
     try {
     const requestedTitle = ${JSON.stringify(title)};
     const requestedHtml = ${JSON.stringify(html)};
+    const countStructure = (source) => {
+      const root = document.createElement('div'); root.innerHTML = String(source || '');
+      return { headings: root.querySelectorAll('h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length };
+    };
+    const expectedStructure = countStructure(requestedHtml);
     const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect();
@@ -91,7 +157,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
         };
         return score(right) - score(left);
       })[0];
-    if (!(titleEditor instanceof HTMLElement)) return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, publishButtonDetected: false, url: location.href };
+    if (!(titleEditor instanceof HTMLElement)) return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, formatVerification: { expected: expectedStructure, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] }, publishButtonDetected: false, url: location.href };
 
     if (titleEditor instanceof HTMLInputElement || titleEditor instanceof HTMLTextAreaElement) {
       const prototype = titleEditor instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -126,11 +192,15 @@ async function fillContent(webContents: WebContents, title: string, html: string
     const actualTitle = normalize(titleEditor instanceof HTMLInputElement || titleEditor instanceof HTMLTextAreaElement
       ? titleEditor.value : titleEditor.innerText || titleEditor.textContent);
     const bodyText = normalize(typeof ueEditor?.getContentTxt === 'function' ? ueEditor.getContentTxt() : body?.innerText || body?.textContent);
+    const actualStructure = countStructure(typeof ueEditor?.getContent === 'function' ? ueEditor.getContent() : body?.innerHTML);
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
     return {
       titleFilled: actualTitle === normalize(requestedTitle),
       bodyFilled: bodyText.length > 0,
       title: actualTitle,
       bodyTextLength: bodyText.length,
+      formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks },
       publishButtonDetected: [...document.querySelectorAll('button,[role="button"]')]
         .filter(visible).some((element) => normalize(element.textContent) === '发布'),
       url: location.href,
@@ -144,37 +214,84 @@ async function fillContent(webContents: WebContents, title: string, html: string
   return result;
 }
 
-async function ensureAiDeclaration(webContents: WebContents): Promise<boolean> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const state = await webContents.executeJavaScript(`(() => {
-      const compact = (value) => String(value || '').replace(/\\s+/g, '');
-      const label = [...document.querySelectorAll('label.cheetah-checkbox-wrapper,label')]
-        .find((element) => compact(element.textContent) === '采用AI生成内容');
-      const input = label?.querySelector('input.cheetah-checkbox-input[type="checkbox"],input[type="checkbox"]');
-      if (!(label instanceof HTMLElement) || !(input instanceof HTMLInputElement)) return { found: false, selected: false };
-      const selected = input.checked && label.classList.contains('cheetah-checkbox-wrapper-checked');
-      if (!selected) input.click();
-      return { found: true, selected };
-    })()`);
-    if (!state.found) return false;
-    if (state.selected) {
-      await delay(700);
-      const stable = await webContents.executeJavaScript(`(() => {
-        const label = [...document.querySelectorAll('label.cheetah-checkbox-wrapper,label')]
-          .find((element) => String(element.textContent || '').replace(/\\s+/g, '') === '采用AI生成内容');
-        const input = label?.querySelector('input[type="checkbox"]');
-        return input instanceof HTMLInputElement && input.checked
-          && label instanceof HTMLElement && label.classList.contains('cheetah-checkbox-wrapper-checked');
-      })()`);
-      if (stable) return true;
+const baijiaSettingLabels = {
+  autoPodcast: '自动生成播客',
+  convertToDynamic: '图文转动态',
+  aiGenerated: '采用AI生成内容',
+  source: '来源说明',
+} as const;
+
+async function applyBaijiaSettings(webContents: WebContents, settings: BaijiaSettings): Promise<Record<string, 'enabled' | 'disabled' | 'unsupported'>> {
+  const state = await webContents.executeJavaScript(`(async () => {
+    const requested = ${JSON.stringify(settings)};
+    const labels = ${JSON.stringify(baijiaSettingLabels)};
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const compact = (value) => normalize(value).replace(/\\s+/g, '');
+    const visible = (element) => element instanceof HTMLElement && (() => { const r = element.getBoundingClientRect(); const s = getComputedStyle(element); return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'; })();
+    const result = {};
+    const desired = {
+      autoPodcast: requested.smartCreation.includes('autoPodcast'),
+      convertToDynamic: requested.smartCreation.includes('convertToDynamic'),
+      aiGenerated: requested.declarations.includes('aiGenerated'),
+      source: requested.declarations.includes('source'),
+    };
+    for (const key of Object.keys(labels)) {
+      const label = [...document.querySelectorAll('label.cheetah-checkbox-wrapper,label,[role="checkbox"]')].filter(visible)
+        .find((element) => compact(element.textContent) === compact(labels[key]));
+      if (!(label instanceof HTMLElement)) { result[key] = 'unsupported'; continue; }
+      const input = label.querySelector('input[type="checkbox"]');
+      if (!(input instanceof HTMLInputElement)) { result[key] = 'unsupported'; continue; }
+      if (input.checked !== desired[key]) input.click();
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      if (input.checked !== desired[key]) return { result, failed: key };
+      result[key] = desired[key] ? 'enabled' : 'disabled';
     }
-    await delay(500 + attempt * 250);
+    return { result };
+  })()`);
+  if (state.failed) throw new Error(`BAIJIA_SETTING_NOT_APPLIED: ${baijiaSettingLabels[state.failed as keyof typeof baijiaSettingLabels]}`);
+
+  if (settings.declarations.includes('source')) {
+    const source = await webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('input[placeholder="请选择时间"]');
+      if (!(input instanceof HTMLInputElement)) return { date: false, location: false };
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, ${JSON.stringify(settings.sourceDate)});
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(settings.sourceDate)} }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.blur();
+      const selector = document.querySelector('.cheetah-cascader .cheetah-select-selector');
+      if (selector instanceof HTMLElement) selector.click();
+      return { date: input.value === ${JSON.stringify(settings.sourceDate)}, location: selector instanceof HTMLElement };
+    })()`);
+    if (!source.date) throw new Error('BAIJIA_SOURCE_DATE_NOT_APPLIED: 未能填写来源时间');
+    if (!source.location) throw new Error('BAIJIA_SOURCE_LOCATION_NOT_FOUND: 未找到来源地点选择器');
+    const path = settings.sourceLocation.split(/\s*(?:\/|>|，|,)\s*/).filter(Boolean);
+    for (const segment of path) {
+      await delay(350);
+      const selected = await webContents.executeJavaScript(`(() => {
+        const text = ${JSON.stringify(segment)};
+        const visible = (element) => element instanceof HTMLElement && (() => { const r = element.getBoundingClientRect(); const s = getComputedStyle(element); return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'; })();
+        const candidates = [...document.querySelectorAll('.cheetah-cascader-menu-item,[role="option"],li')]
+          .filter(visible).filter((element) => String(element.textContent || '').replace(/\\s+/g, ' ').trim() === text);
+        const target = candidates[candidates.length - 1];
+        if (!(target instanceof HTMLElement)) return false;
+        target.click();
+        return true;
+      })()`);
+      if (!selected) throw new Error(`BAIJIA_SOURCE_LOCATION_NOT_APPLIED: 未找到来源地点“${segment}”`);
+    }
+    await delay(500);
+    const locationApplied = await webContents.executeJavaScript(`(() => {
+      const text = String(document.querySelector('.cheetah-cascader')?.textContent || '').replace(/\\s+/g, '');
+      return ${JSON.stringify(path)}.every((segment) => text.includes(String(segment).replace(/\\s+/g, '')));
+    })()`);
+    if (!locationApplied) throw new Error('BAIJIA_SOURCE_LOCATION_NOT_APPLIED: 来源地点未确认保存');
   }
-  return false;
+  return state.result;
 }
 
 async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
-  const target = await webContents.executeJavaScript(`(() => {
+  return await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect();
@@ -186,19 +303,26 @@ async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
     const button = buttons.find((element) => {
       let owner = element.parentElement;
       for (let depth = 0; owner && depth < 10; depth += 1, owner = owner.parentElement) {
-        if (/封面预览|正文\\/本地上传|本地上传|AI封图|免费正版图库/.test(normalize(owner.textContent))) return true;
+        const ownerText = normalize(owner.textContent);
+        if (!/封面预览|正文\\/本地上传|本地上传|AI封图|免费正版图库/.test(ownerText)) continue;
+        if (/上传中|处理中|正在上传/.test(ownerText)) return false;
+        const buttonText = normalize(element.textContent);
+        const count = buttonText.match(/\\((\\d+)\\)$/);
+        if (count) return Number(count[1]) > 0;
+        return [...owner.querySelectorAll('img')].some((image) => {
+          const rect = image.getBoundingClientRect();
+          const source = String(image.currentSrc || image.src || '');
+          return visible(image) && rect.width >= 60 && rect.height >= 40
+            && /^(https?:|blob:|data:image\\/)/i.test(source);
+        });
       }
       return false;
     });
-    if (!(button instanceof HTMLElement) || button.hasAttribute('disabled')) return null;
+    if (!(button instanceof HTMLElement) || button.hasAttribute('disabled')) return false;
     button.scrollIntoView({ block: 'center', inline: 'center' });
-    const rect = button.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    button.click();
+    return true;
   })()`);
-  if (!target) return false;
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  return true;
 }
 
 async function coverApplied(webContents: WebContents): Promise<boolean> {
@@ -209,9 +333,6 @@ async function coverApplied(webContents: WebContents): Promise<boolean> {
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     })();
-    const pageText = normalize(document.body?.innerText);
-    if (pageText.includes('设置封面') && pageText.includes('编辑') && pageText.includes('更换')
-      && !pageText.includes('封面预览')) return true;
     const modalOpen = [...document.querySelectorAll('[role="dialog"],.cheetah-modal,.cheetah-modal-content')]
       .filter(visible)
       .some((element) => /封面预览|正文\\/本地上传|AI封图|免费正版图库/.test(normalize(element.textContent)));
@@ -221,63 +342,107 @@ async function coverApplied(webContents: WebContents): Promise<boolean> {
     let section = coverLabel?.parentElement;
     for (let depth = 0; section && depth < 8; depth += 1, section = section.parentElement) {
       const text = normalize(section.textContent);
-      if (!text.includes('单图') || !text.includes('选择封面')) continue;
+      if (!text.includes('单图')) continue;
+      // Baijia replaces "选择封面" with these controls after applying the image.
+      if ((text.includes('编辑') && text.includes('更换')) || /更换封面|重新选择/.test(text)) return true;
+      if (!text.includes('选择封面')) continue;
       return [...section.querySelectorAll('img')].some((image) => {
         const source = String(image.currentSrc || image.src || '');
         return visible(image) && /^(https?:|blob:|data:image\\/)/i.test(source);
-      }) || (text.includes('编辑') && text.includes('更换')) || /更换封面|重新选择/.test(text);
+      });
     }
     return false;
   })()`);
 }
 
-async function uploadCover(webContents: WebContents, coverPath: string): Promise<boolean> {
-  const absolutePath = resolve(coverPath);
-  await access(absolutePath);
-  const opened = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+async function coverSignature(webContents: WebContents): Promise<string> {
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     })();
-    const target = [...document.querySelectorAll('button,[role="button"],div,span')]
-      .filter(visible)
-      .filter((element) => normalize(element.textContent) === '选择封面')
-      .sort((left, right) => {
+    const coverLabel = [...document.querySelectorAll('div,span,label')]
+      .filter(visible).find((element) => normalize(element.textContent) === '设置封面');
+    let section = coverLabel?.parentElement;
+    for (let depth = 0; section && depth < 8; depth += 1, section = section.parentElement) {
+      const text = normalize(section.textContent);
+      if (!text.includes('单图')) continue;
+      const image = [...section.querySelectorAll('img')].find((candidate) => {
+        const source = String(candidate.currentSrc || candidate.src || '');
+        const lowerSource = source.toLowerCase();
+        return visible(candidate) && (lowerSource.startsWith('http:')
+          || lowerSource.startsWith('https:')
+          || lowerSource.startsWith('blob:')
+          || lowerSource.startsWith('data:image/'));
+      });
+      if (!(image instanceof HTMLImageElement)) return '';
+      return [image.currentSrc || image.src, image.naturalWidth, image.naturalHeight].join('|');
+    }
+    return '';
+  })()`);
+}
+
+async function uploadCover(webContents: WebContents, coverPath: string): Promise<boolean> {
+  const prepared = await prepareBaijiaCoverUpload(webContents, coverPath);
+  try {
+    const opened = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const visible = (element) => element instanceof HTMLElement && (() => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      })();
+      const candidates = [...document.querySelectorAll('button,[role="button"],div,span')]
+        .filter(visible)
+        .filter((element) => normalize(element.textContent) === '选择封面'
+          || element.getAttribute('aria-label') === '更换封面'
+          || (element.matches('button,[role="button"]') && normalize(element.textContent) === '更换'));
+      const target = candidates.sort((left, right) => {
+        const priority = (element) => element.getAttribute('aria-label') === '更换封面' ? 2
+          : normalize(element.textContent) === '选择封面' ? 1 : 0;
+        const priorityDiff = priority(right) - priority(left);
+        if (priorityDiff) return priorityDiff;
         const a = left.getBoundingClientRect();
         const b = right.getBoundingClientRect();
         return a.width * a.height - b.width * b.height;
       })[0];
-    if (!(target instanceof HTMLElement)) return false;
-    target.scrollIntoView({ block: 'center', inline: 'center' });
-    target.click();
-    return true;
-  })()`);
-  if (!opened) return false;
-
-  let selector = '';
-  for (let attempt = 0; attempt < 40 && !selector; attempt += 1) {
-    selector = await webContents.executeJavaScript(`(() => {
-      const marker = 'data-geo-desktop-baijia-cover';
-      document.querySelectorAll('[' + marker + ']').forEach((element) => element.removeAttribute(marker));
-      const target = [...document.querySelectorAll('input[type="file"]')]
-        .find((input) => /image|jpg|jpeg|png/i.test(String(input.getAttribute('accept') || 'image')));
-      if (!(target instanceof HTMLInputElement)) return '';
-      target.setAttribute(marker, 'true');
-      return '[' + marker + '="true"]';
+      if (!(target instanceof HTMLElement)) return false;
+      target.scrollIntoView({ block: 'center', inline: 'center' });
+      target.click();
+      return true;
     })()`);
-    if (!selector) await delay(500);
-  }
-  if (!selector) return false;
-  await setFileInput(webContents, selector, absolutePath);
+    if (!opened) return false;
 
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (await coverApplied(webContents)) return true;
-    const clicked = await confirmCoverDialog(webContents);
-    await delay(clicked ? 1_200 : 600);
+    let selector = '';
+    for (let attempt = 0; attempt < 40 && !selector; attempt += 1) {
+      selector = await webContents.executeJavaScript(`(() => {
+        const marker = 'data-geo-desktop-baijia-cover';
+        document.querySelectorAll('[' + marker + ']').forEach((element) => element.removeAttribute(marker));
+        const target = [...document.querySelectorAll('input[type="file"]')]
+          .find((input) => /image|jpg|jpeg|png/i.test(String(input.getAttribute('accept') || 'image')));
+        if (!(target instanceof HTMLInputElement)) return '';
+        target.setAttribute(marker, 'true');
+        return '[' + marker + '="true"]';
+      })()`);
+      if (!selector) await delay(500);
+    }
+    if (!selector) return false;
+    await setFileInput(webContents, selector, prepared.filePath);
+    await delay(800);
+
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const currentSignature = await coverSignature(webContents);
+      if (await coverApplied(webContents) && currentSignature) return true;
+      const clicked = await confirmCoverDialog(webContents);
+      await delay(clicked ? 1_200 : 600);
+    }
+    const currentSignature = await coverSignature(webContents);
+    return Boolean(await coverApplied(webContents) && currentSignature);
+  } finally {
+    await prepared.cleanup();
   }
-  return await coverApplied(webContents);
 }
 
 export async function fillBaijiaDraft(
@@ -285,6 +450,7 @@ export async function fillBaijiaDraft(
   title: string,
   html: string,
   coverPath: string,
+  settings?: Partial<BaijiaSettings>,
 ): Promise<BaijiaDraftFillResult> {
   try {
     await ensureBaijiaEditor(webContents);
@@ -300,12 +466,11 @@ export async function fillBaijiaDraft(
   if (!content.titleFilled || !content.bodyFilled) {
     throw new Error(`BAIJIA_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
   }
-  let aiDeclarationSelected: boolean;
-  try {
-    aiDeclarationSelected = await ensureAiDeclaration(webContents);
-  } catch (error) {
-    throw new Error(`BAIJIA_AI_DECLARATION_STAGE: ${error instanceof Error ? error.message : String(error)}`);
+  if (!content.formatVerification.preserved) {
+    throw new Error(`BAIJIA_FORMAT_DEGRADED: 百家号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   }
+  const resolvedSettings = baijiaSettingsSchema.parse({ ...defaultBaijiaSettings, ...(settings || {}) });
+  const appliedSettings = await applyBaijiaSettings(webContents, resolvedSettings);
   let coverUploaded: boolean;
   try {
     coverUploaded = await uploadCover(webContents, coverPath);
@@ -317,10 +482,8 @@ export async function fillBaijiaDraft(
     coverUploaded = await coverApplied(webContents);
   }
   if (!coverUploaded) throw new Error('BAIJIA_COVER_NOT_APPLIED: 封面上传后未确认应用状态');
-  const finalAiDeclarationSelected = await ensureAiDeclaration(webContents);
-  if (!finalAiDeclarationSelected && !aiDeclarationSelected) {
-    throw new Error('BAIJIA_AI_DECLARATION_NOT_SELECTED: 未确认“采用AI生成内容”');
-  }
+  const wantsAi = resolvedSettings.declarations.includes('aiGenerated');
+  const finalAiDeclarationSelected = appliedSettings.aiGenerated === 'enabled';
   await webContents.executeJavaScript(`(() => {
     const label = [...document.querySelectorAll('label.cheetah-checkbox-wrapper,label')]
       .find((element) => String(element.textContent || '').replace(/\\s+/g, '') === '采用AI生成内容');
@@ -331,6 +494,7 @@ export async function fillBaijiaDraft(
   return {
     ...content,
     coverUploaded,
-    aiDeclarationSelected: finalAiDeclarationSelected || aiDeclarationSelected,
+    aiDeclarationSelected: wantsAi && finalAiDeclarationSelected,
+    settings: appliedSettings,
   };
 }

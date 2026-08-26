@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "GEO Publisher desktop application with a built-in persistent browser",
   "author": "Lingxi",
@@ -8,9 +8,9 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "build:cli": "sh scripts/build-cli.sh",
+    "build:cli": "node scripts/build-cli.mjs",
     "dev": "npm run build && npm run build:cli && electron .",
-    "pretest": "node node_modules/electron/install.js",
+    "pretest": "node scripts/ensure-electron.mjs",
     "test": "vitest run",
     "test:e2e": "npm run build && npm run build:cli && node tests/electron-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

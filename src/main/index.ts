@@ -6,6 +6,7 @@ import { loadOrCreateControlToken } from './auth.js';
 import { installBundledCli } from './cli-installer.js';
 import { ControlServer } from './control-server.js';
 import { createDiscoveryRecord, writeDiscoveryRecord } from './discovery.js';
+import { reportError } from './logging.js';
 import { PlatformSessions } from './platform-sessions.js';
 import { dataDirectory } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
@@ -23,7 +24,7 @@ async function runDesktop(): Promise<void> {
 
   await app.whenReady();
   const cliPath = await installBundledCli(packageJson.version).catch((error) => {
-    console.error('Failed to install bundled CLI:', error);
+    reportError('Failed to install bundled CLI:', error);
     return null;
   });
 
@@ -102,7 +103,7 @@ async function runDesktop(): Promise<void> {
 }
 
 runDesktop().catch((error) => {
-  console.error('GEO Publisher failed to start:', error);
+  reportError('GEO Publisher failed to start:', error);
   process.exitCode = 1;
   app.quit();
 });

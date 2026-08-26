@@ -7,6 +7,7 @@ import { fillBaijiaDraft } from './baijia-adapter.js';
 import { fillPenguinDraft } from './penguin-adapter.js';
 import { fillSohuDraft } from './sohu-adapter.js';
 import { evidenceDirectory } from './runtime-paths.js';
+import { reportError } from './logging.js';
 import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
@@ -50,6 +51,26 @@ export function pickEvictionCandidate(
 export function platformRuntimeState(created: boolean, attached: boolean): PlatformStatus['runtimeState'] {
   if (attached) return 'active';
   return created ? 'resident' : 'not_loaded';
+}
+
+export interface EvidenceCaptureResult {
+  screenshotPath: string | null;
+  screenshotWarning: string | null;
+}
+
+export async function captureEvidenceBestEffort(
+  operation: () => Promise<string>,
+  platform: Platform,
+  stage: string,
+): Promise<EvidenceCaptureResult> {
+  try {
+    return { screenshotPath: await operation(), screenshotWarning: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const warning = `EVIDENCE_CAPTURE_FAILED: ${platform}/${stage}: ${message}`;
+    reportError(warning);
+    return { screenshotPath: null, screenshotWarning: warning };
+  }
 }
 
 export class PlatformSessions {
@@ -98,10 +119,10 @@ export class PlatformSessions {
       });
       view.webContents.on('did-start-loading', () => { if (managed) managed.loading = true; });
       view.webContents.on('console-message', (_event, level, message) => {
-        if (level >= 2) console.error(`[${platform}] renderer: ${message}`);
+        if (level >= 2) reportError(`[${platform}] renderer: ${message}`);
       });
       view.webContents.on('render-process-gone', (_event, details) => {
-        console.error(`[${platform}] renderer process gone: ${details.reason}`);
+        reportError(`[${platform}] renderer process gone: ${details.reason}`);
         if (managed && this.activePlatform === platform && !managed.view.webContents.isDestroyed()) {
           setTimeout(() => {
             if (!managed || managed.view.webContents.isDestroyed()) return;
@@ -179,14 +200,19 @@ export class PlatformSessions {
               ? await fillSohuDraft(managed.view.webContents, title, html)
               : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath);
     if (platform === 'sohu') {
-      const settingsScreenshotPath = await this.captureEvidence(platform, 'fill-settings');
+      const settingsEvidence = await this.captureEvidence(platform, 'fill-settings');
       await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
       await new Promise((resolve) => setTimeout(resolve, 500));
-      const screenshotPath = await this.captureEvidence(platform, 'fill-content');
-      return { ...result, screenshotPath, settingsScreenshotPath };
+      const evidence = await this.captureEvidence(platform, 'fill-content');
+      return {
+        ...result,
+        ...evidence,
+        settingsScreenshotPath: settingsEvidence.screenshotPath,
+        settingsScreenshotWarning: settingsEvidence.screenshotWarning,
+      };
     }
     if (platform === 'toutiao') {
-      const settingsScreenshotPath = await this.captureEvidence(platform, 'fill-settings');
+      const settingsEvidence = await this.captureEvidence(platform, 'fill-settings');
       await managed.view.webContents.executeJavaScript(`(() => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
         const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
@@ -196,11 +222,16 @@ export class PlatformSessions {
         if (!(root instanceof HTMLElement)) return false; root.scrollIntoView({ block: 'center', inline: 'nearest' }); return true;
       })()`);
       await new Promise((resolve) => setTimeout(resolve, 500));
-      const screenshotPath = await this.captureEvidence(platform, 'fill-cover');
-      return { ...result, screenshotPath, settingsScreenshotPath };
+      const evidence = await this.captureEvidence(platform, 'fill-cover');
+      return {
+        ...result,
+        ...evidence,
+        settingsScreenshotPath: settingsEvidence.screenshotPath,
+        settingsScreenshotWarning: settingsEvidence.screenshotWarning,
+      };
     }
-    const screenshotPath = await this.captureEvidence(platform, 'fill');
-    return { ...result, screenshotPath };
+    const evidence = await this.captureEvidence(platform, 'fill');
+    return { ...result, ...evidence };
   }
 
   async publishDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
@@ -209,8 +240,8 @@ export class PlatformSessions {
       const managed = this.views.get(platform);
       if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
       const result = await publishFilledDraft(managed.view.webContents, platform, title);
-      const screenshotPath = await this.captureEvidence(platform, `publish-${result.status}`);
-      return { fill, ...result, screenshotPath };
+      const evidence = await this.captureEvidence(platform, `publish-${result.status}`);
+      return { fill, ...result, ...evidence };
     });
   }
 
@@ -368,15 +399,17 @@ export class PlatformSessions {
     return { x: 220, y: 56, width: Math.max(320, width - 220), height: Math.max(240, height - 56) };
   }
 
-  private async captureEvidence(platform: Platform, stage: string): Promise<string> {
-    const managed = this.views.get(platform);
-    if (!managed) throw new Error(`平台尚未创建：${platform}`);
-    const directory = join(evidenceDirectory(), new Date().toISOString().slice(0, 10));
-    await mkdir(directory, { recursive: true });
-    const path = join(directory, `${Date.now()}-${platform}-${stage}.png`);
-    const image = await managed.view.webContents.capturePage();
-    await writeFile(path, image.toPNG());
-    return path;
+  private async captureEvidence(platform: Platform, stage: string): Promise<EvidenceCaptureResult> {
+    return await captureEvidenceBestEffort(async () => {
+      const managed = this.views.get(platform);
+      if (!managed) throw new Error(`平台尚未创建：${platform}`);
+      const directory = join(evidenceDirectory(), new Date().toISOString().slice(0, 10));
+      await mkdir(directory, { recursive: true });
+      const path = join(directory, `${Date.now()}-${platform}-${stage}.png`);
+      const image = await managed.view.webContents.capturePage();
+      await writeFile(path, image.toPNG());
+      return path;
+    }, platform, stage);
   }
 
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {

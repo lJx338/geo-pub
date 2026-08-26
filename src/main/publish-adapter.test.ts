@@ -1,10 +1,32 @@
 import { describe, expect, it } from 'vitest';
 import {
+  draftContentMatches,
   isNeteasePreflightRunning,
   isNeteasePreflightComplete,
   isPublishSuccess,
   shouldContinueNeteaseAfterPreflight,
 } from './publish-adapter.js';
+
+describe('pre-publish content verification', () => {
+  it('rejects a draft whose editor body was cleared after fill', () => {
+    expect(draftContentMatches('标题', '应当保留的正文', { title: '标题', body: '' })).toBe(false);
+  });
+
+  it('accepts matching content after whitespace normalization', () => {
+    expect(draftContentMatches('标题', '第一段\n第二段', { title: '标题', body: '第一段  第二段' })).toBe(true);
+  });
+
+  it('accepts harmless editor text appended after the complete body', () => {
+    expect(draftContentMatches('标题', '第一段第二段', { title: '标题', body: '第一段第二段保存中' })).toBe(true);
+  });
+
+  it('ignores the NetEase image description placeholder added by the editor', () => {
+    expect(draftContentMatches('标题', '第一段第二段', {
+      title: '标题',
+      body: '第一段点击输入图片描述（最多30字）第二段',
+    })).toBe(true);
+  });
+});
 
 describe('publish result reconciliation', () => {
   it('recognizes Toutiao graphic articles page with matching audited article', () => {

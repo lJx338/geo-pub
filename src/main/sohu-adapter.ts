@@ -1,5 +1,6 @@
 import type { WebContents } from 'electron';
 import { contentMatchesExpected } from './content-verification.js';
+import { resumeVisibleDraft } from './editor-draft.js';
 
 const PUBLISH_URL = 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1';
 
@@ -9,6 +10,12 @@ export interface SohuDraftFillResult {
   bodyVerificationSource: 'editor' | 'page' | 'none';
   title: string;
   bodyTextLength: number;
+  formatVerification: {
+    expected: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    actual: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    preserved: boolean;
+    degradedBlocks: string[];
+  };
   summaryClicked: boolean;
   summaryGenerated: boolean;
   summaryUnavailable: boolean;
@@ -20,6 +27,29 @@ export interface SohuDraftFillResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+const SOHU_AI_DECLARATION_LABEL = '含有AI生成内容';
+
+function aiDeclarationStateScript(scroll = false, activate = false): string {
+  return `(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+    const text = [...document.querySelectorAll('label.el-radio')].filter(visible).find((element) => normalize(element.textContent) === ${JSON.stringify(SOHU_AI_DECLARATION_LABEL)});
+    const root = text;
+    if (!(root instanceof HTMLElement)) return { found: false, selected: false, point: null, label: '' };
+    const input = root.matches('input[type="radio"]') ? root : root.querySelector('input[type="radio"]');
+    const selected = (input instanceof HTMLInputElement && input.checked) || root.getAttribute('aria-checked') === 'true' || /(?:^|\\s)(?:is-checked|checked|selected|active)(?:\\s|$)/.test(String(root.className || ''));
+    if (${scroll}) root.scrollIntoView({ block: 'center', inline: 'nearest' });
+    if (${activate} && !selected) root.click();
+    const target = root.querySelector('.el-radio__inner') || root;
+    const rect = target.getBoundingClientRect();
+    return { found: true, selected, point: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }, label: normalize(text?.textContent) };
+  })()`;
+}
+
+export function buildSohuAiDeclarationStateScriptForTest(scroll = false, activate = false): string {
+  return aiDeclarationStateScript(scroll, activate);
 }
 
 async function clickPoint(webContents: WebContents, point: { x: number; y: number }): Promise<void> {
@@ -65,6 +95,8 @@ function contentScript(title: string, html: string, write: boolean): string {
       .sort((left, right) => right.score - left.score)[0]?.element || null;
     const holder = document.createElement('div'); holder.innerHTML = ${JSON.stringify(html)};
     const expectedBody = normalize(holder.innerText || holder.textContent || '');
+    const countStructure = (root) => ({ headings: root.querySelectorAll('h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
+    const expectedStructure = countStructure(holder);
     const readValues = (element) => {
       const values = isInput(element) || isTextarea(element) ? [element.value] : [element.innerText, element.textContent];
       const container = element.closest?.('.ql-container'); const view = element.ownerDocument?.defaultView || window;
@@ -123,7 +155,11 @@ function contentScript(title: string, html: string, write: boolean): string {
     const pageMatch = pageBodies.some((body) => contentMatchesExpected(body, expectedBody));
     const bodyVerificationSource = editorMatch ? 'editor' : pageMatch ? 'page' : 'none';
     const actualBody = [...actualBodies].sort((left, right) => right.length - left.length)[0] || '';
-    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource !== 'none', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, editorFound: Boolean(titleElement && bodyElement), documentCount: documents.length, bodyCandidateCount: bodyCandidates.length };
+    const actualStructure = isElement(bodyElement) ? countStructure(bodyElement) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
+    if (bodyVerificationSource !== 'editor' && degradedBlocks.length === 0 && Object.values(expectedStructure).some(Boolean)) degradedBlocks.push('编辑器结构无法确认');
+    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource === 'editor', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks }, editorFound: Boolean(titleElement && bodyElement), documentCount: documents.length, bodyCandidateCount: bodyCandidates.length };
   })()`;
 }
 
@@ -133,6 +169,7 @@ export function buildSohuContentScriptForTest(title: string, html: string, write
 
 export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
   if (!webContents.getURL().includes('/contentManagement/news/addarticle')) await webContents.loadURL(PUBLISH_URL);
+  await resumeVisibleDraft(webContents);
   const deadline = Date.now() + timeoutMs;
   let streak = 0;
   while (Date.now() < deadline) {
@@ -154,11 +191,11 @@ export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120
   throw new Error('SOHU_EDITOR_NOT_READY: 搜狐号编辑器 120 秒内未就绪');
 }
 
-async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'page' | 'none'; title: string; bodyTextLength: number }> {
+async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'page' | 'none'; title: string; bodyTextLength: number; formatVerification: SohuDraftFillResult['formatVerification'] }> {
   await webContents.executeJavaScript(contentScript(title, html, true));
   await delay(900);
   let result = await webContents.executeJavaScript(contentScript(title, html, false));
-  for (let attempt = 0; attempt < 15 && (!result.titleFilled || !result.bodyFilled); attempt += 1) {
+  for (let attempt = 0; attempt < 15 && (!result.titleFilled || !result.bodyFilled || !result.formatVerification.preserved); attempt += 1) {
     await delay(600 + Math.min(attempt, 6) * 150);
     result = await webContents.executeJavaScript(contentScript(title, html, false));
   }
@@ -166,50 +203,41 @@ async function fillContent(webContents: WebContents, title: string, html: string
 }
 
 async function applyOptionalSettings(webContents: WebContents): Promise<{ summaryClicked: boolean; summaryGenerated: boolean; summaryUnavailable: boolean; aiContentFound: boolean; aiContentSelected: boolean }> {
-  const ai = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-    const text = [...document.querySelectorAll('label,[role="radio"],span,div')].filter(visible).find((element) => normalize(element.textContent) === '包含AI创作内容');
-    const root = text?.closest('label,[role="radio"],.ant-radio-wrapper,.radio-item') || text?.parentElement;
-    if (!(root instanceof HTMLElement)) return { found: false, selected: false, point: null };
-    const input = root.querySelector('input[type="radio"]'); const selected = (input instanceof HTMLInputElement && input.checked) || root.getAttribute('aria-checked') === 'true' || /checked|selected|active/.test(String(root.className || ''));
-    root.scrollIntoView({ block: 'center' }); const rect = root.getBoundingClientRect(); return { found: true, selected, point: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } };
-  })()`);
-  if (ai.found && !ai.selected && ai.point) {
-    await delay(350);
-    const currentAiPoint = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-      const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-      const text = [...document.querySelectorAll('label,[role="radio"],span,div')].filter(visible).find((element) => normalize(element.textContent) === '包含AI创作内容');
-      const root = text?.closest('label,[role="radio"],.ant-radio-wrapper,.radio-item') || text?.parentElement;
-      if (!(root instanceof HTMLElement)) return null; const rect = root.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    })()`);
-    if (currentAiPoint) await clickPoint(webContents, currentAiPoint);
-    await delay(900);
+  let ai = await webContents.executeJavaScript(aiDeclarationStateScript(true));
+  for (let attempt = 0; ai.found && !ai.selected && attempt < 3; attempt += 1) {
+    await delay(350 + attempt * 250);
+    ai = await webContents.executeJavaScript(aiDeclarationStateScript(true));
+    if (ai.selected) break;
+    await webContents.executeJavaScript(aiDeclarationStateScript(true, true));
+    await delay(400);
+    ai = await webContents.executeJavaScript(aiDeclarationStateScript(false));
+    if (ai.selected) break;
+    if (ai.point) await clickPoint(webContents, ai.point);
+    await delay(700 + attempt * 300);
+    ai = await webContents.executeJavaScript(aiDeclarationStateScript(false));
   }
-  const aiContentSelected = ai.found ? await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-    const text = [...document.querySelectorAll('label,[role="radio"],span,div')].find((element) => normalize(element.textContent) === '包含AI创作内容');
-    const root = text?.closest('label,[role="radio"],.ant-radio-wrapper,.radio-item') || text?.parentElement; const input = root?.querySelector('input[type="radio"]');
-    return Boolean((input instanceof HTMLInputElement && input.checked) || root?.getAttribute('aria-checked') === 'true' || /checked|selected|active/.test(String(root?.className || '')));
-  })()`) : false;
-  return { summaryClicked: false, summaryGenerated: false, summaryUnavailable: false, aiContentFound: ai.found, aiContentSelected };
+  return { summaryClicked: false, summaryGenerated: false, summaryUnavailable: false, aiContentFound: ai.found, aiContentSelected: ai.selected };
 }
 
 export async function fillSohuDraft(webContents: WebContents, title: string, html: string): Promise<SohuDraftFillResult> {
   await ensureSohuEditor(webContents);
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`SOHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
+  if (!content.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   await delay(1_000);
   const beforeSettings = await webContents.executeJavaScript(contentScript(title, html, false));
   if (!beforeSettings.titleFilled || !beforeSettings.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE_BEFORE_SETTINGS: title=${beforeSettings.titleFilled}, body=${beforeSettings.bodyFilled}`);
+  if (!beforeSettings.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${beforeSettings.formatVerification.degradedBlocks.join('、')}`);
   const optional = await applyOptionalSettings(webContents);
+  if (!optional.aiContentFound) throw new Error('SOHU_AI_DECLARATION_NOT_FOUND: 未找到搜狐号“含有AI生成内容”声明');
+  if (!optional.aiContentSelected) throw new Error('SOHU_AI_DECLARATION_NOT_SELECTED: 搜狐号“含有AI生成内容”声明未选中');
   const stableContent = await webContents.executeJavaScript(contentScript(title, html, false));
   if (!stableContent.titleFilled || !stableContent.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}`);
+  if (!stableContent.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${stableContent.formatVerification.degradedBlocks.join('、')}`);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim(); const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     const publishButtonDetected = [...document.querySelectorAll('li.publish-report-btn,li[report-attr],button,[role="button"]')].filter(visible).some((element) => { const text = normalize(element.textContent); return text === '发布' && !text.includes('定时发布') && !element.hasAttribute('disabled'); });
-    const ai = [...document.querySelectorAll('label,[role="radio"],span,div')].filter(visible).find((element) => normalize(element.textContent) === '包含AI创作内容'); if (ai instanceof HTMLElement) ai.scrollIntoView({ block: 'center' });
+    const ai = [...document.querySelectorAll('label.el-radio')].filter(visible).find((element) => normalize(element.textContent) === ${JSON.stringify(SOHU_AI_DECLARATION_LABEL)}); if (ai instanceof HTMLElement) ai.scrollIntoView({ block: 'center' });
     return { publishButtonDetected, url: location.href };
   })()`);
   await delay(500);

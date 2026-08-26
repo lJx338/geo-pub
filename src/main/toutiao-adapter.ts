@@ -1,6 +1,7 @@
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { WebContents } from 'electron';
+import { resumeVisibleDraft } from './editor-draft.js';
 
 const PUBLISH_URL = 'https://mp.toutiao.com/profile_v4/graphic/publish';
 const TITLE_SELECTOR = 'textarea[placeholder*="标题"],input[placeholder*="标题"]';
@@ -11,9 +12,16 @@ export interface DraftFillResult {
   bodyFilled: boolean;
   title: string;
   bodyTextLength: number;
+  formatVerification: {
+    expected: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    actual: { headings: number; lists: number; quotes: number; dividers: number; images: number };
+    preserved: boolean;
+    degradedBlocks: string[];
+  };
   coverUploaded: boolean;
   noAdsSelected: boolean | null;
   aiDeclarationSelected: boolean;
+  microPostDisabled: boolean;
   draftSaveState: 'saved' | 'saving' | 'failed' | 'unknown';
   previewButtonDetected: boolean;
   url: string;
@@ -76,10 +84,9 @@ async function ensureNoAds(webContents: WebContents): Promise<boolean | null> {
         || candidate.classList.contains('checked')
         || candidate.getAttribute('aria-checked') === 'true'
       )) : [];
-      const selected = selectedLabels.length === 1
-        ? selectedLabels[0] === label
-        : Boolean(input instanceof HTMLInputElement && input.checked
-          && !group?.querySelector('input[type="radio"][value="3"]:checked'));
+      const selected = input instanceof HTMLInputElement
+        ? input.checked && !group?.querySelector('input[type="radio"][value="3"]:checked')
+        : selectedLabels.length === 1 && selectedLabels[0] === label;
       label.scrollIntoView({ block: 'center', inline: 'nearest' });
       if (!selected && input instanceof HTMLElement) input.click();
       const rect = label.getBoundingClientRect();
@@ -115,11 +122,47 @@ async function ensureNoAds(webContents: WebContents): Promise<boolean | null> {
       || candidate.classList.contains('checked')
       || candidate.getAttribute('aria-checked') === 'true'
     )) : [];
-    return selectedLabels.length === 1
-      ? selectedLabels[0] === label
-      : Boolean(input instanceof HTMLInputElement && input.checked
-        && !group?.querySelector('input[type="radio"][value="3"]:checked'));
+    return input instanceof HTMLInputElement
+      ? input.checked && !group?.querySelector('input[type="radio"][value="3"]:checked')
+      : selectedLabels.length === 1 && selectedLabels[0] === label;
   })()`);
+}
+
+async function ensureMicroPostDisabled(webContents: WebContents): Promise<boolean> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const state = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+      const label = [...document.querySelectorAll('label,[role="checkbox"]')]
+        .find((candidate) => normalize(candidate.textContent) === '发布得更多收益');
+      if (!(label instanceof HTMLElement)) return { found: false, selected: false };
+      let section = label.parentElement;
+      let ownsMicroPost = false;
+      for (let depth = 0; section && depth < 6; depth += 1, section = section.parentElement) {
+        if (normalize(section.textContent).includes('同时发布微头条')) { ownsMicroPost = true; break; }
+      }
+      if (!ownsMicroPost) return { found: false, selected: false };
+      const input = label.querySelector('input[type="checkbox"]');
+      const selected = input instanceof HTMLInputElement
+        ? input.checked
+        : label.getAttribute('aria-checked') === 'true' || label.classList.contains('byte-checkbox-checked');
+      if (selected) label.click();
+      return { found: true, selected };
+    })()`);
+    if (!state.found) return false;
+    await delay(state.selected ? 650 : 250);
+    const disabled = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+      const label = [...document.querySelectorAll('label,[role="checkbox"]')]
+        .find((candidate) => normalize(candidate.textContent) === '发布得更多收益');
+      if (!(label instanceof HTMLElement)) return false;
+      const input = label.querySelector('input[type="checkbox"]');
+      return input instanceof HTMLInputElement
+        ? !input.checked
+        : label.getAttribute('aria-checked') !== 'true' && !label.classList.contains('byte-checkbox-checked');
+    })()`);
+    if (disabled) return true;
+  }
+  return false;
 }
 
 async function ensureAiDeclaration(webContents: WebContents): Promise<boolean> {
@@ -266,13 +309,15 @@ async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
     }) || buttons[0];
     if (!(button instanceof HTMLElement)) return null;
     button.scrollIntoView({ block: 'center', inline: 'center' });
-    const rect = button.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    button.click();
+    return true;
   })()`);
   if (!target) return false;
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  await delay(700);
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await delay(250);
+    const open = await webContents.executeJavaScript(`(() => [...document.querySelectorAll('button,[role="button"]')].some((button) => button instanceof HTMLElement && button.getAttribute('data-e2e') === 'imageUploadConfirm-btn' && button.getBoundingClientRect().width > 0))()`);
+    if (!open) return true;
+  }
   return true;
 }
 
@@ -363,7 +408,15 @@ export async function ensureToutiaoEditor(webContents: WebContents, timeoutMs = 
     await webContents.loadURL(PUBLISH_URL);
   }
   const deadline = Date.now() + timeoutMs;
+  let draftChecked = false;
   while (Date.now() < deadline) {
+    if (!draftChecked) {
+      draftChecked = true;
+      if (await resumeVisibleDraft(webContents)) {
+        await delay(800);
+        continue;
+      }
+    }
     const ready = await webContents.executeJavaScript(`(() => {
       const visible = (element) => {
         if (!(element instanceof HTMLElement)) return false;
@@ -380,21 +433,28 @@ export async function ensureToutiaoEditor(webContents: WebContents, timeoutMs = 
   throw new Error('TOUTIAO_EDITOR_NOT_READY: 请检查是否已登录头条号，或在桌面端完成验证码');
 }
 
-export async function fillToutiaoDraft(
+async function writeToutiaoContent(
   webContents: WebContents,
   title: string,
   html: string,
-  coverPath: string,
-): Promise<DraftFillResult> {
-  await ensureToutiaoEditor(webContents);
-  const result = await webContents.executeJavaScript(`(() => {
-    const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
-    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'formatVerification' | 'url'>> {
+  return await webContents.executeJavaScript(`(() => {
+    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+    const title = [...document.querySelectorAll(${JSON.stringify(TITLE_SELECTOR)})].find(visible);
+    const body = [...document.querySelectorAll(${JSON.stringify(BODY_SELECTOR)})].find(visible);
     if (!(title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement) || !(body instanceof HTMLElement)) {
-      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, url: location.href };
+      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, formatVerification: { expected: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] }, url: location.href };
     }
+    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const compact = (value) => normalize(value).replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
     const requestedTitle = ${JSON.stringify(title)};
     const requestedHtml = ${JSON.stringify(html)};
+    const parser = document.createElement('div');
+    parser.innerHTML = requestedHtml;
+    // Toutiao's editor normalizes imported h2/h3 blocks to its own h1 heading node.
+    const countStructure = (root) => ({ headings: root.querySelectorAll('h1,h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
+    const expectedStructure = countStructure(parser);
+    const expectedBody = normalize(parser.innerText || parser.textContent);
     const descriptor = Object.getOwnPropertyDescriptor(
       title instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
       'value',
@@ -404,22 +464,81 @@ export async function fillToutiaoDraft(
     title.dispatchEvent(new Event('change', { bubbles: true }));
 
     body.focus();
-    body.innerHTML = requestedHtml;
-    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    let inserted = false;
+    try { inserted = document.execCommand('insertHTML', false, requestedHtml); } catch { inserted = false; }
+    if (!inserted || compact(body.innerText || body.textContent) !== compact(expectedBody)) {
+      body.replaceChildren();
+      body.insertAdjacentHTML('afterbegin', requestedHtml);
+    }
+    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: null }));
     body.dispatchEvent(new Event('change', { bubbles: true }));
-    const actualTitle = title.value.trim();
-    const bodyTextLength = (body.innerText || body.textContent || '').trim().length;
+    body.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+    const actualTitle = normalize(title.value);
+    const actualBody = normalize(body.innerText || body.textContent);
+    const actualStructure = countStructure(body);
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
     return {
-      titleFilled: actualTitle === requestedTitle,
-      bodyFilled: bodyTextLength > 0,
+      titleFilled: actualTitle === normalize(requestedTitle),
+      bodyFilled: compact(expectedBody).length > 0 && compact(actualBody) === compact(expectedBody),
       title: actualTitle,
-      bodyTextLength,
+      bodyTextLength: actualBody.length,
+      formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks },
       url: location.href,
     };
   })()`);
+}
+
+async function verifyToutiaoContent(
+  webContents: WebContents,
+  title: string,
+  html: string,
+): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'formatVerification' | 'url'>> {
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const compact = (value) => normalize(value).replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
+    const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
+    const expectedBody = normalize(parser.innerText || parser.textContent);
+    const countStructure = (root) => ({ headings: root.querySelectorAll('h1,h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
+    const expectedStructure = countStructure(parser);
+    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+    const title = [...document.querySelectorAll(${JSON.stringify(TITLE_SELECTOR)})].find(visible);
+    const body = [...document.querySelectorAll(${JSON.stringify(BODY_SELECTOR)})].find(visible);
+    const actualTitle = title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement ? normalize(title.value) : '';
+    const actualBody = body instanceof HTMLElement ? normalize(body.innerText || body.textContent) : '';
+    const actualStructure = body instanceof HTMLElement ? countStructure(body) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
+    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
+    return {
+      titleFilled: actualTitle === normalize(${JSON.stringify(title)}),
+      bodyFilled: compact(expectedBody).length > 0 && compact(actualBody) === compact(expectedBody),
+      title: actualTitle,
+      bodyTextLength: actualBody.length,
+      formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks },
+      url: location.href,
+    };
+  })()`);
+}
+
+export async function fillToutiaoDraft(
+  webContents: WebContents,
+  title: string,
+  html: string,
+  coverPath: string,
+): Promise<DraftFillResult> {
+  await ensureToutiaoEditor(webContents);
+  let result = await writeToutiaoContent(webContents, title, html);
+  await delay(1_200);
+  result = await verifyToutiaoContent(webContents, title, html);
   if (!result.titleFilled || !result.bodyFilled) {
-    throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}`);
+    throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}, actualLength=${result.bodyTextLength}`);
   }
+  if (!result.formatVerification.preserved) throw new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${result.formatVerification.degradedBlocks.join('、')}`);
   let noAdsSelected: boolean | null;
   try {
     noAdsSelected = await ensureNoAds(webContents);
@@ -441,12 +560,26 @@ export async function fillToutiaoDraft(
   await delay(1200);
   const finalNoAdsSelected = await ensureNoAds(webContents);
   const finalAiDeclarationSelected = await ensureAiDeclaration(webContents);
+  const microPostDisabled = await ensureMicroPostDisabled(webContents);
+  if (!coverUploaded) throw new Error('TOUTIAO_COVER_NOT_APPLIED: 封面上传后未确认应用状态');
+  if (finalNoAdsSelected !== true && noAdsSelected !== true) throw new Error('TOUTIAO_NO_ADS_NOT_SELECTED: 未确认“不投放广告”');
+  if (!microPostDisabled) throw new Error('TOUTIAO_MICRO_POST_NOT_DISABLED: 未确认关闭“同时发布微头条”');
   let draftSaveState: DraftFillResult['draftSaveState'] = 'unknown';
   for (let attempt = 0; attempt < 12; attempt += 1) {
     draftSaveState = await webContents.executeJavaScript(`(() => { const text=String(document.body?.innerText||'').replace(/\\s+/g,' '); if(/保存失败/.test(text))return 'failed'; if(/(?:草稿)?已保存|保存成功/.test(text))return 'saved'; if(/保存中|正在保存/.test(text))return 'saving'; return 'unknown'; })()`);
     if (draftSaveState === 'saved' || draftSaveState === 'failed') break;
     await delay(500);
   }
+  let stableContent = await verifyToutiaoContent(webContents, title, html);
+  for (let attempt = 0; (!stableContent.titleFilled || !stableContent.bodyFilled || !stableContent.formatVerification.preserved) && attempt < 2; attempt += 1) {
+    await writeToutiaoContent(webContents, title, html);
+    await delay(1_500 + attempt * 500);
+    stableContent = await verifyToutiaoContent(webContents, title, html);
+  }
+  if (!stableContent.titleFilled || !stableContent.bodyFilled) {
+    throw new Error(`TOUTIAO_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}, actualLength=${stableContent.bodyTextLength}`);
+  }
+  if (!stableContent.formatVerification.preserved) throw new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${stableContent.formatVerification.degradedBlocks.join('、')}`);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     return {
@@ -464,10 +597,11 @@ export async function fillToutiaoDraft(
   })()`);
   await delay(500);
   return {
-    ...result,
+    ...stableContent,
     coverUploaded,
     noAdsSelected: finalNoAdsSelected ?? noAdsSelected,
     aiDeclarationSelected: finalAiDeclarationSelected || aiDeclarationSelected,
+    microPostDisabled,
     draftSaveState,
     previewButtonDetected: finalState.previewButtonDetected,
     url: finalState.url,

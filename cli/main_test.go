@@ -93,6 +93,7 @@ func TestDesktopPathFromDiscovery(t *testing.T) {
 func TestValidateDoesNotContactDesktop(t *testing.T) {
 	directory := t.TempDir()
 	cover := filepath.Join(directory, "cover.jpg")
+	cover = filepath.ToSlash(cover)
 	if err := os.WriteFile(cover, []byte("image"), 0o600); err != nil {
 		t.Fatal(err)
 	}

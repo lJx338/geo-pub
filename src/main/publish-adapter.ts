@@ -17,6 +17,22 @@ export interface PublishResult {
 
 interface PageState { url: string; text: string; pageTitle: string }
 
+interface DraftContentState { title: string; body: string }
+
+const normalizeContent = (value: string): string => value.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+const compactContent = (value: string): string => normalizeContent(value).replace(/[\s\u200b-\u200d\ufeff]/g, '');
+
+export function draftContentMatches(expectedTitle: string, expectedBody: string, actual: DraftContentState): boolean {
+  const normalizedExpectedBody = compactContent(expectedBody);
+  const normalizedActualBody = compactContent(actual.body.replace(/点击输入图片描述[（(]最多30字[）)]/g, ''));
+  if (normalizeContent(actual.title) !== normalizeContent(expectedTitle) || normalizedExpectedBody.length === 0) return false;
+  // Platforms often append editor placeholders or normalize line boundaries
+  // after the adapter writes. Do not reject a complete draft just because the
+  // DOM contains harmless trailing/spacing content.
+  return normalizedActualBody === normalizedExpectedBody
+    || normalizedActualBody.includes(normalizedExpectedBody);
+}
+
 export function isNeteasePreflightRunning(text: string): boolean {
   return /正在.{0,12}发文前检测|发文前检测中|正在检测|正在为您进行发文前检测/.test(text);
 }
@@ -82,6 +98,45 @@ async function pageStateWithRetry(webContents: WebContents): Promise<PageState> 
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+async function verifyDraftContent(
+  webContents: WebContents,
+  platform: Platform,
+  title: string,
+  html: string,
+): Promise<{ matches: boolean; actual: DraftContentState; expectedBodyLength: number }> {
+  const content = await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
+    const expectedBody = normalize(parser.innerText || parser.textContent || '');
+    const platform = ${JSON.stringify(platform)};
+    let title = '';
+    let body = '';
+    if (platform === 'toutiao') {
+      const titleElement = document.querySelector('textarea[placeholder*="标题"],input[placeholder*="标题"]');
+      const bodyElement = document.querySelector('.ProseMirror[contenteditable="true"],.ql-editor[contenteditable="true"],[data-editor="content"] [contenteditable="true"]');
+      title = titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement ? titleElement.value : '';
+      body = bodyElement instanceof HTMLElement ? bodyElement.innerText || bodyElement.textContent || '' : '';
+    } else if (platform === 'netease') {
+      const titleElement = document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
+      const bodyElement = document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+      title = titleElement instanceof HTMLTextAreaElement ? titleElement.value : '';
+      body = bodyElement instanceof HTMLElement ? bodyElement.innerText || bodyElement.textContent || '' : '';
+    } else if (platform === 'baijia') {
+      const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+      const titleElement = [...document.querySelectorAll('[contenteditable="true"],input,textarea')]
+        .filter(visible).filter((element) => !String(element.getAttribute('placeholder') || '').includes('关键词'))
+        .sort((left, right) => Number(String(right.getAttribute('placeholder') || '').includes('标题')) - Number(String(left.getAttribute('placeholder') || '').includes('标题')))[0];
+      title = titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement
+        ? titleElement.value : titleElement instanceof HTMLElement ? titleElement.innerText || titleElement.textContent || '' : '';
+      const editor = window.UE_V2?.instants?.ueditorInstant0;
+      const iframe = [...document.querySelectorAll('iframe')].find((element) => element instanceof HTMLIFrameElement && visible(element) && element.contentDocument?.body);
+      body = typeof editor?.getContentTxt === 'function' ? editor.getContentTxt() : iframe instanceof HTMLIFrameElement ? iframe.contentDocument?.body?.innerText || iframe.contentDocument?.body?.textContent || '' : '';
+    }
+    return { title: normalize(title), body: normalize(body), expectedBody, expectedBodyLength: expectedBody.length };
+  })()`);
+  return { matches: draftContentMatches(title, content.expectedBody, content), actual: content, expectedBodyLength: content.expectedBodyLength };
+}
+
 async function clickVisible(
   webContents: WebContents,
   texts: string[],
@@ -127,6 +182,57 @@ async function clickDialogButtonDom(webContents: WebContents, text: string): Pro
   })()`);
 }
 
+async function clickVisibleDom(
+  webContents: WebContents,
+  texts: string[],
+  excludes: string[] = [],
+  selector = 'button,[role="button"],li',
+): Promise<boolean> {
+  return await webContents.executeJavaScript(`(() => {
+    const normalize=(value)=>String(value||'').replace(/\\s+/g,' ').trim();
+    const visible=(element)=>element instanceof HTMLElement&&(()=>{const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&style.pointerEvents!=='none';})();
+    const texts=${JSON.stringify(texts)}; const excludes=${JSON.stringify(excludes)};
+    const element=[...document.querySelectorAll(${JSON.stringify(selector)})].filter((candidate)=>{
+      if(!visible(candidate)||candidate.hasAttribute('disabled')||candidate.getAttribute('aria-disabled')==='true')return false;
+      const text=normalize(candidate.textContent); return texts.includes(text)&&!excludes.some((value)=>text.includes(value));
+    }).sort((left,right)=>{const a=left.getBoundingClientRect();const b=right.getBoundingClientRect();return(a.width*a.height)-(b.width*b.height);})[0];
+    if(!(element instanceof HTMLElement))return false;
+    element.scrollIntoView({block:'center',inline:'nearest'}); element.click(); return true;
+  })()`);
+}
+
+async function clickVisibleWithDebugger(
+  webContents: WebContents,
+  texts: string[],
+  excludes: string[] = [],
+  selector = 'button,[role="button"],li',
+): Promise<boolean> {
+  const point = await webContents.executeJavaScript(`(() => {
+    const normalize=(value)=>String(value||'').replace(/\\s+/g,' ').trim();
+    const visible=(element)=>element instanceof HTMLElement&&(()=>{const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&style.pointerEvents!=='none';})();
+    const texts=${JSON.stringify(texts)}; const excludes=${JSON.stringify(excludes)};
+    const element=[...document.querySelectorAll(${JSON.stringify(selector)})].filter((candidate)=>{
+      if(!visible(candidate)||candidate.hasAttribute('disabled')||candidate.getAttribute('aria-disabled')==='true')return false;
+      const text=normalize(candidate.textContent); return texts.includes(text)&&!excludes.some((value)=>text.includes(value));
+    }).sort((left,right)=>{const a=left.getBoundingClientRect();const b=right.getBoundingClientRect();return(a.width*a.height)-(b.width*b.height);})[0];
+    if(!(element instanceof HTMLElement))return null;
+    element.scrollIntoView({block:'center',inline:'nearest'}); const rect=element.getBoundingClientRect();
+    return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+  })()`);
+  if (!point) return false;
+  await delay(350);
+  const debuggerApi = webContents.debugger;
+  const attachedHere = !debuggerApi.isAttached();
+  try {
+    if (attachedHere) debuggerApi.attach('1.3');
+    await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    return true;
+  } finally {
+    if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
+  }
+}
+
 async function hasVisibleButton(webContents: WebContents, text: string | string[]): Promise<boolean> {
   const texts = Array.isArray(text) ? text : [text];
   return await webContents.executeJavaScript(`(() => { const normalize=(value)=>String(value||'').replace(/\\s+/g,' ').trim(); const texts=${JSON.stringify(texts)}; return [...document.querySelectorAll('button,[role="button"]')].some((element)=>{if(!(element instanceof HTMLElement)||!texts.includes(normalize(element.textContent))||element.hasAttribute('disabled')||element.getAttribute('aria-disabled')==='true')return false;const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&style.pointerEvents!=='none';}); })()`);
@@ -153,7 +259,8 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
     if (await hasVisibleButton(webContents, '确认发布')) {
       let clicked = false;
       for (let retry = 0; retry < 3; retry += 1) {
-        clicked = await clickVisible(webContents, ['确认发布'], [], 'button,[role="button"]');
+        clicked = await clickDialogButtonDom(webContents, '确认发布')
+          || await clickVisibleDom(webContents, ['确认发布'], [], 'button,[role="button"]');
         await delay(1000 + retry * 500);
         if (!(await hasVisibleButton(webContents, '确认发布'))) break;
       }
@@ -165,7 +272,7 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
         await delay(1000);
         state = await pageState(webContents);
         if (isPublishSuccess('toutiao', state, title)) return { status: 'success', platform: 'toutiao', title, stage: 'success', message: '文章已提交并在作品管理页确认', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
-        const blocked = blocker(state);
+        const blocked = await blocker(webContents, state);
         if (blocked) return { status: 'action_required', platform: 'toutiao', title, stage: 'publish_blocked', message: `平台阻止发布：${blocked}`, url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
       }
       return { status: 'result_uncertain', platform: 'toutiao', title, stage: 'result_check', message: '确认发布后 30 秒内未进入作品管理页，已停止操作', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
@@ -188,19 +295,54 @@ export function isPublishSuccess(platform: Platform, state: PageState, title: st
   return !state.url.includes('article-publish') && hasTitle && positive;
 }
 
-function blocker(state: PageState): string | null {
-  const patterns = [
+async function blocker(webContents: WebContents, state: PageState): Promise<string | null> {
+  if (/(?:login|passport|signin)/i.test(state.url)) return '登录失效';
+
+  const quota = [
     /今日[^。]{0,24}(?:次数已用完|达到上限|不能再发|剩余\s*0)/,
     /发布[^。]{0,24}(?:次数已用完|达到上限|超过上限)/,
-    /(?:验证码|安全验证|滑块验证|扫码验证|账号异常|登录失效|请重新登录)/,
-    /(?:标题不能为空|正文不能为空|请选择封面|请上传封面|内容不符合规范|审核未通过|发布失败|提交失败)/,
-  ];
-  return patterns.map((pattern) => state.text.match(pattern)?.[0]).find(Boolean) || null;
+  ].map((pattern) => state.text.match(pattern)?.[0]).find(Boolean);
+  if (quota) return quota;
+
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => {
+      const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    })();
+    const pattern = /验证码|安全验证|滑块验证|扫码验证|账号异常|登录失效|请重新登录|标题不能为空|正文不能为空|请选择封面|请上传封面|内容不符合规范|发布失败|提交失败/;
+    const selectors = [
+      '[role="dialog"]', '[role="alert"]', '[role="status"]',
+      '[class*="toast"]', '[class*="Toast"]', '[class*="message"]', '[class*="Message"]',
+      '[class*="notice"]', '[class*="Notice"]', '[class*="error"]', '[class*="Error"]'
+    ].join(',');
+    const candidate = [...document.querySelectorAll(selectors)].filter(visible).find((element) => {
+      if (element.closest('[contenteditable="true"],.ProseMirror,.ql-editor,.public-DraftEditor-content')) return false;
+      const text = normalize(element.textContent);
+      return text.length > 0 && text.length <= 300 && pattern.test(text);
+    });
+    return candidate ? normalize(candidate.textContent).slice(0, 160) : null;
+  })()`);
 }
 
-export async function publishFilledDraft(webContents: WebContents, platform: Platform, title: string): Promise<PublishResult> {
+export async function publishFilledDraft(webContents: WebContents, platform: Platform, title: string, html = ''): Promise<PublishResult> {
+  if (html && ['baijia', 'toutiao', 'netease'].includes(platform)) {
+    const verification = await verifyDraftContent(webContents, platform, title, html);
+    if (!verification.matches) {
+      const state = await pageStateWithRetry(webContents);
+      return {
+        status: 'action_required', platform, title, stage: 'draft_verify',
+        message: `DRAFT_CONTENT_NOT_STABLE: 发布前页面内容校验失败（标题=${normalizeContent(verification.actual.title) === normalizeContent(title)}，正文长度=${verification.actual.body.length}/${verification.expectedBodyLength}），已停止发布`,
+        url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: false, confirmationClicked: false,
+      };
+    }
+  }
   const config = primaryConfig[platform];
-  const primaryClicked = await clickVisible(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li');
+  const primaryClicked = platform === 'penguin'
+    ? await clickVisibleWithDebugger(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li')
+    : platform === 'baijia' || platform === 'toutiao'
+      ? await clickVisibleDom(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li')
+      : await clickVisible(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li');
   if (!primaryClicked) {
     const state = await pageStateWithRetry(webContents);
     return { status: 'action_required', platform, title, stage: 'publish_click', message: '未能定位或点击主发布按钮', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: false, confirmationClicked: false };
@@ -218,7 +360,7 @@ export async function publishFilledDraft(webContents: WebContents, platform: Pla
     if (isPublishSuccess(platform, state, title)) {
       return { status: 'success', platform, title, stage: 'success', message: '文章已提交并在发布结果页确认', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked, confirmationClicked };
     }
-    const blocked = blocker(state);
+    const blocked = await blocker(webContents, state);
     if (blocked) {
       return { status: 'action_required', platform, title, stage: 'publish_blocked', message: `平台阻止发布：${blocked}`, url: state.url, pageText: state.text.slice(0, 1000), primaryClicked, confirmationClicked };
     }
@@ -255,7 +397,14 @@ export async function publishFilledDraft(webContents: WebContents, platform: Pla
       continue;
     }
     if (!confirmationClicked) {
-      confirmationClicked = await clickVisible(webContents, confirmTexts[platform], ['取消'], 'button,[role="button"],div,span', true);
+      if (platform === 'baijia' || platform === 'penguin') {
+        for (const text of confirmTexts[platform]) {
+          confirmationClicked = await clickDialogButtonDom(webContents, text);
+          if (confirmationClicked) break;
+        }
+      } else {
+        confirmationClicked = await clickVisible(webContents, confirmTexts[platform], ['取消'], 'button,[role="button"],div,span', true);
+      }
       if (confirmationClicked) continue;
     }
   }
