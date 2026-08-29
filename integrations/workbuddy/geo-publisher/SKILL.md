@@ -9,10 +9,18 @@ Use the desktop application as the execution engine. Do not use browser extensio
 
 ## Resolve the CLI
 
-Run `geo-publisher doctor` when the command is available. Otherwise read `discovery.json` from the operating system's GEO Publisher user-data directory and invoke its `cliPath`:
+The desktop's “连接 WorkBuddy” action installs this Skill into WorkBuddy's user Skill directory and writes the current CLI path into the connection prompt. Reload Skills after connecting. Run `geo-publisher doctor` when the command is available. Otherwise read `discovery.json` from the operating system's GEO Publisher user-data directory and invoke its `cliPath`:
 
 - macOS: resolve from the current user's `~/Library/Application Support/GEO Publisher Desktop` directory.
 - Windows: resolve from `%LOCALAPPDATA%\GEO Publisher Desktop`.
+
+On Windows, paths may contain spaces, `&`, parentheses, or non-ASCII characters. In PowerShell invoke the exact path as a single-quoted command path with the call operator, for example:
+
+```powershell
+& 'C:\\Users\\<user>\\AppData\\Local\\GEO Publisher Desktop\\bin\\versions\\0.2.3\\geo-publisher.exe' doctor --json
+```
+
+Do not use `Start-Process` when the JSON response is needed, and do not remove or interpret backslashes from `discovery.json`.
 
 Never copy a path or user name from another computer. If discovery is missing, ask the user to install and open GEO Publisher Desktop once.
 

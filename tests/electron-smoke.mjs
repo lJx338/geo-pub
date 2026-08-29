@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { _electron as electron } from 'playwright';
 
 const evidenceDirectory = join(process.cwd(), 'release', 'test-evidence');
+const workBuddySkillsDirectory = join(process.cwd(), 'release', 'test-workbuddy-skills');
 const userDataDirectory = process.platform === 'win32'
   ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'GEO Publisher Desktop')
   : process.platform === 'darwin'
@@ -14,7 +15,7 @@ await mkdir(evidenceDirectory, { recursive: true });
 const app = await electron.launch({
   args: ['.'],
   cwd: process.cwd(),
-  env: { ...process.env, GEO_DISABLE_OPEN_WORKBUDDY: '1' },
+  env: { ...process.env, GEO_DISABLE_OPEN_WORKBUDDY: '1', WORKBUDDY_SKILLS_DIR: workBuddySkillsDirectory },
 });
 
 try {
@@ -49,6 +50,7 @@ try {
   await window.locator('#workbuddy-state', { hasText: '指令已复制' }).waitFor();
   const prompt = await readFile(join(userDataDirectory, 'integrations', 'workbuddy', 'CONNECT-WORKBUDDY.txt'), 'utf8');
   if (!prompt.includes('GEO Publisher Skill') || !prompt.includes('CLI 位置')) throw new Error('WorkBuddy prompt is incomplete');
+  await readFile(join(workBuddySkillsDirectory, 'geo-publisher', 'SKILL.md'), 'utf8');
 
   await window.locator('#check-update').click();
   await window.locator('#update-state', { hasText: '不可用' }).waitFor();

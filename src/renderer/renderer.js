@@ -67,7 +67,7 @@ document.querySelector('#connect-workbuddy').addEventListener('click', async () 
   try {
     await window.geoPublisher.connectWorkBuddy();
     workBuddyState.textContent = '指令已复制';
-    showMessage('WorkBuddy 已打开，请粘贴刚刚复制的连接指令');
+    showMessage('WorkBuddy 已打开，Skill 和 CLI 已安装，请粘贴刚刚复制的连接指令');
   } catch (error) {
     workBuddyState.textContent = '重试';
     showMessage(`连接准备失败：${error.message}`, true);
