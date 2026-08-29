@@ -1,5 +1,6 @@
 import { access } from 'node:fs/promises';
-import { clipboard, type WebContents } from 'electron';
+import type { WebContents } from 'electron';
+import { cdpClick } from './browser-automation-driver.js';
 import { contentMatchesExpected } from './content-verification.js';
 
 const PUBLISH_URL = 'https://mp.163.com/subscribe_v4/index.html#/article-publish';
@@ -44,9 +45,7 @@ async function clickNeteaseEditorTool(webContents: WebContents, iconName: string
     return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
   })()`);
   if (!point) return false;
-  webContents.sendInputEvent({type:'mouseMove',x:Math.round(point.x),y:Math.round(point.y)});
-  webContents.sendInputEvent({type:'mouseDown',x:Math.round(point.x),y:Math.round(point.y),button:'left',clickCount:1});
-  webContents.sendInputEvent({type:'mouseUp',x:Math.round(point.x),y:Math.round(point.y),button:'left',clickCount:1});
+  await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
   await delay(220);
   return true;
 }
@@ -186,7 +185,6 @@ async function fillText(webContents: WebContents, title: string, html: string): 
 
     // 网易和知乎都使用 Draft.js。只有 Chromium 的真实输入管线会同步
     // React ContentState；DOM Range、innerHTML 和合成 paste 都可能只改表象。
-    webContents.focus();
     const debuggerApi = webContents.debugger;
     const attachedHere = !debuggerApi.isAttached();
     try {
@@ -222,33 +220,7 @@ async function fillText(webContents: WebContents, title: string, html: string): 
         return {cleared:!text&&imageCount===0,textLength:text.length,imageCount};
       })()`);
       if (!clearedState.cleared) throw new Error(`NETEASE_CLEAR_FAILED: ${JSON.stringify(clearedState)}`);
-      const previousClipboard={text:clipboard.readText(),html:clipboard.readHTML()};
-      try {
-        clipboard.write({text:prepared.plainText,html});
-        webContents.paste();
-        await delay(1_800);
-        const pasted = await webContents.executeJavaScript(`(() => {
-          const contentMatchesExpected=${contentMatchesExpected.toString()};
-          const actual=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
-          if (!(actual instanceof HTMLElement)) return {body:false,structure:false};
-          const text=[...actual.querySelectorAll('[data-text="true"]')]
-            .map((node)=>String(node.textContent||'')).join('\\n');
-          const parser=document.createElement('div');parser.innerHTML=${JSON.stringify(html)};
-          const expected={headings:parser.querySelectorAll('h2,h3').length,lists:parser.querySelectorAll('ul,ol').length,quotes:parser.querySelectorAll('blockquote').length};
-          const observed={headings:actual.querySelectorAll('h2,h3,h4,h5,h6').length,lists:actual.querySelectorAll('ul,ol').length,quotes:actual.querySelectorAll('blockquote').length};
-          return {
-            body:contentMatchesExpected(text,${JSON.stringify(bodyText)}),
-            structure:observed.headings>=expected.headings&&observed.lists>=expected.lists&&observed.quotes>=expected.quotes,
-          };
-        })()`);
-        if (pasted.body&&pasted.structure) return true;
-        if (pasted.body) {
-          if (await applyHeadings()) return true;
-          throw new Error('NETEASE_HEADING_FORMAT_FAILED: 粘贴正文后无法转换小标题');
-        }
-      } finally {
-        clipboard.write(previousClipboard);
-      }
+      // Draft.js must be written through CDP instead of the system clipboard.
       const inheritedHeading = await webContents.executeJavaScript(`(() => {
         const selection=window.getSelection();
         const node=selection?.anchorNode;
@@ -441,10 +413,8 @@ async function clickDomSelector(webContents: WebContents, selector: string): Pro
   if (!point) return false;
   const x = Math.round(point.x);
   const y = Math.round(point.y);
-  webContents.sendInputEvent({ type: 'mouseMove', x, y });
   await delay(120);
-  webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  await cdpClick(webContents, { x, y });
   return true;
 }
 
@@ -471,10 +441,8 @@ async function clickVisibleText(webContents: WebContents, selectors: string, tex
   if (!point) return false;
   const x = Math.round(point.x);
   const y = Math.round(point.y);
-  webContents.sendInputEvent({ type: 'mouseMove', x, y });
   await delay(120);
-  webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  await cdpClick(webContents, { x, y });
   return true;
 }
 
@@ -488,8 +456,7 @@ async function insertBodyImage(webContents: WebContents, filePath: string): Prom
   await delay(250);
   const point = await step('NETEASE_IMAGE_TOOL_LOOKUP_FAILED', () => webContents.executeJavaScript(`(() => { const visible=${visibleScript()}; const e=[...document.querySelectorAll('button.rich-editor-panel-item')].find(e=>visible(e)&&e.querySelector('img[src*="icon_image"]')); if(!e)return null; e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`));
   if (!point) return false;
-  webContents.sendInputEvent({ type:'mouseDown', x:Math.round(point.x), y:Math.round(point.y), button:'left', clickCount:1 });
-  webContents.sendInputEvent({ type:'mouseUp', x:Math.round(point.x), y:Math.round(point.y), button:'left', clickCount:1 });
+  await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
   await delay(900);
   const applied = await step('NETEASE_IMAGE_FILE_SET_FAILED', () => setFileInput(webContents, filePath));
   if (!applied) return false;

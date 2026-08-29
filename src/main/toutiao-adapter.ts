@@ -1,7 +1,9 @@
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { WebContents } from 'electron';
+import { cdpClick } from './browser-automation-driver.js';
 import { resumeVisibleDraft } from './editor-draft.js';
+import { reportError } from './logging.js';
 
 const PUBLISH_URL = 'https://mp.toutiao.com/profile_v4/graphic/publish';
 const TITLE_SELECTOR = 'textarea[placeholder*="标题"],input[placeholder*="标题"]';
@@ -22,6 +24,11 @@ export interface DraftFillResult {
   noAdsSelected: boolean | null;
   aiDeclarationSelected: boolean;
   microPostDisabled: boolean;
+  optionalSettings: {
+    noAds: 'applied' | 'not_applied' | 'unavailable';
+    aiDeclaration: 'applied' | 'not_applied';
+    microPost: 'applied' | 'not_applied';
+  };
   draftSaveState: 'saved' | 'saving' | 'failed' | 'unknown';
   previewButtonDetected: boolean;
   url: string;
@@ -29,6 +36,15 @@ export interface DraftFillResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+async function optionalSetting<T>(name: string, fallback: T, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    reportError(`[toutiao] optional setting ${name} failed:`, error);
+    return fallback;
+  }
 }
 
 async function collapseAssistant(webContents: WebContents): Promise<void> {
@@ -105,8 +121,7 @@ async function ensureNoAds(webContents: WebContents): Promise<boolean | null> {
       if (stable) return true;
       continue;
     }
-    webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(result.x), y: Math.round(result.y), button: 'left', clickCount: 1 });
-    webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(result.x), y: Math.round(result.y), button: 'left', clickCount: 1 });
+    await cdpClick(webContents, { x: Math.round(result.x), y: Math.round(result.y) });
     await delay(500 + attempt * 250);
   }
   return await webContents.executeJavaScript(`(() => {
@@ -539,18 +554,8 @@ export async function fillToutiaoDraft(
     throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}, actualLength=${result.bodyTextLength}`);
   }
   if (!result.formatVerification.preserved) throw new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${result.formatVerification.degradedBlocks.join('、')}`);
-  let noAdsSelected: boolean | null;
-  try {
-    noAdsSelected = await ensureNoAds(webContents);
-  } catch (error) {
-    throw new Error(`TOUTIAO_NO_ADS_STAGE: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  let aiDeclarationSelected: boolean;
-  try {
-    aiDeclarationSelected = await ensureAiDeclaration(webContents);
-  } catch (error) {
-    throw new Error(`TOUTIAO_AI_DECLARATION_STAGE: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const noAdsSelected = await optionalSetting('no_ads', null, async () => await ensureNoAds(webContents));
+  const aiDeclarationSelected = await optionalSetting('ai_declaration', false, async () => await ensureAiDeclaration(webContents));
   let coverUploaded: boolean;
   try {
     coverUploaded = await uploadCover(webContents, coverPath);
@@ -558,12 +563,10 @@ export async function fillToutiaoDraft(
     throw new Error(`TOUTIAO_COVER_STAGE: ${error instanceof Error ? error.message : String(error)}`);
   }
   await delay(1200);
-  const finalNoAdsSelected = await ensureNoAds(webContents);
-  const finalAiDeclarationSelected = await ensureAiDeclaration(webContents);
-  const microPostDisabled = await ensureMicroPostDisabled(webContents);
+  const finalNoAdsSelected = await optionalSetting('no_ads_verify', null, async () => await ensureNoAds(webContents));
+  const finalAiDeclarationSelected = await optionalSetting('ai_declaration_verify', false, async () => await ensureAiDeclaration(webContents));
+  const microPostDisabled = await optionalSetting('micro_post', false, async () => await ensureMicroPostDisabled(webContents));
   if (!coverUploaded) throw new Error('TOUTIAO_COVER_NOT_APPLIED: 封面上传后未确认应用状态');
-  if (finalNoAdsSelected !== true && noAdsSelected !== true) throw new Error('TOUTIAO_NO_ADS_NOT_SELECTED: 未确认“不投放广告”');
-  if (!microPostDisabled) throw new Error('TOUTIAO_MICRO_POST_NOT_DISABLED: 未确认关闭“同时发布微头条”');
   let draftSaveState: DraftFillResult['draftSaveState'] = 'unknown';
   for (let attempt = 0; attempt < 12; attempt += 1) {
     draftSaveState = await webContents.executeJavaScript(`(() => { const text=String(document.body?.innerText||'').replace(/\\s+/g,' '); if(/保存失败/.test(text))return 'failed'; if(/(?:草稿)?已保存|保存成功/.test(text))return 'saved'; if(/保存中|正在保存/.test(text))return 'saving'; return 'unknown'; })()`);
@@ -602,6 +605,12 @@ export async function fillToutiaoDraft(
     noAdsSelected: finalNoAdsSelected ?? noAdsSelected,
     aiDeclarationSelected: finalAiDeclarationSelected || aiDeclarationSelected,
     microPostDisabled,
+    optionalSettings: {
+      noAds: finalNoAdsSelected === true || noAdsSelected === true ? 'applied'
+        : finalNoAdsSelected === null && noAdsSelected === null ? 'unavailable' : 'not_applied',
+      aiDeclaration: finalAiDeclarationSelected || aiDeclarationSelected ? 'applied' : 'not_applied',
+      microPost: microPostDisabled ? 'applied' : 'not_applied',
+    },
     draftSaveState,
     previewButtonDetected: finalState.previewButtonDetected,
     url: finalState.url,

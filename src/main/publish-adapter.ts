@@ -1,5 +1,6 @@
 import type { WebContents } from 'electron';
 import type { Platform } from '../shared/protocol.js';
+import { cdpClick } from './browser-automation-driver.js';
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -13,6 +14,11 @@ export interface PublishResult {
   pageText: string;
   primaryClicked: boolean;
   confirmationClicked: boolean;
+}
+
+export interface PublishHooks {
+  beforeIrreversibleClick?: () => Promise<void>;
+  afterIrreversibleClick?: () => Promise<void>;
 }
 
 interface PageState { url: string; text: string; pageTitle: string }
@@ -163,10 +169,8 @@ async function clickVisible(
   })()`);
   if (!point) return false;
   await delay(350);
-  webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(point.x), y: Math.round(point.y) });
   await delay(120);
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
+  await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
   return true;
 }
 
@@ -325,7 +329,13 @@ async function blocker(webContents: WebContents, state: PageState): Promise<stri
   })()`);
 }
 
-export async function publishFilledDraft(webContents: WebContents, platform: Platform, title: string, html = ''): Promise<PublishResult> {
+export async function publishFilledDraft(
+  webContents: WebContents,
+  platform: Platform,
+  title: string,
+  html = '',
+  hooks: PublishHooks = {},
+): Promise<PublishResult> {
   if (html && ['baijia', 'toutiao', 'netease'].includes(platform)) {
     const verification = await verifyDraftContent(webContents, platform, title, html);
     if (!verification.matches) {
@@ -338,11 +348,13 @@ export async function publishFilledDraft(webContents: WebContents, platform: Pla
     }
   }
   const config = primaryConfig[platform];
+  await hooks.beforeIrreversibleClick?.();
   const primaryClicked = platform === 'penguin'
     ? await clickVisibleWithDebugger(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li')
     : platform === 'baijia' || platform === 'toutiao'
       ? await clickVisibleDom(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li')
       : await clickVisible(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li');
+  if (primaryClicked) await hooks.afterIrreversibleClick?.();
   if (!primaryClicked) {
     const state = await pageStateWithRetry(webContents);
     return { status: 'action_required', platform, title, stage: 'publish_click', message: '未能定位或点击主发布按钮', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: false, confirmationClicked: false };

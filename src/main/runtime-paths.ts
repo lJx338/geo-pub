@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,4 +41,11 @@ export function controlEndpoint(): string {
   const userKey = createHash('sha256').update(homedir()).digest('hex').slice(0, 12);
   if (process.platform === 'win32') return `\\\\.\\pipe\\geo-publisher-${userKey}`;
   return `/tmp/geo-publisher-${userKey}.sock`;
+}
+
+export function workerEndpoint(): string {
+  const userKey = createHash('sha256').update(homedir()).digest('hex').slice(0, 12);
+  const instanceKey = randomUUID().replace(/-/g, '');
+  if (process.platform === 'win32') return `\\\\.\\pipe\\geo-publisher-worker-${userKey}-${instanceKey}`;
+  return `/tmp/geo-publisher-worker-${userKey}-${instanceKey}.sock`;
 }

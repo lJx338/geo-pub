@@ -1,4 +1,4 @@
-import { clipboard, type WebContents } from 'electron';
+import type { WebContents } from 'electron';
 
 const PUBLISH_URL = 'https://zhuanlan.zhihu.com/write';
 const TITLE_SELECTOR = 'textarea[placeholder*="请输入标题"]';
@@ -303,26 +303,9 @@ async function fillContent(webContents: WebContents, title: string, html: string
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, commands: ['deleteBackward'] });
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
     await waitForEditorEmpty(webContents);
-    let richPasteApplied = false;
-    const previousClipboard = { text: clipboard.readText(), html: clipboard.readHTML() };
-    try {
-      clipboard.write({ text: prepared.requestedBody, html });
-      webContents.paste();
-      await delay(1_800);
-      richPasteApplied = await webContents.executeJavaScript(`(() => {
-        const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
-        const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
-        const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-        const source = document.createElement('div'); source.innerHTML = ${JSON.stringify(html)};
-        if (!(body instanceof HTMLElement)) return false;
-        const expected = { headings: source.querySelectorAll('h2,h3').length, lists: source.querySelectorAll('ul,ol').length, quotes: source.querySelectorAll('blockquote').length };
-        const actual = { headings: body.querySelectorAll('h2,h3').length, lists: body.querySelectorAll('ul,ol').length, quotes: body.querySelectorAll('blockquote').length };
-        return compact(body.innerText || body.textContent) === compact(source.innerText || source.textContent)
-          && actual.headings >= expected.headings && actual.lists >= expected.lists && actual.quotes >= expected.quotes;
-      })()`);
-    } finally {
-      clipboard.write(previousClipboard);
-    }
+    // System clipboard is intentionally never used. Draft.js receives every
+    // block through Chromium's input pipeline below.
+    const richPasteApplied = false;
     const enter = async () => {
       await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });

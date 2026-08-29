@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron';
+import { cdpClick } from './browser-automation-driver.js';
 import { contentMatchesExpected } from './content-verification.js';
 import { resumeVisibleDraft } from './editor-draft.js';
 
@@ -55,10 +56,8 @@ export function buildSohuAiDeclarationStateScriptForTest(scroll = false, activat
 async function clickPoint(webContents: WebContents, point: { x: number; y: number }): Promise<void> {
   const x = Math.round(point.x);
   const y = Math.round(point.y);
-  webContents.sendInputEvent({ type: 'mouseMove', x, y });
   await delay(120);
-  webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  await cdpClick(webContents, { x, y });
 }
 
 /**

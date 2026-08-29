@@ -1,36 +1,38 @@
 import { timingSafeEqual } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
-import { controlRequestSchema, type ControlRequest, type ControlResponse } from '../shared/protocol.js';
-import { controlEndpoint } from './runtime-paths.js';
+import {
+  BROWSER_WORKER_PROTOCOL_VERSION,
+  type BrowserWorkerRequest,
+  type BrowserWorkerResponse,
+} from './browser-worker-protocol.js';
 
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const READ_TIMEOUT_MS = 10_000;
 const MAX_CONNECTIONS = 64;
 
-export type ControlHandler = (request: ControlRequest) => Promise<unknown>;
+export type BrowserWorkerHandler = (request: BrowserWorkerRequest) => Promise<unknown>;
 
-export function errorCodeForMessage(message: string): string {
-  return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] || 'CONTROL_REQUEST_FAILED';
-}
-
-export class ControlServer {
+export class BrowserWorkerServer {
   private server: Server | null = null;
   private readonly sockets = new Set<Socket>();
 
-  constructor(private readonly token: string, private readonly handler: ControlHandler) {}
+  constructor(
+    private readonly endpoint: string,
+    private readonly token: string,
+    private readonly appVersion: string,
+    private readonly handler: BrowserWorkerHandler,
+  ) {}
 
-  async start(): Promise<string> {
-    const endpoint = controlEndpoint();
-    if (process.platform !== 'win32') await rm(endpoint, { force: true });
+  async start(): Promise<void> {
+    if (process.platform !== 'win32') await rm(this.endpoint, { force: true });
     this.server = createServer((socket) => this.handleSocket(socket));
     this.server.maxConnections = MAX_CONNECTIONS;
     await new Promise<void>((resolve, reject) => {
       this.server?.once('error', reject);
-      this.server?.listen(endpoint, () => resolve());
+      this.server?.listen(this.endpoint, () => resolve());
     });
-    return endpoint;
   }
 
   async stop(): Promise<void> {
@@ -39,7 +41,7 @@ export class ControlServer {
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (process.platform !== 'win32') await rm(controlEndpoint(), { force: true });
+    if (process.platform !== 'win32') await rm(this.endpoint, { force: true });
   }
 
   private handleSocket(socket: Socket): void {
@@ -52,7 +54,7 @@ export class ControlServer {
       handled = true;
       input = '';
       socket.pause();
-      this.reply(socket, { id: 'unknown', ok: false, error: { code: 'REQUEST_READ_TIMEOUT', message: '请求读取超时' } }, true);
+      this.reply(socket, { id: 'unknown', ok: false, error: { code: 'WORKER_REQUEST_READ_TIMEOUT', message: 'Worker 请求读取超时' } }, true);
     }, READ_TIMEOUT_MS);
     socket.on('data', (chunk: string) => {
       if (handled) return;
@@ -62,7 +64,7 @@ export class ControlServer {
         clearTimeout(readTimeout);
         input = '';
         socket.pause();
-        this.reply(socket, { id: 'unknown', ok: false, error: { code: 'REQUEST_TOO_LARGE', message: '请求体超过 5MB' } }, true);
+        this.reply(socket, { id: 'unknown', ok: false, error: { code: 'WORKER_REQUEST_TOO_LARGE', message: 'Worker 请求体超过 5MB' } }, true);
         return;
       }
       const newline = input.indexOf('\n');
@@ -72,45 +74,44 @@ export class ControlServer {
       handled = true;
       clearTimeout(readTimeout);
       socket.pause();
-      void this.processLine(socket, line);
+      void this.process(socket, line);
     });
     socket.once('close', () => clearTimeout(readTimeout));
   }
 
-  private async processLine(socket: Socket, line: string): Promise<void> {
+  private async process(socket: Socket, line: string): Promise<void> {
     let id = 'unknown';
     try {
-      const raw = JSON.parse(line) as Record<string, unknown>;
-      if (typeof raw.id === 'string') id = raw.id;
-      const parsed = controlRequestSchema.parse(raw);
-      if (!this.validToken(parsed.token)) {
-        this.reply(socket, { id, ok: false, error: { code: 'UNAUTHORIZED', message: '本地控制令牌不匹配' } });
-        return;
+      const request = JSON.parse(line) as BrowserWorkerRequest;
+      id = typeof request.id === 'string' ? request.id : id;
+      if (!this.validToken(request.token)) throw new Error('WORKER_UNAUTHORIZED: Browser Worker 令牌不匹配');
+      if (request.protocolVersion !== BROWSER_WORKER_PROTOCOL_VERSION) {
+        throw new Error(`WORKER_PROTOCOL_MISMATCH: expected=${BROWSER_WORKER_PROTOCOL_VERSION}, received=${request.protocolVersion}`);
       }
-      const data = await this.handler(parsed);
-      this.reply(socket, { id, ok: true, data });
+      if (request.appVersion !== this.appVersion) {
+        throw new Error(`WORKER_VERSION_MISMATCH: expected=${this.appVersion}, received=${request.appVersion}`);
+      }
+      if (!request.action) throw new Error('WORKER_INVALID_REQUEST: Browser Worker 缺少 action');
+      this.reply(socket, { id, ok: true, data: await this.handler(request) });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const details = error && typeof error === 'object' && 'details' in error ? (error as { details?: unknown }).details : undefined;
-      this.reply(socket, {
-        id,
-        ok: false,
-        error: { code: errorCodeForMessage(message), message, ...(details === undefined ? {} : { details }) },
-      });
+      const code = message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] || 'WORKER_REQUEST_FAILED';
+      this.reply(socket, { id, ok: false, error: { code, message } });
     }
   }
 
-  private validToken(candidate: string): boolean {
+  private validToken(candidate: unknown): boolean {
+    if (typeof candidate !== 'string') return false;
     const expected = Buffer.from(this.token);
     const actual = Buffer.from(candidate);
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 
-  private reply(socket: Socket, response: ControlResponse, destroyAfterWrite = false): void {
+  private reply(socket: Socket, response: BrowserWorkerResponse, destroyAfterWrite = false): void {
     if (socket.destroyed) return;
     const output = `${JSON.stringify(response)}\n`;
     if (Buffer.byteLength(output, 'utf8') > MAX_RESPONSE_BYTES) {
-      socket.end(`${JSON.stringify({ id: response.id, ok: false, error: { code: 'RESPONSE_TOO_LARGE', message: '响应体超过 5MB' } satisfies ControlResponse['error'] })}\n`);
+      socket.end(`${JSON.stringify({ id: response.id, ok: false, error: { code: 'WORKER_RESPONSE_TOO_LARGE', message: 'Worker 响应体超过 5MB' } })}\n`);
       socket.once('finish', () => socket.destroy());
       return;
     }

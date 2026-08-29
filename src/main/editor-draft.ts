@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron';
+import { cdpClick } from './browser-automation-driver.js';
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -23,9 +24,7 @@ export async function resumeVisibleDraft(webContents: WebContents): Promise<bool
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     })()`);
     if (!point) return clicked;
-    webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(point.x), y: Math.round(point.y) });
-    webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
-    webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
+    await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
     clicked = true;
     await delay(900 + attempt * 400);
   }

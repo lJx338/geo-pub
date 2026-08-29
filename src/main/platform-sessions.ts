@@ -14,6 +14,8 @@ import { fillZhihuDraft } from './zhihu-adapter.js';
 import { fillNeteaseDraft } from './netease-adapter.js';
 import { publishFilledDraft } from './publish-adapter.js';
 import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
+import { BrowserAutomationDriver, runWithBrowserAutomationDriver } from './browser-automation-driver.js';
+import { PublishTaskJournalStore } from './publish-task-journal.js';
 
 const PLATFORM_URLS: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -30,9 +32,33 @@ interface ManagedView {
   partition: Electron.Session;
   loading: boolean;
   lastUsedAt: number;
+  recoveryTimer: NodeJS.Timeout | null;
+}
+
+type TaskAction = 'open' | 'inspect' | 'fill' | 'publish';
+type TaskPhase = NonNullable<DesktopStatus['activeTask']>['phase'];
+
+interface ActiveTask {
+  action: TaskAction;
+  platform: Platform;
+  phase: TaskPhase;
+  startedAt: number;
+  deadlineAt: number;
+}
+
+interface CookieSubscription {
+  session: Electron.Session;
+  listener: () => void;
+  snapshotTimer: NodeJS.Timeout | null;
 }
 
 const MAX_RESIDENT_PLATFORM_VIEWS = 1;
+const TASK_TIMEOUT_MS: Record<TaskAction, number> = {
+  open: 135_000,
+  inspect: 135_000,
+  fill: 210_000,
+  publish: 270_000,
+};
 
 export function pickEvictionCandidate(
   views: Array<{ platform: Platform; lastUsedAt: number }>,
@@ -58,6 +84,10 @@ export interface EvidenceCaptureResult {
   screenshotWarning: string | null;
 }
 
+export interface PlatformSessionsOptions {
+  layout?: 'dashboard' | 'execution';
+}
+
 export async function captureEvidenceBestEffort(
   operation: () => Promise<string>,
   platform: Platform,
@@ -76,12 +106,22 @@ export async function captureEvidenceBestEffort(
 export class PlatformSessions {
   private readonly views = new Map<Platform, ManagedView>();
   private activePlatform: Platform | null = null;
-  private operationTail: Promise<void> = Promise.resolve();
-  private pendingOperations = 0;
+  private activeTask: ActiveTask | null = null;
+  private readonly cookieSubscriptions = new Map<Platform, CookieSubscription>();
+  private readonly publishJournal = new PublishTaskJournalStore();
+  private maintenance: Pick<NonNullable<DesktopStatus['resourceDiagnostics']>, 'evidenceBytes' | 'cacheBytes' | 'lastMaintenanceAt'> = {};
 
-  constructor(private readonly window: BrowserWindow, private readonly version: string) {}
+  constructor(
+    private readonly window: BrowserWindow,
+    private readonly version: string,
+    private readonly options: PlatformSessionsOptions = {},
+  ) {}
 
-  async open(platform: Platform): Promise<PlatformStatus> {
+  async open(platform: Platform, mode: 'interactive' | 'background' = 'interactive'): Promise<PlatformStatus> {
+    return await this.runExclusive('open', platform, async () => await this.openInternal(platform, mode));
+  }
+
+  private async openInternal(platform: Platform, mode: 'interactive' | 'background' = 'interactive'): Promise<PlatformStatus> {
     let managed = this.views.get(platform);
     if (!managed) {
       this.evictIdleView(platform);
@@ -92,7 +132,7 @@ export class PlatformSessions {
           contextIsolation: false, // 必须设为 false，让 preload 可以直接修改页面环境
           sandbox: false, // 必须设为 false，让 preload 有足够权限
           nodeIntegration: false, // 仍然禁用 Node.js
-          backgroundThrottling: true,
+          backgroundThrottling: false,
           // 反检测配置
           webSecurity: true,
           allowRunningInsecureContent: false,
@@ -109,7 +149,7 @@ export class PlatformSessions {
       else setupStealthUserAgent(platformSession);
       await restorePlatformCookies(platformSession, platform);
 
-      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now() };
+      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now(), recoveryTimer: null };
       this.views.set(platform, managed);
       view.webContents.setWindowOpenHandler(({ url }) => {
         if (managed && !managed.loading && url !== managed.view.webContents.getURL()) {
@@ -124,9 +164,12 @@ export class PlatformSessions {
       view.webContents.on('render-process-gone', (_event, details) => {
         reportError(`[${platform}] renderer process gone: ${details.reason}`);
         if (managed && this.activePlatform === platform && !managed.view.webContents.isDestroyed()) {
-          setTimeout(() => {
-            if (!managed || managed.view.webContents.isDestroyed()) return;
-            void this.loadUrl(managed, managed.view.webContents.getURL() || PLATFORM_URLS[platform]);
+          if (managed.recoveryTimer) clearTimeout(managed.recoveryTimer);
+          const expectedView = managed.view;
+          managed.recoveryTimer = setTimeout(() => {
+            const current = this.views.get(platform);
+            if (!current || current.view !== expectedView || expectedView.webContents.isDestroyed()) return;
+            void this.loadUrl(current, current.view.webContents.getURL() || PLATFORM_URLS[platform]);
           }, 800);
         }
       });
@@ -139,20 +182,17 @@ export class PlatformSessions {
           void snapshotPlatformCookies(managed.partition, managed.platform).catch(() => undefined);
         }
       });
-      platformSession.cookies.on('changed', () => {
-        void platformSession.flushStorageData();
-        void snapshotPlatformCookies(platformSession, platform).catch(() => undefined);
-      });
+      this.ensureCookieSubscription(platformSession, platform);
 
       // 设置反检测脚本注入（多时机注入确保生效）
       if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
 
       this.attach(platform);
-      this.window.show();
+      this.setWindowMode(mode);
       await this.loadUrl(managed, PLATFORM_URLS[platform]);
     }
     if (this.activePlatform !== platform) this.attach(platform);
-    if (!this.window.isVisible()) this.window.show();
+    this.setWindowMode(mode);
     return this.platformStatus(platform);
   }
 
@@ -163,7 +203,7 @@ export class PlatformSessions {
       const active = this.views.get(this.activePlatform);
       if (active) {
         active.lastUsedAt = Date.now();
-        active.view.webContents.setBackgroundThrottling(true);
+        active.view.webContents.setBackgroundThrottling(false);
         this.window.contentView.removeChildView(active.view);
       }
     }
@@ -181,14 +221,23 @@ export class PlatformSessions {
   }
 
   async fillDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
-    return await this.runExclusive(() => this.fillDraftInternal(platform, title, html, coverPath, tags));
+    return await this.runExclusive('fill', platform, () => this.fillDraftInternal(platform, title, html, coverPath, tags));
   }
 
-  private async fillDraftInternal(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
-    await this.open(platform);
+  private async fillDraftInternal(
+    platform: Platform,
+    title: string,
+    html: string,
+    coverPath: string,
+    tags: string[],
+    taskDriver?: BrowserAutomationDriver,
+  ): Promise<unknown> {
+    await this.openInternal(platform, 'background');
+    this.setTaskPhase('filling');
     const managed = this.views.get(platform);
     if (!managed) throw new Error(`${platform} 浏览器创建失败`);
-    const result = platform === 'baijia'
+    const driver = taskDriver ?? new BrowserAutomationDriver(managed.view.webContents, platform);
+    const fill = async () => await driver.action('draft.fill', async () => platform === 'baijia'
       ? await fillBaijiaDraft(managed.view.webContents, title, html, coverPath)
       : platform === 'toutiao'
         ? await fillToutiaoDraft(managed.view.webContents, title, html, coverPath)
@@ -198,7 +247,8 @@ export class PlatformSessions {
             ? await fillPenguinDraft(managed.view.webContents, title, html, tags)
             : platform === 'sohu'
               ? await fillSohuDraft(managed.view.webContents, title, html)
-              : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath);
+              : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath), { captureOnFailure: true });
+    const result = taskDriver ? await fill() : await runWithBrowserAutomationDriver(driver, fill);
     if (platform === 'sohu') {
       const settingsEvidence = await this.captureEvidence(platform, 'fill-settings');
       await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
@@ -209,6 +259,7 @@ export class PlatformSessions {
         ...evidence,
         settingsScreenshotPath: settingsEvidence.screenshotPath,
         settingsScreenshotWarning: settingsEvidence.screenshotWarning,
+        automation: { actions: driver.results() },
       };
     }
     if (platform === 'toutiao') {
@@ -228,25 +279,60 @@ export class PlatformSessions {
         ...evidence,
         settingsScreenshotPath: settingsEvidence.screenshotPath,
         settingsScreenshotWarning: settingsEvidence.screenshotWarning,
+        automation: { actions: driver.results() },
       };
     }
     const evidence = await this.captureEvidence(platform, 'fill');
-    return { ...result, ...evidence };
+    return { ...result, ...evidence, automation: { actions: driver.results() } };
   }
 
   async publishDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
-    return await this.runExclusive(async () => {
-      const fill = await this.fillDraftInternal(platform, title, html, coverPath, tags);
+    return await this.runExclusive('publish', platform, async () => {
+      await this.openInternal(platform, 'background');
       const managed = this.views.get(platform);
       if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
-      const result = await publishFilledDraft(managed.view.webContents, platform, title);
-      const evidence = await this.captureEvidence(platform, `publish-${result.status}`);
-      return { fill, ...result, ...evidence };
+      let journal = await this.publishJournal.prepare({ platform, title, html, coverPath, tags });
+      if (journal.state === 'success') {
+        return { ...(journal.result as object), automation: { taskId: journal.taskId, reused: true, actions: [] } };
+      }
+      const driver = new BrowserAutomationDriver(managed.view.webContents, platform);
+      return await runWithBrowserAutomationDriver(driver, async () => {
+        const fill = await this.fillDraftInternal(platform, title, html, coverPath, tags, driver);
+        this.setTaskPhase('pre_publish');
+        const active = this.views.get(platform);
+        if (!active) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
+        const result = await driver.action('draft.publish', async () =>
+          await publishFilledDraft(active.view.webContents, platform, title, html, {
+          beforeIrreversibleClick: async () => {
+            this.setTaskPhase('dispatching');
+            journal = await this.publishJournal.update(journal, 'dispatching');
+          },
+          afterIrreversibleClick: async () => {
+            this.setTaskPhase('dispatched');
+            journal = await this.publishJournal.update(journal, 'dispatched');
+          },
+          }), { captureOnFailure: true });
+        const state = result.status === 'success' ? 'success'
+          : result.status === 'result_uncertain' ? 'result_uncertain' : 'action_required';
+        this.setTaskPhase('reconciling');
+        journal = await this.publishJournal.update(journal, state, result);
+        const evidence = await this.captureEvidence(platform, `publish-${result.status}`);
+        return {
+          fill,
+          ...result,
+          ...evidence,
+          automation: { taskId: journal.taskId, irreversibleDispatched: journal.state === 'dispatched', actions: driver.results() },
+        };
+      });
     });
   }
 
   async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
-    await this.open(platform);
+    return await this.runExclusive('inspect', platform, async () => await this.inspectInternal(platform));
+  }
+
+  private async inspectInternal(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
+    await this.openInternal(platform, 'background');
     const managed = this.views.get(platform);
     if (!managed) throw new Error(`PLATFORM_VIEW_MISSING: ${platform} 页面未能创建`);
     const details = await managed.view.webContents.executeJavaScript(`(() => {
@@ -321,13 +407,27 @@ export class PlatformSessions {
       pid: process.pid,
       ready: true,
       busy: this.isBusy(),
+      activeTask: this.activeTask ? {
+        action: this.activeTask.action,
+        platform: this.activeTask.platform,
+        phase: this.activeTask.phase,
+        startedAt: new Date(this.activeTask.startedAt).toISOString(),
+        deadlineAt: new Date(this.activeTask.deadlineAt).toISOString(),
+      } : null,
       activePlatform: this.activePlatform,
       platforms: PLATFORMS.map((platform) => this.platformStatus(platform)),
+      resourceDiagnostics: {
+        rssBytes: process.memoryUsage().rss,
+        heapUsedBytes: process.memoryUsage().heapUsed,
+        residentViews: this.views.size,
+        cookieSubscriptions: this.cookieSubscriptions.size,
+        ...this.maintenance,
+      },
     };
   }
 
   isBusy(): boolean {
-    return this.pendingOperations > 0;
+    return this.activeTask !== null;
   }
 
   async flushStorage(): Promise<void> {
@@ -335,6 +435,21 @@ export class PlatformSessions {
       partition.flushStorageData(),
       snapshotPlatformCookies(partition, platform),
     ]));
+  }
+
+  setResourceMaintenance(result: Pick<NonNullable<DesktopStatus['resourceDiagnostics']>, 'evidenceBytes' | 'cacheBytes' | 'lastMaintenanceAt'>): void {
+    this.maintenance = result;
+  }
+
+  async dispose(): Promise<void> {
+    await this.flushStorage().catch(() => undefined);
+    for (const managed of [...this.views.values()]) this.disposeManagedView(managed);
+    for (const subscription of this.cookieSubscriptions.values()) {
+      subscription.session.cookies.removeListener('changed', subscription.listener);
+      if (subscription.snapshotTimer) clearTimeout(subscription.snapshotTimer);
+    }
+    this.cookieSubscriptions.clear();
+    this.activeTask = null;
   }
 
   private platformStatus(platform: Platform): PlatformStatus {
@@ -364,12 +479,7 @@ export class PlatformSessions {
     if (!candidate) return;
     const managed = this.views.get(candidate);
     if (!managed) return;
-    if (this.activePlatform === candidate) {
-      this.window.contentView.removeChildView(managed.view);
-      this.activePlatform = null;
-    }
-    managed.view.webContents.close({ waitForBeforeUnload: false });
-    this.views.delete(candidate);
+    this.disposeManagedView(managed);
   }
 
   private async loadUrl(managed: ManagedView, url: string): Promise<void> {
@@ -395,8 +505,20 @@ export class PlatformSessions {
   }
 
   private viewBounds(): { x: number; y: number; width: number; height: number } {
+    if (this.options.layout === 'execution') {
+      const [width = 1440, height = 1000] = this.window.getContentSize();
+      return { x: 0, y: 0, width, height };
+    }
     const [width = 920, height = 640] = this.window.getContentSize();
     return { x: 220, y: 56, width: Math.max(320, width - 220), height: Math.max(240, height - 56) };
+  }
+
+  private setWindowMode(mode: 'interactive' | 'background'): void {
+    if (mode === 'interactive') {
+      if (!this.window.isVisible()) this.window.show();
+      return;
+    }
+    if (this.window.isVisible()) this.window.hide();
   }
 
   private async captureEvidence(platform: Platform, stage: string): Promise<EvidenceCaptureResult> {
@@ -412,17 +534,66 @@ export class PlatformSessions {
     }, platform, stage);
   }
 
-  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    this.pendingOperations += 1;
-    const previous = this.operationTail;
-    let release: () => void = () => {};
-    this.operationTail = new Promise<void>((resolve) => { release = resolve; });
-    await previous;
+  private async runExclusive<T>(action: TaskAction, platform: Platform, operation: () => Promise<T>): Promise<T> {
+    if (this.activeTask) {
+      const error = new Error(`TASK_BUSY: ${this.activeTask.action}/${this.activeTask.platform} 正在执行`) as Error & { details: unknown };
+      error.details = {
+        action: this.activeTask.action,
+        platform: this.activeTask.platform,
+        phase: this.activeTask.phase,
+        startedAt: new Date(this.activeTask.startedAt).toISOString(),
+        deadlineAt: new Date(this.activeTask.deadlineAt).toISOString(),
+      };
+      throw error;
+    }
+    const startedAt = Date.now();
+    this.activeTask = { action, platform, phase: 'opening', startedAt, deadlineAt: startedAt + TASK_TIMEOUT_MS[action] };
     try {
       return await operation();
     } finally {
-      this.pendingOperations -= 1;
-      release();
+      this.activeTask = null;
     }
+  }
+
+  private setTaskPhase(phase: TaskPhase): void {
+    if (this.activeTask) this.activeTask.phase = phase;
+  }
+
+  private ensureCookieSubscription(platformSession: Electron.Session, platform: Platform): void {
+    if (this.cookieSubscriptions.has(platform)) return;
+    const subscription: CookieSubscription = {
+      session: platformSession,
+      snapshotTimer: null,
+      listener: () => {
+        if (subscription.snapshotTimer) clearTimeout(subscription.snapshotTimer);
+        subscription.snapshotTimer = setTimeout(() => {
+          subscription.snapshotTimer = null;
+          void platformSession.flushStorageData();
+          void snapshotPlatformCookies(platformSession, platform).catch(() => undefined);
+        }, 2_000);
+      },
+    };
+    platformSession.cookies.on('changed', subscription.listener);
+    this.cookieSubscriptions.set(platform, subscription);
+  }
+
+  private disposeManagedView(managed: ManagedView): void {
+    if (managed.recoveryTimer) clearTimeout(managed.recoveryTimer);
+    managed.recoveryTimer = null;
+    if (this.activePlatform === managed.platform) {
+      this.window.contentView.removeChildView(managed.view);
+      this.activePlatform = null;
+    }
+    const contents = managed.view.webContents;
+    if (!contents.isDestroyed()) {
+      try {
+        if (contents.debugger.isAttached()) contents.debugger.detach();
+      } catch {
+        // The renderer may already have disconnected its debugging target.
+      }
+      contents.removeAllListeners();
+      contents.close({ waitForBeforeUnload: false });
+    }
+    this.views.delete(managed.platform);
   }
 }

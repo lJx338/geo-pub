@@ -74,8 +74,30 @@ export interface DesktopStatus {
   pid: number;
   ready: boolean;
   busy: boolean;
+  activeTask?: {
+    action: 'open' | 'inspect' | 'fill' | 'publish';
+    platform: Platform;
+    phase: 'opening' | 'filling' | 'pre_publish' | 'dispatching' | 'dispatched' | 'reconciling';
+    startedAt: string;
+    deadlineAt: string;
+  } | null;
+  resourceDiagnostics?: {
+    rssBytes: number;
+    heapUsedBytes: number;
+    residentViews: number;
+    cookieSubscriptions: number;
+    evidenceBytes?: number;
+    cacheBytes?: number;
+    lastMaintenanceAt?: string | null;
+  };
   activePlatform: Platform | null;
   platforms: PlatformStatus[];
+  worker?: {
+    state: 'starting' | 'ready' | 'unavailable';
+    pid: number | null;
+    protocolVersion: number;
+    lastError: string | null;
+  };
 }
 
 export type UpdatePhase = 'disabled' | 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'downloaded' | 'error';

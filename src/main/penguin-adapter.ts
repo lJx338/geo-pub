@@ -1,4 +1,5 @@
-import { clipboard, type WebContents } from 'electron';
+import type { WebContents } from 'electron';
+import { cdpClick, cdpKey } from './browser-automation-driver.js';
 import { contentMatchesExpected } from './content-verification.js';
 
 const PUBLISH_URL = 'https://om.qq.com/main/creation/article';
@@ -29,7 +30,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
-function normalizeTags(tags: string[]): string[] {
+export function normalizePenguinTags(tags: string[]): string[] {
   const result: string[] = [];
   const seen = new Set<string>();
   for (const raw of tags) {
@@ -89,17 +90,22 @@ async function readContent(webContents: WebContents, title: string, html: string
       .filter((element) => element !== titleElement && (element instanceof HTMLIFrameElement || visible(element)))
       .map((element) => element instanceof HTMLIFrameElement ? element.contentDocument?.body : element).filter(Boolean);
     const actualTitle = normalize(titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement ? titleElement.value : titleElement?.textContent);
-    const bodies = bodyTargets.map((target) => normalize(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target.value : target?.innerText || target?.textContent));
-    const cacheBodies = Object.keys(localStorage).filter((key) => key.startsWith('OM_ARTICLE_CACHE_')).map((key) => {
-      try { const value = JSON.parse(localStorage.getItem(key) || '{}'); return normalize(value.content || ''); } catch { return ''; }
+    const editorCandidates = bodyTargets.map((target) => ({
+      target,
+      body: normalize(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target.value : target?.innerText || target?.textContent),
+    }));
+    const cacheCandidates = Object.keys(localStorage).filter((key) => key.startsWith('OM_ARTICLE_CACHE_')).map((key) => {
+      try { const value = JSON.parse(localStorage.getItem(key) || '{}'); return { key, body: normalize(value.content || '') }; } catch { return { key, body: '' }; }
     });
     const pageBody = normalize(document.body?.innerText || document.body?.textContent || '');
-    const editorMatch = bodies.some((body) => contentMatchesExpected(body, expected));
-    const cacheMatch = cacheBodies.some((body) => contentMatchesExpected(body, expected));
+    const matchingEditor = editorCandidates.find(({ body }) => contentMatchesExpected(body, expected));
+    const matchingCache = cacheCandidates.find(({ body }) => contentMatchesExpected(body, expected));
+    const editorMatch = Boolean(matchingEditor);
+    const cacheMatch = Boolean(matchingCache);
     const pageMatch = contentMatchesExpected(pageBody, expected);
     const bodyVerificationSource = editorMatch ? 'editor' : cacheMatch ? 'draft_cache' : pageMatch ? 'page' : 'none';
-    const actualBody = [...bodies, ...cacheBodies].sort((left, right) => right.length - left.length)[0] || '';
-    const actualStructure = bodyTargets.map((target) => countStructure(target)).sort((left, right) => (right.headings + right.lists + right.quotes + right.dividers + right.images) - (left.headings + left.lists + left.quotes + left.dividers + left.images))[0] || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+    const actualBody = matchingEditor?.body || matchingCache?.body || (pageMatch ? pageBody : '');
+    const actualStructure = matchingEditor ? countStructure(matchingEditor.target) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
     const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
     const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
     if (bodyVerificationSource !== 'editor' && degradedBlocks.length === 0 && Object.values(expectedStructure).some(Boolean)) degradedBlocks.push('编辑器结构无法确认');
@@ -108,7 +114,7 @@ async function readContent(webContents: WebContents, title: string, html: string
 }
 
 async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none'; title: string; bodyTextLength: number; formatVerification: PenguinDraftFillResult['formatVerification'] }> {
-  const richPastePrepared = await webContents.executeJavaScript(`(() => {
+  await webContents.executeJavaScript(`(() => {
     const requestedTitle=${JSON.stringify(title)};
     const visible=(element)=>element instanceof HTMLElement&&element.getBoundingClientRect().width>0&&element.getBoundingClientRect().height>0;
     const titleElement=${JSON.stringify(TITLE_SELECTORS)}.flatMap((selector)=>[...document.querySelectorAll(selector)]).find(visible);
@@ -130,19 +136,6 @@ async function fillContent(webContents: WebContents, title: string, html: string
     const selection=bodyTarget.ownerDocument.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
     return bodyTarget.ownerDocument.activeElement===bodyTarget&&selection?.rangeCount===1;
   })()`);
-  if (richPastePrepared) {
-    const holderText = await webContents.executeJavaScript(`(() => { const holder=document.createElement('div');holder.innerHTML=${JSON.stringify(html)};return String(holder.innerText||holder.textContent||'').trim(); })()`);
-    const previousClipboard = { text: clipboard.readText(), html: clipboard.readHTML() };
-    try {
-      clipboard.write({ text: holderText, html });
-      webContents.paste();
-      await delay(1_200);
-      const pasted = await readContent(webContents, title, html);
-      if (pasted.titleFilled && pasted.bodyFilled && pasted.formatVerification.preserved) return pasted;
-    } finally {
-      clipboard.write(previousClipboard);
-    }
-  }
   await webContents.executeJavaScript(`(() => {
     const requestedTitle = ${JSON.stringify(title)}; const requestedHtml = ${JSON.stringify(html)};
     const holder = document.createElement('div'); holder.innerHTML = requestedHtml;
@@ -178,7 +171,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
 }
 
 async function applyTags(webContents: WebContents, rawTags: string[]): Promise<{ requested: string[]; applied: string[]; recommended: boolean }> {
-  const tags = normalizeTags(rawTags);
+  const tags = normalizePenguinTags(rawTags);
   const prepared = await webContents.executeJavaScript(`(async () => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
@@ -186,18 +179,12 @@ async function applyTags(webContents: WebContents, rawTags: string[]): Promise<{
     [...document.querySelectorAll('*')].filter((element) => element instanceof HTMLElement && element.scrollHeight > element.clientHeight + 20).forEach((element) => { element.scrollTop = element.scrollHeight; });
     await new Promise((resolve) => setTimeout(resolve, 700));
     const recommended = normalize(document.body?.innerText).includes('推荐标签');
-    const inputs = [...document.querySelectorAll('.omui-suggestion__input input.omui-suggestion__value,.omui-suggestion__input input,input[placeholder*="标签"],textarea[placeholder*="标签"]')].filter(visible);
-    const input = inputs.find((candidate) => {
-      let owner = candidate.parentElement;
-      for (let depth = 0; owner && depth < 7; depth += 1, owner = owner.parentElement) {
-        if (normalize(owner.textContent).includes('最多9个标签')) return true;
-      }
-      return false;
-    }) || inputs.at(-1);
+    const roots = [...document.querySelectorAll('.omui-suggestion__input.is--multi')].filter(visible);
+    const root = roots.find((candidate) => normalize(candidate.textContent).includes('最多9个标签')) || roots.at(-1);
+    const input = root?.querySelector('input.omui-suggestion__value,input,textarea');
     document.querySelectorAll('[data-geo-penguin-tag-input]').forEach((element) => element.removeAttribute('data-geo-penguin-tag-input'));
     if (input instanceof HTMLElement) input.setAttribute('data-geo-penguin-tag-input', 'true');
-    const owner = input?.closest('.omui-suggestion__input');
-    const clearPoints = owner instanceof HTMLElement ? [...owner.querySelectorAll('.omui-suggestion__choseclear')]
+    const clearPoints = root instanceof HTMLElement ? [...root.querySelectorAll('.omui-suggestion__choseclear')]
       .filter(visible).map((element) => { const rect = element.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; }) : [];
     return { found: input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement, recommended, clearPoints };
   })()`);
@@ -217,25 +204,51 @@ async function applyTags(webContents: WebContents, rawTags: string[]): Promise<{
       return document.activeElement === input;
     })()`);
     if (!focused) continue;
-    webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ENTER' });
-    webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ENTER' });
-    await delay(600);
-    const verified = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-      const input = document.querySelector('[data-geo-penguin-tag-input="true"]');
-      const owner = input?.closest('.omui-suggestion') || input?.parentElement?.parentElement;
-      if (!(owner instanceof HTMLElement)) return false;
-      return [...owner.querySelectorAll('span,li,button,[class*="tag"],[class*="Tag"]')]
-        .some((element) => normalize(element.textContent) === ${JSON.stringify(tag)});
-    })()`);
+    await cdpKey(webContents, 'Enter', 'Enter', 13);
+    let verified = false;
+    for (let attempt = 0; attempt < 5 && !verified; attempt += 1) {
+      await delay(250);
+      verified = await tagIsSelected(webContents, tag);
+    }
+    if (!verified) {
+      const candidate = await webContents.executeJavaScript(`(() => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+        const input = document.querySelector('[data-geo-penguin-tag-input="true"]');
+        const root = input?.closest('.omui-suggestion__input.is--multi');
+        const option = [...document.querySelectorAll('.omui-suggestion__option,[role="option"],li,button,div')]
+          .filter((element) => element !== root && visible(element) && normalize(element.textContent) === ${JSON.stringify(tag)})
+          .sort((left, right) => left.getBoundingClientRect().width * left.getBoundingClientRect().height - right.getBoundingClientRect().width * right.getBoundingClientRect().height)[0];
+        if (!(option instanceof HTMLElement)) return null;
+        const rect = option.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      })()`);
+      if (candidate) {
+        await clickAt(webContents, candidate);
+        for (let attempt = 0; attempt < 5 && !verified; attempt += 1) {
+          await delay(250);
+          verified = await tagIsSelected(webContents, tag);
+        }
+      }
+    }
     if (verified) applied.push(tag);
   }
   return { requested: tags, applied, recommended: prepared.recommended };
 }
 
+async function tagIsSelected(webContents: WebContents, tag: string): Promise<boolean> {
+  return await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const input = document.querySelector('[data-geo-penguin-tag-input="true"]');
+      const root = input?.closest('.omui-suggestion__input.is--multi');
+      if (!(root instanceof HTMLElement)) return false;
+      return [...root.querySelectorAll('.omui-suggestion__chose')]
+        .some((element) => normalize(element.textContent).replace(/[×x]$/i, '').trim() === ${JSON.stringify(tag)});
+    })()`);
+}
+
 async function clickAt(webContents: WebContents, point: { x: number; y: number }): Promise<void> {
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
+  await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
 }
 
 async function ensureAiDeclaration(webContents: WebContents): Promise<boolean> {

@@ -37,6 +37,9 @@ try {
   if (initial.scrollWidth > initial.width || initial.scrollHeight > initial.height) throw new Error(`initial layout overflows: ${JSON.stringify(initial)}`);
   if (initial.connectionState !== 'ready' || initial.updateLabel !== '不可用') throw new Error(`initial status is unclear: ${JSON.stringify(initial)}`);
 
+  const workerStatus = await window.evaluate(async () => await window.geoPublisher.status());
+  if (workerStatus.worker?.state !== 'ready' || !workerStatus.worker.pid) throw new Error(`browser worker is not ready: ${JSON.stringify(workerStatus.worker)}`);
+
   if (process.platform === 'win32') {
     const menuVisible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible());
     if (menuVisible) throw new Error('Windows menu bar should be hidden');
