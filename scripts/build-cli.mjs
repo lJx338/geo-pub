@@ -21,14 +21,19 @@ await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await run('go', ['mod', 'download'], { cwd: join(root, 'cli') });
 
-const flags = `-s -w -X main.version=${packageJson.version}`;
+const coreFlags = `-s -w -X main.version=${packageJson.version}`;
 for (const target of [
-  { os: 'darwin', arch: 'arm64', name: 'geo-publisher-darwin-arm64' },
-  { os: 'windows', arch: 'amd64', name: 'geo-publisher-windows-amd64.exe' },
+  { os: 'darwin', arch: 'arm64', launcher: 'geo-publisher-launcher-darwin-arm64', core: 'geo-publisher-core-darwin-arm64' },
+  { os: 'windows', arch: 'amd64', launcher: 'geo-publisher-launcher-windows-amd64.exe', core: 'geo-publisher-core-windows-amd64.exe' },
 ]) {
-  await run('go', ['build', '-trimpath', `-ldflags=${flags}`, '-o', join(output, target.name), '.'], {
+  const environment = { ...process.env, GOOS: target.os, GOARCH: target.arch };
+  await run('go', ['build', '-trimpath', '-ldflags=-s -w', '-o', join(output, target.launcher), './launcher'], {
     cwd: join(root, 'cli'),
-    env: { ...process.env, GOOS: target.os, GOARCH: target.arch },
+    env: environment,
+  });
+  await run('go', ['build', '-trimpath', `-ldflags=${coreFlags}`, '-o', join(output, target.core), '.'], {
+    cwd: join(root, 'cli'),
+    env: environment,
   });
 }
 

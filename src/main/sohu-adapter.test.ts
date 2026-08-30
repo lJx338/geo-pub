@@ -1,7 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { buildSohuAiDeclarationStateScriptForTest, buildSohuContentScriptForTest } from './sohu-adapter.js';
+import {
+  buildSohuAiDeclarationStateScriptForTest,
+  buildSohuContentScriptForTest,
+  buildSohuDraftSaveStateScriptForTest,
+  buildSohuPublishEntryPointScriptForTest,
+} from './sohu-adapter.js';
 
 describe('Sohu editor compatibility', () => {
+  it('uses the logged-in publish entry when a reused tab is on the content list', () => {
+    const script = buildSohuPublishEntryPointScriptForTest();
+    expect(script).toContain("normalize(element.textContent) === '发布内容'");
+    expect(script).toContain('button.publish-btn');
+    expect(script).toContain('getBoundingClientRect');
+  });
+
+  it('waits for the platform save indicator before publishing', () => {
+    const script = buildSohuDraftSaveStateScriptForTest();
+    expect(script).toContain('已保存');
+    expect(script).toContain('保存中');
+    expect(script).toContain('Boolean(saved) && !saving');
+  });
+
   it('discovers more than the legacy ql-editor selector', () => {
     const script = buildSohuContentScriptForTest('标题', '<p>正文内容</p>');
     expect(script).toContain(".ql-editor,.ProseMirror,.article-editor,[data-editor]");

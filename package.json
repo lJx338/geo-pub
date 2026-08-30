@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "GEO Publisher desktop application with a built-in persistent browser",
   "author": "Lingxi",
@@ -71,7 +71,8 @@
           "from": "dist/cli",
           "to": "cli",
           "filter": [
-            "geo-publisher-darwin-arm64"
+            "geo-publisher-launcher-darwin-arm64",
+            "geo-publisher-core-darwin-arm64"
           ]
         }
       ],
@@ -87,7 +88,8 @@
           "from": "dist/cli",
           "to": "cli",
           "filter": [
-            "geo-publisher-windows-amd64.exe"
+            "geo-publisher-launcher-windows-amd64.exe",
+            "geo-publisher-core-windows-amd64.exe"
           ]
         }
       ],

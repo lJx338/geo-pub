@@ -9,7 +9,7 @@ Use the desktop application as the execution engine. Do not use browser extensio
 
 ## Resolve the CLI
 
-The desktop's “连接 WorkBuddy” action installs this Skill into WorkBuddy's user Skill directory and writes the current CLI path into the connection prompt. Reload Skills after connecting. Run `geo-publisher doctor` when the command is available. Otherwise read `discovery.json` from the operating system's GEO Publisher user-data directory and invoke its `cliPath`:
+The desktop's “连接 WorkBuddy” action installs this Skill into WorkBuddy's user Skill directory and writes a fixed CLI launcher path into the connection prompt. The launcher resolves the currently active Core CLI from `discovery.json` on every invocation. A WorkBuddy conversation may keep an old Skill in memory after GEO Publisher updates, so resolve and verify the current installation at the start of every task. Reload Skills after connecting or after a protocol mismatch. Run `geo-publisher doctor` when the command is available. Otherwise read `discovery.json` from the operating system's GEO Publisher user-data directory and invoke its `launcherPath` (or legacy `cliPath`):
 
 - macOS: resolve from the current user's `~/Library/Application Support/GEO Publisher Desktop` directory.
 - Windows: resolve from `%LOCALAPPDATA%\GEO Publisher Desktop`.
@@ -17,7 +17,7 @@ The desktop's “连接 WorkBuddy” action installs this Skill into WorkBuddy's
 On Windows, paths may contain spaces, `&`, parentheses, or non-ASCII characters. In PowerShell invoke the exact path as a single-quoted command path with the call operator, for example:
 
 ```powershell
-& 'C:\\Users\\<user>\\AppData\\Local\\GEO Publisher Desktop\\bin\\versions\\0.2.3\\geo-publisher.exe' doctor --json
+& 'C:\\Users\\<user>\\AppData\\Local\\GEO Publisher Desktop\\bin\\geo-publisher.exe' doctor --json
 ```
 
 Do not use `Start-Process` when the JSON response is needed, and do not remove or interpret backslashes from `discovery.json`.
@@ -26,8 +26,8 @@ Never copy a path or user name from another computer. If discovery is missing, a
 
 ## Execute a request
 
-1. Run `doctor`. If the desktop is not connected, run `start`, then `doctor` again.
-2. Run `instructions --json` and follow the current desktop version's workflow.
+1. Run `doctor`. Confirm `compatible=true` and `protocolMatch=true` when they are present. `versionMatch` may be false during a compatible desktop update and is diagnostic only. If the older CLI does not report these fields, continue with `instructions --json`; it is supported during this migration. If compatibility is false or the CLI reports `CONTROL_PROTOCOL_MISMATCH`, run the desktop's “连接 WorkBuddy” action, reload the Skill, and start a fresh task turn before continuing.
+2. Run `instructions --json` and follow the current desktop version's workflow. Do not cache the CLI path, discovery record, schema, or instructions across desktop updates.
 3. Run `validate` with the article JSON before any browser operation.
 4. For requests such as “看看效果”, “填充”, “预览”, or “不要发布”, run `fill` only.
 5. Run `publish` only when the user explicitly asks for real publishing. Set `confirmPublish` to `true` in that request.
@@ -58,3 +58,7 @@ Use these platform mappings:
 - For `result_uncertain`, query status or reconcile the management page. Never click publish again automatically.
 - Never weaken required input validation to force a task through.
 - Preserve complete JSON errors when asking WorkBuddy or technical support for help.
+
+## Evidence policy
+
+Successful `fill` and `publish` requests use the desktop's default `minimal` evidence mode and do not create screenshots. Failed actions, `action_required`, and `result_uncertain` outcomes always retain a local screenshot when the display surface supports capture. Beta and development runs can opt into successful-operation screenshots by starting the desktop with `GEO_EVIDENCE_MODE=standard` or `GEO_EVIDENCE_MODE=debug`. Evidence is stored locally and is not uploaded by the CLI.

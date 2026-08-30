@@ -132,6 +132,20 @@ export class BrowserWorkerClient {
     return status;
   }
 
+  async show(): Promise<DesktopStatus> {
+    await this.ensureStarted();
+    const status = await this.request<DesktopStatus>('worker.show', undefined, 5_000);
+    this.latestStatus = status;
+    return status;
+  }
+
+  async clearTaskHistory(): Promise<DesktopStatus> {
+    await this.ensureStarted();
+    const status = await this.request<DesktopStatus>('history.clear', undefined, 5_000);
+    this.latestStatus = status;
+    return status;
+  }
+
   async open(platform: Platform): Promise<PlatformStatus> {
     await this.ensureStarted();
     return await this.requestTask('platform.open', { platform }, 135_000);
@@ -244,6 +258,10 @@ export class BrowserWorkerClient {
   }
 
   private markUnavailable(error: string | null): void {
+    // A worker exit invalidates every status snapshot, including an in-flight
+    // task. Keeping the old snapshot would make callers observe a phantom
+    // busy task and reject the next request with TASK_BUSY after recovery.
+    this.latestStatus = null;
     this.health = {
       state: 'unavailable', pid: null, protocolVersion: BROWSER_WORKER_PROTOCOL_VERSION, lastError: error,
     };

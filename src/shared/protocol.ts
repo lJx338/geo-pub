@@ -2,12 +2,24 @@ import { z } from 'zod';
 
 export const PLATFORMS = ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease'] as const;
 export type Platform = (typeof PLATFORMS)[number];
+export const CONTROL_PROTOCOL_VERSION = 1;
+/** Protocol 0 is the released CLI format before explicit version metadata. */
+export const MIN_SUPPORTED_CONTROL_PROTOCOL_VERSION = 0;
+export const CONTROL_CAPABILITIES = [
+  'status',
+  'platform.open',
+  'platform.inspect',
+  'draft.fill',
+  'draft.publish',
+] as const;
 
 export const platformSchema = z.enum(PLATFORMS);
 
 const requestBase = z.object({
   id: z.string().min(1),
   token: z.string().min(32),
+  protocolVersion: z.number().int().optional().default(MIN_SUPPORTED_CONTROL_PROTOCOL_VERSION),
+  clientVersion: z.string().min(1).optional(),
 });
 
 const articleRequest = {
@@ -68,6 +80,27 @@ export interface PlatformStatus {
   title: string;
 }
 
+export type PublishTaskAction = 'open' | 'inspect' | 'fill' | 'publish';
+export type PublishTaskPhase = 'opening' | 'filling' | 'pre_publish' | 'dispatching' | 'dispatched' | 'reconciling';
+export type PublishTaskStatus = 'running' | 'success' | 'failed' | 'action_required' | 'result_uncertain';
+
+/** A compact, user-facing task record. Article content is never persisted here. */
+export interface PublishTaskSnapshot {
+  taskId: string;
+  platform: Platform;
+  action: PublishTaskAction;
+  phase: PublishTaskPhase;
+  status: PublishTaskStatus;
+  title?: string;
+  startedAt: string;
+  finishedAt?: string;
+  elapsedMs?: number;
+  message?: string;
+  errorCode?: string;
+  evidencePath?: string;
+  lastKnownUrl?: string;
+}
+
 export interface DesktopStatus {
   version: string;
   cliPath?: string | null;
@@ -75,12 +108,15 @@ export interface DesktopStatus {
   ready: boolean;
   busy: boolean;
   activeTask?: {
-    action: 'open' | 'inspect' | 'fill' | 'publish';
+    taskId: string;
+    action: PublishTaskAction;
     platform: Platform;
-    phase: 'opening' | 'filling' | 'pre_publish' | 'dispatching' | 'dispatched' | 'reconciling';
+    phase: PublishTaskPhase;
+    title?: string;
     startedAt: string;
     deadlineAt: string;
   } | null;
+  recentTasks: PublishTaskSnapshot[];
   resourceDiagnostics?: {
     rssBytes: number;
     heapUsedBytes: number;

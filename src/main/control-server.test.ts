@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { errorCodeForMessage } from './control-server.js';
+import { errorCodeForMessage, supportsControlProtocol } from './control-server.js';
 
 describe('control error codes', () => {
   it('preserves a structured adapter error prefix', () => {
@@ -8,5 +8,12 @@ describe('control error codes', () => {
 
   it('uses the generic code for an unstructured exception', () => {
     expect(errorCodeForMessage('unexpected failure')).toBe('CONTROL_REQUEST_FAILED');
+  });
+
+  it('accepts released legacy and current CLI protocol versions only', () => {
+    expect(supportsControlProtocol(undefined)).toBe(true);
+    expect(supportsControlProtocol(1)).toBe(true);
+    expect(supportsControlProtocol(2)).toBe(false);
+    expect(supportsControlProtocol('1')).toBe(false);
   });
 });

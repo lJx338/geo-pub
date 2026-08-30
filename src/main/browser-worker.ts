@@ -1,4 +1,5 @@
-import { app, BrowserWindow, Menu, powerSaveBlocker, session } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, powerSaveBlocker, screen, session } from 'electron';
+import { join } from 'node:path';
 import { PLATFORMS, type Platform } from '../shared/protocol.js';
 import type { BrowserWorkerRequest } from './browser-worker-protocol.js';
 import {
@@ -13,6 +14,7 @@ import { reportError } from './logging.js';
 import { PlatformSessions } from './platform-sessions.js';
 import { runResourceMaintenance } from './resource-maintenance.js';
 import { setupStealthSession } from './stealth.js';
+import { constrainWorkerWindowToWorkArea, fitWorkerWindowToWorkArea } from './worker-window-layout.js';
 
 function environment(name: string): string {
   const value = process.env[name]?.trim();
@@ -37,9 +39,9 @@ export async function runBrowserWorker(version: string): Promise<void> {
   if (process.platform === 'win32') Menu.setApplicationMenu(null);
   setupStealthSession(session.defaultSession);
 
+  const initialBounds = fitWorkerWindowToWorkArea(screen.getPrimaryDisplay().workArea);
   const window = new BrowserWindow({
-    width: 1440,
-    height: 1000,
+    ...initialBounds,
     show: false,
     title: 'GEO Publisher Browser Worker',
     skipTaskbar: true,
@@ -48,18 +50,59 @@ export async function runBrowserWorker(version: string): Promise<void> {
       sandbox: true,
       nodeIntegration: false,
       backgroundThrottling: false,
+      preload: join(__dirname, '..', 'worker-tabs-preload.cjs'),
     },
   });
+  const fitWindowToCurrentDisplay = (): void => {
+    if (window.isDestroyed()) return;
+    const display = screen.getDisplayMatching(window.getBounds());
+    const next = constrainWorkerWindowToWorkArea(window.getBounds(), display.workArea);
+    const current = window.getBounds();
+    if (current.x !== next.x || current.y !== next.y || current.width !== next.width || current.height !== next.height) {
+      window.setBounds(next);
+    }
+  };
+  window.on('move', fitWindowToCurrentDisplay);
+  screen.on('display-metrics-changed', (_event, display, changedMetrics) => {
+    if (changedMetrics.includes('workArea') || changedMetrics.includes('bounds') || changedMetrics.includes('scaleFactor')) {
+      const currentDisplay = screen.getDisplayMatching(window.getBounds());
+      if (currentDisplay.id === display.id) fitWindowToCurrentDisplay();
+    }
+  });
+  screen.on('display-added', fitWindowToCurrentDisplay);
+  screen.on('display-removed', fitWindowToCurrentDisplay);
   window.on('close', (event) => {
     event.preventDefault();
     window.hide();
   });
-  const sessions = new PlatformSessions(window, version, { layout: 'execution' });
+  const sessions = new PlatformSessions(window, version, { layout: 'execution', tabBarHeight: 48 });
+  await sessions.loadTaskHistory();
+  window.on('hide', () => sessions.scheduleIdleViewDisposal());
+  window.on('show', () => sessions.cancelIdleViewDisposal());
+  window.on('resize', () => sessions.resize());
+  const publishTabStatus = (): void => {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send('worker-tabs-status', sessions.status());
+    }
+  };
+  ipcMain.on('worker-tabs-select-platform', (_event, platform: Platform) => {
+    if (!PLATFORMS.includes(platform)) return;
+    const operation = sessions.open(platform, 'interactive');
+    publishTabStatus();
+    void operation
+      .then(() => publishTabStatus())
+      .catch((error) => reportError('Worker tab open failed:', error));
+  });
+  ipcMain.handle('worker-tabs-status', () => sessions.status());
+  await window.loadFile(join(__dirname, '..', 'worker-tabs', 'index.html'));
   let lastMaintenanceAt = 0;
   const runMaintenance = async (): Promise<void> => {
     if (sessions.isBusy()) return;
     try {
-      const result = await runResourceMaintenance(PLATFORMS.map((platform) => session.fromPartition(`persist:geo-publisher-${platform}`)));
+      const platformSessions = new Map(PLATFORMS.map((platform) => [platform, session.fromPartition(`persist:geo-publisher-${platform}`)]));
+      const activePlatform = sessions.status().activePlatform;
+      const protectedSession = window.isVisible() && activePlatform ? platformSessions.get(activePlatform) ?? null : null;
+      const result = await runResourceMaintenance([...platformSessions.values()], protectedSession);
       lastMaintenanceAt = Date.parse(result.ranAt);
       sessions.setResourceMaintenance({
         evidenceBytes: result.evidenceBytes,
@@ -98,10 +141,53 @@ export async function runBrowserWorker(version: string): Promise<void> {
         worker: { state: 'ready', pid: process.pid, protocolVersion: BROWSER_WORKER_PROTOCOL_VERSION, lastError: null },
       };
     }
-    if (request.action === 'platform.open') return await sessions.open(requiredPlatform(request), 'interactive');
-    if (request.action === 'platform.inspect') return await sessions.inspect(requiredPlatform(request));
-    if (request.action === 'draft.fill') return await withPowerProtection(() => sessions.fillDraft(...articleArgs(request)));
-    if (request.action === 'draft.publish') return await withPowerProtection(() => sessions.publishDraft(...articleArgs(request)));
+    if (request.action === 'worker.show') {
+      window.show();
+      window.focus();
+      publishTabStatus();
+      return sessions.status();
+    }
+    if (request.action === 'history.clear') {
+      await sessions.clearCompletedTaskHistory();
+      publishTabStatus();
+      return sessions.status();
+    }
+    if (request.action === 'platform.open') {
+      const operation = sessions.open(requiredPlatform(request), 'interactive');
+      publishTabStatus();
+      try {
+        return await operation;
+      } finally {
+        publishTabStatus();
+      }
+    }
+    if (request.action === 'platform.inspect') {
+      const operation = sessions.inspect(requiredPlatform(request));
+      publishTabStatus();
+      try {
+        return await operation;
+      } finally {
+        publishTabStatus();
+      }
+    }
+    if (request.action === 'draft.fill') {
+      const operation = withPowerProtection(() => sessions.fillDraft(...articleArgs(request)));
+      publishTabStatus();
+      try {
+        return await operation;
+      } finally {
+        publishTabStatus();
+      }
+    }
+    if (request.action === 'draft.publish') {
+      const operation = withPowerProtection(() => sessions.publishDraft(...articleArgs(request)));
+      publishTabStatus();
+      try {
+        return await operation;
+      } finally {
+        publishTabStatus();
+      }
+    }
     if (request.action === 'shutdown') {
       clearInterval(maintenanceTimer);
       await sessions.dispose();

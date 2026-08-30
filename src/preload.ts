@@ -18,12 +18,15 @@ if (typeof window !== 'undefined') {
 
 contextBridge.exposeInMainWorld('geoPublisher', {
   status: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:status'),
+  showWorker: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:show-worker'),
   openPlatform: (platform: Platform): Promise<PlatformStatus> => ipcRenderer.invoke('geo:open-platform', platform),
   workBuddyStatus: (): Promise<WorkBuddyIntegrationStatus> => ipcRenderer.invoke('geo:workbuddy-status'),
   connectWorkBuddy: (): Promise<WorkBuddyIntegrationStatus & { prompt: string }> => ipcRenderer.invoke('geo:workbuddy-connect'),
   updateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('geo:update-status'),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('geo:update-check'),
   installUpdate: (): Promise<{ accepted: boolean; message: string }> => ipcRenderer.invoke('geo:update-install'),
+  clearTaskHistory: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:history-clear'),
+  openEvidence: (path: string): Promise<{ opened: boolean; message?: string }> => ipcRenderer.invoke('geo:evidence-open', path),
   onUpdateStatus: (listener: (status: UpdateStatus) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
     ipcRenderer.on('geo:update-status-changed', handler);

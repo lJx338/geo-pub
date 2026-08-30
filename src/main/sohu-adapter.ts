@@ -22,6 +22,7 @@ export interface SohuDraftFillResult {
   summaryUnavailable: boolean;
   aiContentFound: boolean;
   aiContentSelected: boolean;
+  draftSaveState: 'saved';
   publishButtonDetected: boolean;
   url: string;
 }
@@ -31,6 +32,49 @@ function delay(ms: number): Promise<void> {
 }
 
 const SOHU_AI_DECLARATION_LABEL = '含有AI生成内容';
+
+function publishEntryPointScript(): string {
+  return `(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.pointerEvents !== 'none';
+    })();
+    const candidates = [...document.querySelectorAll('button,a,[role="button"],li')]
+      .filter(visible)
+      .filter((element) => normalize(element.textContent) === '发布内容')
+      .sort((left, right) => {
+        const leftPrimary = left.matches('button.publish-btn,.publish-btn') ? 1 : 0;
+        const rightPrimary = right.matches('button.publish-btn,.publish-btn') ? 1 : 0;
+        return rightPrimary - leftPrimary;
+      });
+    const target = candidates[0];
+    if (!(target instanceof HTMLElement)) return null;
+    target.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const rect = target.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`;
+}
+
+export function buildSohuPublishEntryPointScriptForTest(): string {
+  return publishEntryPointScript();
+}
+
+function draftSaveStateScript(): string {
+  return `(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const text = normalize(document.body?.innerText || document.body?.textContent || '');
+    const saving = text.match(/(?:正在)?保存中|正在保存/)?.[0] || '';
+    const saved = text.match(/(?:\\d{1,2}:\\d{2}\\s*)?已保存/)?.[0] || '';
+    return { saved: Boolean(saved) && !saving, saving: Boolean(saving), label: saving || saved };
+  })()`;
+}
+
+export function buildSohuDraftSaveStateScriptForTest(): string {
+  return draftSaveStateScript();
+}
 
 function aiDeclarationStateScript(scroll = false, activate = false): string {
   return `(() => {
@@ -167,10 +211,12 @@ export function buildSohuContentScriptForTest(title: string, html: string, write
 }
 
 export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
-  if (!webContents.getURL().includes('/contentManagement/news/addarticle')) await webContents.loadURL(PUBLISH_URL);
-  await resumeVisibleDraft(webContents);
   const deadline = Date.now() + timeoutMs;
   let streak = 0;
+  let entryAttempts = 0;
+  let directNavigationAttempted = false;
+  let nextEntryAttemptAt = 0;
+  let resumeAttempted = false;
   while (Date.now() < deadline) {
     const state = await webContents.executeJavaScript(`(() => {
       const visible = (element) => Boolean(element && typeof element.getBoundingClientRect === 'function' && (() => { const rect = element.getBoundingClientRect(); const view = element.ownerDocument?.defaultView || window; const style = view.getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })());
@@ -184,10 +230,58 @@ export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120
     if (state.loginBlocked) throw new Error('SOHU_LOGIN_REQUIRED: 请在桌面端完成搜狐号登录');
     if (state.blocking) throw new Error('SOHU_VERIFICATION_REQUIRED: 搜狐号显示了可见验证码或安全验证');
     streak = state.ready ? streak + 1 : 0;
-    if (streak >= 3) return;
+    if (streak >= 3 && !resumeAttempted) {
+      resumeAttempted = true;
+      const resumed = await resumeVisibleDraft(webContents);
+      if (resumed) {
+        // Resuming a saved draft swaps the editor's Vue/Quill model. Wait for
+        // the replacement editor to settle before any content is overwritten.
+        streak = 0;
+        await delay(1_500);
+        continue;
+      }
+    }
+    if (streak >= 3) {
+      return;
+    }
+
+    const currentUrl = webContents.getURL();
+    if (!currentUrl.includes('/contentManagement/news/addarticle') && Date.now() >= nextEntryAttemptAt) {
+      const point = await webContents.executeJavaScript(publishEntryPointScript()).catch(() => null);
+      if (point && entryAttempts < 3) {
+        await clickPoint(webContents, point);
+        entryAttempts += 1;
+        nextEntryAttemptAt = Date.now() + 3_000;
+        await delay(900);
+        continue;
+      }
+      if (!directNavigationAttempted) {
+        directNavigationAttempted = true;
+        try {
+          await webContents.loadURL(PUBLISH_URL);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!/ERR_ABORTED \(-3\)/.test(message)) throw error;
+        }
+        await delay(700);
+        continue;
+      }
+    }
     await delay(700);
   }
   throw new Error('SOHU_EDITOR_NOT_READY: 搜狐号编辑器 120 秒内未就绪');
+}
+
+async function waitForSohuDraftSaved(webContents: WebContents, timeoutMs = 20_000): Promise<'saved'> {
+  const deadline = Date.now() + timeoutMs;
+  let savedStreak = 0;
+  while (Date.now() < deadline) {
+    const state = await webContents.executeJavaScript(draftSaveStateScript());
+    savedStreak = state.saved ? savedStreak + 1 : 0;
+    if (savedStreak >= 2) return 'saved';
+    await delay(500);
+  }
+  throw new Error('SOHU_DRAFT_SAVE_TIMEOUT: 搜狐号草稿未在限定时间内确认保存');
 }
 
 async function fillContent(webContents: WebContents, title: string, html: string): Promise<{ titleFilled: boolean; bodyFilled: boolean; bodyVerificationSource: 'editor' | 'page' | 'none'; title: string; bodyTextLength: number; formatVerification: SohuDraftFillResult['formatVerification'] }> {
@@ -233,6 +327,7 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
   const stableContent = await webContents.executeJavaScript(contentScript(title, html, false));
   if (!stableContent.titleFilled || !stableContent.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}`);
   if (!stableContent.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${stableContent.formatVerification.degradedBlocks.join('、')}`);
+  const draftSaveState = await waitForSohuDraftSaved(webContents);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim(); const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     const publishButtonDetected = [...document.querySelectorAll('li.publish-report-btn,li[report-attr],button,[role="button"]')].filter(visible).some((element) => { const text = normalize(element.textContent); return text === '发布' && !text.includes('定时发布') && !element.hasAttribute('disabled'); });
@@ -240,5 +335,5 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
     return { publishButtonDetected, url: location.href };
   })()`);
   await delay(500);
-  return { ...content, ...stableContent, ...optional, ...finalState };
+  return { ...content, ...stableContent, ...optional, draftSaveState, ...finalState };
 }

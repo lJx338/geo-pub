@@ -2,7 +2,14 @@ import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { EVIDENCE_MAX_AGE_MS, maintainEvidence, removeStaleProjectPartitions } from './resource-maintenance.js';
+import {
+  CACHE_LIMIT_BYTES,
+  CACHE_TARGET_BYTES,
+  EVIDENCE_MAX_AGE_MS,
+  maintainEvidence,
+  maintainSessionCaches,
+  removeStaleProjectPartitions,
+} from './resource-maintenance.js';
 
 const directories: string[] = [];
 
@@ -34,6 +41,24 @@ describe('evidence maintenance', () => {
     await expect(readFile(failure, 'utf8')).resolves.toBe('failure');
     expect(result).toEqual({ bytes: 'failure'.length, deleted: 1 });
   });
+
+  it('caps recent evidence by deleting the oldest files first', async () => {
+    const root = await temporaryDirectory();
+    const day = join(root, '2026-08-30');
+    await mkdir(day);
+    const older = join(day, '1-zhihu-fill.png');
+    const newer = join(day, '2-toutiao-fill.png');
+    await writeFile(older, '1234');
+    await writeFile(newer, '5678');
+    const oldTime = new Date(Date.now() - 60_000);
+    await utimes(older, oldTime, oldTime);
+
+    const result = await maintainEvidence(root, Date.now(), 4);
+
+    expect(result).toEqual({ bytes: 4, deleted: 1 });
+    await expect(stat(older)).rejects.toThrow();
+    await expect(readFile(newer, 'utf8')).resolves.toBe('5678');
+  });
 });
 
 describe('stale project partitions', () => {
@@ -64,5 +89,54 @@ describe('stale project partitions', () => {
 
     await expect(removeStaleProjectPartitions(partitions, join(root, 'missing.json'))).resolves.toBe(0);
     await expect(stat(stale)).resolves.toBeDefined();
+  });
+});
+
+describe('session cache maintenance', () => {
+  function cacheSession(bytes: number) {
+    return {
+      bytes,
+      clearCacheCalls: 0,
+      clearCodeCacheCalls: 0,
+      async getCacheSize() { return this.bytes; },
+      async clearCache() { this.clearCacheCalls += 1; this.bytes = 0; },
+      async clearCodeCaches() { this.clearCodeCacheCalls += 1; },
+    };
+  }
+
+  it('does not clear caches below the 1 GB soft limit', async () => {
+    const first = cacheSession(CACHE_LIMIT_BYTES / 2);
+    const second = cacheSession(CACHE_LIMIT_BYTES / 2);
+
+    await expect(maintainSessionCaches([first, second])).resolves.toEqual({
+      cacheBytes: CACHE_LIMIT_BYTES,
+      cleared: false,
+    });
+    expect(first.clearCacheCalls + second.clearCacheCalls).toBe(0);
+  });
+
+  it('clears the largest idle sessions only until the cache reaches the 800 MB target', async () => {
+    const largest = cacheSession(400 * 1024 * 1024);
+    const middle = cacheSession(350 * 1024 * 1024);
+    const smallest = cacheSession(300 * 1024 * 1024);
+
+    await expect(maintainSessionCaches([smallest, largest, middle])).resolves.toEqual({
+      cacheBytes: 650 * 1024 * 1024,
+      cleared: true,
+    });
+    expect(largest.clearCacheCalls).toBe(1);
+    expect(middle.clearCacheCalls).toBe(0);
+    expect(smallest.clearCacheCalls).toBe(0);
+    expect(650 * 1024 * 1024).toBeLessThanOrEqual(CACHE_TARGET_BYTES);
+  });
+
+  it('protects the platform page currently visible to the user', async () => {
+    const active = cacheSession(600 * 1024 * 1024);
+    const idle = cacheSession(500 * 1024 * 1024);
+
+    await maintainSessionCaches([active, idle], active);
+
+    expect(active.clearCacheCalls).toBe(0);
+    expect(idle.clearCacheCalls).toBe(1);
   });
 });

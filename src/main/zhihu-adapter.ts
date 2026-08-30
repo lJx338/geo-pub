@@ -1,4 +1,4 @@
-import type { WebContents } from 'electron';
+import { BrowserWindow, type WebContents } from 'electron';
 
 const PUBLISH_URL = 'https://zhuanlan.zhihu.com/write';
 const TITLE_SELECTOR = 'textarea[placeholder*="请输入标题"]';
@@ -120,6 +120,68 @@ async function waitForEditorEmpty(webContents: WebContents, timeoutMs = 12_000):
     await delay(120);
   }
   throw new Error('ZHIHU_CLEAR_FAILED: 旧正文未清空，已停止以避免内容追加');
+}
+
+async function draftEditorContains(webContents: WebContents, text: string): Promise<boolean> {
+  const expected = text.replace(/[\s\-•·]/g, '');
+  if (!expected) return true;
+  return await webContents.executeJavaScript(`(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    const normalize = (value) => String(value || '').replace(/[\\s\\-•·]/g, '');
+    return body instanceof HTMLElement && normalize(body.innerText || body.textContent || '').includes(${JSON.stringify(expected)});
+  })()`);
+}
+
+async function focusDraftEditor(webContents: WebContents, selectContents = false): Promise<boolean> {
+  await webContents.focus();
+  return await webContents.executeJavaScript(`(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!(body instanceof HTMLElement)) return false;
+    body.focus({ preventScroll: true });
+    if (${selectContents ? 'true' : 'false'}) {
+      const range = document.createRange(); range.selectNodeContents(body);
+      const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    }
+    return document.activeElement === body || body.contains(document.activeElement);
+  })()`);
+}
+
+async function insertDraftText(
+  webContents: WebContents,
+  debuggerApi: Electron.Debugger,
+  text: string,
+): Promise<void> {
+  if (process.platform === 'win32') {
+    // Draft.js on a hidden Windows WebContents can ignore CDP insertText when
+    // the renderer widget has no native focus. execCommand produces the
+    // beforeinput/input sequence Draft.js uses to update React ContentState.
+    await focusDraftEditor(webContents);
+    await webContents.executeJavaScript(`(() => {
+      const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+      if (!(body instanceof HTMLElement)) return false;
+      try { return document.execCommand('insertText', false, ${JSON.stringify(text)}); } catch { return false; }
+    })()`);
+    if (await draftEditorContains(webContents, text)) {
+      await waitForEditorCommit(webContents, text);
+      return;
+    }
+  }
+
+  await debuggerApi.sendCommand('Input.insertText', { text });
+  if (await draftEditorContains(webContents, text)) {
+    await waitForEditorCommit(webContents, text);
+    return;
+  }
+
+  // Some Chromium builds only deliver Draft.js beforeInput from character
+  // events. Send a final per-character fallback without using the clipboard.
+  for (const character of Array.from(text)) {
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', {
+      type: 'char', key: character, text: character, unmodifiedText: character,
+      code: '', windowsVirtualKeyCode: 0,
+    });
+  }
+  await waitForEditorCommit(webContents, text);
 }
 
 async function clickEditorControl(webContents: WebContents, labels: string[], scope: 'toolbar' | 'menu' = 'toolbar'): Promise<boolean> {
@@ -279,20 +341,21 @@ async function fillContent(webContents: WebContents, title: string, html: string
     return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, draftVerificationSource: 'none', formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
   }
 
-  // Draft.js persists React ContentState, not direct DOM assignments. Use one
-  // Chromium input path throughout so a hidden Windows WebContents cannot lose
-  // focus between an Electron event and a CDP event.
-  await webContents.executeJavaScript(`(() => {
-    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-    if (!(body instanceof HTMLElement)) return false;
-    body.focus({ preventScroll: true });
-    const range = document.createRange(); range.selectNodeContents(body);
-    const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
-    return true;
-  })()`);
   const debuggerApi = webContents.debugger;
   const attachedHere = !debuggerApi.isAttached();
+  const ownerWindow = process.platform === 'win32' ? BrowserWindow.fromWebContents(webContents) : null;
+  const initiallyVisible = ownerWindow?.isVisible() ?? true;
+  let foregroundRaised = false;
   try {
+    // Draft.js persists React ContentState, not direct DOM assignments. Use one
+    // Chromium input path throughout. Windows may require the owner window to
+    // receive native focus before the hidden RenderWidget accepts editing.
+    if (process.platform === 'win32' && ownerWindow && !initiallyVisible) {
+      ownerWindow.show();
+      ownerWindow.focus();
+      foregroundRaised = true;
+    }
+    await focusDraftEditor(webContents, true);
     if (attachedHere) debuggerApi.attach('1.3');
     await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: prepared.point.x, y: prepared.point.y });
     await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: prepared.point.x, y: prepared.point.y, button: 'left', clickCount: 1 });
@@ -312,8 +375,18 @@ async function fillContent(webContents: WebContents, title: string, html: string
       await waitForEditorCommit(webContents);
     };
     const insert = async (text: string) => {
-      await debuggerApi.sendCommand('Input.insertText', { text });
-      await waitForEditorCommit(webContents, text);
+      try {
+        await insertDraftText(webContents, debuggerApi, text);
+      } catch (error) {
+        if (process.platform !== 'win32' || !ownerWindow || foregroundRaised) throw error;
+        // A hidden Windows RenderWidget may reject all editor input until its
+        // owner window has a native focus. Raise it once, retry the same block,
+        // then restore the original hidden state in the outer finally block.
+        ownerWindow.show();
+        ownerWindow.focus();
+        foregroundRaised = true;
+        await insertDraftText(webContents, debuggerApi, text);
+      }
     };
     const blocks = prepared.blocks as ZhihuInputBlock[];
     for (let index = 0; !richPasteApplied && index < blocks.length; index += 1) {
@@ -345,6 +418,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
     }
     await delay(1_800);
   } finally {
+    if (foregroundRaised && ownerWindow && !initiallyVisible && !ownerWindow.isDestroyed()) ownerWindow.hide();
     if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
   }
 

@@ -5,7 +5,7 @@ describe('WorkBuddy integration paths', () => {
   it('uses the WorkBuddy home and quotes Windows CLI paths', () => {
     const prompt = buildWorkBuddyPrompt({
       appPath: 'D:\\Apps\\GEO Publisher\\GEO Publisher.exe',
-      cliPath: 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\bin\\versions\\0.2.3\\geo-publisher.exe',
+      cliPath: 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\bin\\geo-publisher.exe',
       skillPath: 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\integrations\\workbuddy\\geo-publisher',
       installedSkillPath: 'C:\\Users\\demo\\.workbuddy\\skills\\geo-publisher',
       discoveryPath: 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\discovery.json',
@@ -13,8 +13,8 @@ describe('WorkBuddy integration paths', () => {
     });
 
     expect(prompt).toContain('GEO Publisher 安装位置：D:\\Apps\\GEO Publisher\\GEO Publisher.exe');
-    expect(prompt).toContain("CLI 调用前缀：& 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\bin\\versions\\0.2.3\\geo-publisher.exe'");
-    expect(prompt).toContain("PowerShell 诊断命令：& 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\bin\\versions\\0.2.3\\geo-publisher.exe' doctor --json");
+    expect(prompt).toContain("CLI 调用前缀：& 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\bin\\geo-publisher.exe'");
+    expect(prompt).toContain("PowerShell 诊断命令：& 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\bin\\geo-publisher.exe' doctor --json");
     expect(prompt).toContain('WorkBuddy 已安装目录：C:\\Users\\demo\\.workbuddy\\skills\\geo-publisher');
     expect(prompt).toContain('Windows PowerShell 必须保留开头的 & 和引号');
     expect(prompt).toContain("PowerShell 读取 Discovery：Get-Content -Raw -LiteralPath 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\discovery.json'");

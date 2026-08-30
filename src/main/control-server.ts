@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
-import { controlRequestSchema, type ControlRequest, type ControlResponse } from '../shared/protocol.js';
+import { CONTROL_PROTOCOL_VERSION, MIN_SUPPORTED_CONTROL_PROTOCOL_VERSION, controlRequestSchema, type ControlRequest, type ControlResponse } from '../shared/protocol.js';
 import { controlEndpoint } from './runtime-paths.js';
 
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
@@ -15,11 +15,22 @@ export function errorCodeForMessage(message: string): string {
   return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] || 'CONTROL_REQUEST_FAILED';
 }
 
+export function supportsControlProtocol(value: unknown): boolean {
+  const protocol = value === undefined ? MIN_SUPPORTED_CONTROL_PROTOCOL_VERSION : value;
+  return typeof protocol === 'number'
+    && Number.isInteger(protocol)
+    && protocol >= MIN_SUPPORTED_CONTROL_PROTOCOL_VERSION
+    && protocol <= CONTROL_PROTOCOL_VERSION;
+}
+
 export class ControlServer {
   private server: Server | null = null;
   private readonly sockets = new Set<Socket>();
 
-  constructor(private readonly token: string, private readonly handler: ControlHandler) {}
+  constructor(
+    private readonly token: string,
+    private readonly handler: ControlHandler,
+  ) {}
 
   async start(): Promise<string> {
     const endpoint = controlEndpoint();
@@ -82,11 +93,16 @@ export class ControlServer {
     try {
       const raw = JSON.parse(line) as Record<string, unknown>;
       if (typeof raw.id === 'string') id = raw.id;
-      const parsed = controlRequestSchema.parse(raw);
-      if (!this.validToken(parsed.token)) {
+      // Check compatibility before schema parsing so an old CLI gets a useful
+      // upgrade error instead of a generic validation failure.
+      if (typeof raw.token !== 'string' || !this.validToken(raw.token)) {
         this.reply(socket, { id, ok: false, error: { code: 'UNAUTHORIZED', message: '本地控制令牌不匹配' } });
         return;
       }
+      if (!supportsControlProtocol(raw.protocolVersion)) {
+        throw new Error(`CONTROL_PROTOCOL_MISMATCH: 桌面端支持协议 ${MIN_SUPPORTED_CONTROL_PROTOCOL_VERSION}-${CONTROL_PROTOCOL_VERSION}，客户端协议为 ${String(raw.protocolVersion ?? 'unknown')}，请更新 CLI 并重新加载 WorkBuddy Skill`);
+      }
+      const parsed = controlRequestSchema.parse(raw);
       const data = await this.handler(parsed);
       this.reply(socket, { id, ok: true, data });
     } catch (error) {

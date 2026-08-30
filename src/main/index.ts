@@ -1,5 +1,6 @@
 import { join } from 'node:path';
-import { app, BrowserWindow, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
+import { resolve, sep } from 'node:path';
 import packageJson from '../../package.json' with { type: 'json' };
 import type { ControlRequest, Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
@@ -7,7 +8,7 @@ import { installBundledCli } from './cli-installer.js';
 import { ControlServer } from './control-server.js';
 import { createDiscoveryRecord, writeDiscoveryRecord } from './discovery.js';
 import { reportError } from './logging.js';
-import { dataDirectory } from './runtime-paths.js';
+import { dataDirectory, evidenceDirectory } from './runtime-paths.js';
 import { UpdateManager } from './update-manager.js';
 import { prepareWorkBuddyIntegration, workBuddyIntegrationStatus } from './workbuddy-integration.js';
 import { BrowserWorkerClient } from './browser-worker-client.js';
@@ -24,10 +25,12 @@ async function runDesktop(): Promise<void> {
   }
 
   await app.whenReady();
-  const cliPath = await installBundledCli(packageJson.version).catch((error) => {
+  const installedCli = await installBundledCli(packageJson.version).catch((error) => {
     reportError('Failed to install bundled CLI:', error);
     return null;
   });
+  const cliPaths = installedCli || { launcherPath: null, coreCliPath: null };
+  const cliPath = cliPaths.launcherPath;
 
   if (process.platform === 'win32') Menu.setApplicationMenu(null);
 
@@ -75,15 +78,32 @@ async function runDesktop(): Promise<void> {
 
   const controlServer = new ControlServer(await loadOrCreateControlToken(), route);
   await controlServer.start();
-  await writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPath, true));
+  await writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPaths, true));
+  // Keep the on-disk Skill current after desktop updates. A running WorkBuddy
+  // conversation still needs a fresh doctor/instructions handshake.
+  if (cliPath) {
+    await prepareWorkBuddyIntegration(false, cliPath).catch((error) => {
+      reportError('Failed to refresh WorkBuddy integration:', error);
+    });
+  }
 
   ipcMain.handle('geo:status', async () => ({ ...(await worker.status()), cliPath, worker: worker.workerHealth() }));
+  ipcMain.handle('geo:show-worker', () => worker.show());
   ipcMain.handle('geo:open-platform', (_event, platform: Platform) => worker.open(platform));
   ipcMain.handle('geo:workbuddy-status', () => workBuddyIntegrationStatus());
   ipcMain.handle('geo:workbuddy-connect', () => prepareWorkBuddyIntegration(true, cliPath));
   ipcMain.handle('geo:update-status', () => updateManager.getStatus());
   ipcMain.handle('geo:update-check', () => updateManager.check());
   ipcMain.handle('geo:update-install', () => updateManager.install());
+  ipcMain.handle('geo:history-clear', () => worker.clearTaskHistory());
+  ipcMain.handle('geo:evidence-open', async (_event, candidate: unknown) => {
+    if (typeof candidate !== 'string') return { opened: false, message: '证据路径无效' };
+    const path = resolve(candidate);
+    const root = `${resolve(evidenceDirectory())}${sep}`;
+    if (!path.startsWith(root)) return { opened: false, message: '只能打开本地失败画面' };
+    const error = await shell.openPath(path);
+    return error ? { opened: false, message: error } : { opened: true };
+  });
   await window.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
   updateManager.start();
   let quitting = false;
@@ -95,7 +115,7 @@ async function runDesktop(): Promise<void> {
     void Promise.all([
       worker.stop(),
       controlServer.stop(),
-      writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPath, false)),
+      writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPaths, false)),
     ])
       .finally(() => app.quit());
   });

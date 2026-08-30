@@ -32,6 +32,8 @@ GitHub Actions 会自动执行测试、构建、签名、公证，并分别上�
 
 正式版本标签不包含 `-alpha` 或 `-beta` 时，自动上传到 `stable` 目录。
 
+每个桌面端安装包同时包含固定 CLI 启动器和版本化 Core CLI。WorkBuddy 仅调用用户数据目录下固定的 `bin/geo-publisher`（Windows 为 `bin\\geo-publisher.exe`）；桌面端启动后通过原子更新的 `discovery.json` 切换到新版 Core CLI。不要将 `bin/versions/<version>` 写入 Skill、文档或客户操作说明。
+
 ## GitHub Secrets
 
 Windows：`WIN_CSC_LINK`、`WIN_CSC_KEY_PASSWORD`。

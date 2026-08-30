@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { BrowserWindow } from 'electron';
 import type { WebContents } from 'electron';
 import type { Platform } from '../shared/protocol.js';
 import { evidenceDirectory } from './runtime-paths.js';
@@ -24,6 +25,15 @@ interface PageFingerprint {
   url: string;
   title: string;
   text: string;
+}
+
+export interface BrowserAutomationViewport {
+  width: number;
+  height: number;
+}
+
+export interface BrowserAutomationDriverOptions {
+  viewport?: BrowserAutomationViewport;
 }
 
 const activeDrivers = new WeakMap<WebContents, BrowserAutomationDriver>();
@@ -66,6 +76,7 @@ export class BrowserAutomationDriver {
   constructor(
     readonly webContents: WebContents,
     readonly platform: Platform,
+    private readonly options: BrowserAutomationDriverOptions = {},
   ) {}
 
   results(): BrowserActionResult[] {
@@ -78,13 +89,14 @@ export class BrowserAutomationDriver {
     if (this.attachedHere) debuggerApi.attach('1.3');
     activeDrivers.set(this.webContents, this);
     try {
+      const viewport = this.automationViewport();
       await debuggerApi.sendCommand('Emulation.setDeviceMetricsOverride', {
-        width: 1440,
-        height: 1000,
+        width: viewport.width,
+        height: viewport.height,
         deviceScaleFactor: 1,
         mobile: false,
-        screenWidth: 1440,
-        screenHeight: 1000,
+        screenWidth: viewport.width,
+        screenHeight: viewport.height,
       });
       return await operation();
     } finally {
@@ -204,6 +216,16 @@ export class BrowserAutomationDriver {
       text: String(document.body?.innerText || '').replace(/\\s+/g, ' ').slice(0, 4000),
     }))()` ) as PageFingerprint;
     return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  }
+
+  private automationViewport(): BrowserAutomationViewport {
+    const configured = this.options.viewport;
+    if (configured) {
+      return { width: Math.max(1, Math.floor(configured.width)), height: Math.max(1, Math.floor(configured.height)) };
+    }
+    const owner = BrowserWindow.fromWebContents(this.webContents);
+    const [width = 1440, height = 1000] = owner?.getContentSize() ?? [];
+    return { width: Math.max(1, Math.floor(width)), height: Math.max(1, Math.floor(height)) };
   }
 
   private async capture(stage: string): Promise<string> {

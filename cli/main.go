@@ -21,29 +21,36 @@ import (
 )
 
 const (
-	defaultTimeout  = 15 * time.Second
-	platformTimeout = 150 * time.Second
-	publishTimeout  = 4 * time.Minute
-	maxResponseSize = 5 * 1024 * 1024
+	defaultTimeout         = 15 * time.Second
+	platformTimeout        = 150 * time.Second
+	publishTimeout         = 4 * time.Minute
+	maxResponseSize        = 5 * 1024 * 1024
+	controlProtocolVersion = 1
 )
 
-var version = "0.2.4"
+var version = "0.2.5"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
 	"penguin": true, "sohu": true, "netease": true,
 }
 
+var controlCapabilities = []string{
+	"status", "platform.open", "platform.inspect", "draft.fill", "draft.publish",
+}
+
 type controlRequest struct {
-	ID             string   `json:"id"`
-	Token          string   `json:"token"`
-	Action         string   `json:"action"`
-	Platform       string   `json:"platform,omitempty"`
-	Title          string   `json:"title,omitempty"`
-	HTML           string   `json:"html,omitempty"`
-	CoverPath      string   `json:"coverPath"`
-	Tags           []string `json:"tags"`
-	ConfirmPublish bool     `json:"confirmPublish,omitempty"`
+	ID              string   `json:"id"`
+	Token           string   `json:"token"`
+	ProtocolVersion int      `json:"protocolVersion"`
+	ClientVersion   string   `json:"clientVersion"`
+	Action          string   `json:"action"`
+	Platform        string   `json:"platform,omitempty"`
+	Title           string   `json:"title,omitempty"`
+	HTML            string   `json:"html,omitempty"`
+	CoverPath       string   `json:"coverPath"`
+	Tags            []string `json:"tags"`
+	ConfirmPublish  bool     `json:"confirmPublish,omitempty"`
 }
 
 type controlResponse struct {
@@ -196,8 +203,13 @@ func send(request controlRequest, timeout time.Duration) (json.RawMessage, error
 	if err != nil {
 		return nil, err
 	}
+	if err := checkDiscoveryCompatibility(); err != nil {
+		return nil, err
+	}
 	request.ID = randomID()
 	request.Token = token
+	request.ProtocolVersion = controlProtocolVersion
+	request.ClientVersion = version
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -245,6 +257,31 @@ func send(request controlRequest, timeout time.Duration) (json.RawMessage, error
 		}
 	}
 	return response.Data, nil
+}
+
+// Reject a new CLI talking to an older desktop before opening the control
+// socket. This makes update races explicit and symmetric with the desktop's
+// check for an old CLI.
+func checkDiscoveryCompatibility() error {
+	data, err := os.ReadFile(discoveryPath())
+	if err != nil {
+		return nil
+	}
+	return validateDiscoveryCompatibility(data)
+}
+
+func validateDiscoveryCompatibility(data []byte) error {
+	var record struct {
+		AppVersion      string `json:"appVersion"`
+		ProtocolVersion int    `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil
+	}
+	if record.ProtocolVersion != 0 && record.ProtocolVersion != controlProtocolVersion {
+		return &cliError{code: "CONTROL_PROTOCOL_MISMATCH", message: fmt.Sprintf("当前 CLI 协议为 %d，但桌面端协议为 %d", controlProtocolVersion, record.ProtocolVersion), suggestion: "更新 GEO Publisher 和 CLI 后重新连接 WorkBuddy"}
+	}
+	return nil
 }
 
 func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
@@ -401,6 +438,21 @@ func doctor() json.RawMessage {
 		if appVersion, ok := discovery["appVersion"].(string); ok {
 			result["versionMatch"] = appVersion == version
 		}
+		if protocolVersion, ok := discovery["protocolVersion"].(float64); ok {
+			result["protocolMatch"] = int(protocolVersion) == controlProtocolVersion
+		}
+		if cliVersion, ok := discovery["cliVersion"].(string); ok {
+			result["cliVersionMatch"] = cliVersion == version
+		}
+		protocolMatch, protocolKnown := result["protocolMatch"].(bool)
+		compatible := !protocolKnown || protocolMatch
+		result["compatible"] = compatible
+		if !compatible {
+			if protocolKnown && !protocolMatch {
+				result["compatibilityCode"] = "CONTROL_PROTOCOL_MISMATCH"
+				result["compatibilityMessage"] = "当前 CLI 与桌面端控制协议不一致，请更新两端并重新加载 WorkBuddy Skill"
+			}
+		}
 	} else {
 		result["discoveryReadable"] = false
 	}
@@ -434,7 +486,9 @@ func readDiscovery() json.RawMessage {
 
 func instructions() json.RawMessage {
 	return mustJSON(map[string]any{
-		"version": version,
+		"version":         version,
+		"protocolVersion": controlProtocolVersion,
+		"capabilities":    controlCapabilities,
 		"workflow": []string{
 			"Run doctor and start the desktop when it is not connected",
 			"Run validate with the exact article JSON",
@@ -593,6 +647,8 @@ func suggestionFor(code string) string {
 	switch code {
 	case "UNAUTHORIZED":
 		return "完全退出并重新启动桌面端，再重试命令"
+	case "CLI_VERSION_MISMATCH", "CONTROL_PROTOCOL_MISMATCH":
+		return "在桌面端点击“连接 WorkBuddy”，重新加载 Skill，并启动新的任务会话"
 	case "CONTROL_REQUEST_FAILED":
 		return "查看返回信息和桌面端错误提示；登录或验证码需在桌面端处理"
 	default:

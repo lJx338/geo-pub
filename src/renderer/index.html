@@ -11,30 +11,97 @@
       <img class="brand-logo" src="logo.png" alt="" />
       <strong>GEO Publisher</strong>
       <span id="connection" class="status-badge" data-state="ready" aria-live="polite">桌面端已启动</span>
+      <button id="show-worker" class="header-icon-button" type="button" title="打开发布窗口" aria-label="打开发布窗口">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4.75 5.25h14.5A1.75 1.75 0 0 1 21 7v10a1.75 1.75 0 0 1-1.75 1.75H4.75A1.75 1.75 0 0 1 3 17V7a1.75 1.75 0 0 1 1.75-1.75Zm0 1.5a.25.25 0 0 0-.25.25v2.25h15V7a.25.25 0 0 0-.25-.25H4.75Zm-.25 4v6.25c0 .138.112.25.25.25h14.5a.25.25 0 0 0 .25-.25v-6.25h-15Z"/>
+        </svg>
+      </button>
       <span id="version" class="header-meta"></span>
     </header>
     <aside>
-      <p class="section-title">发布平台</p>
-      <button data-platform="baijia"><span>百家号</span><span class="platform-state">打开</span></button>
-      <button data-platform="toutiao"><span>头条号</span><span class="platform-state">打开</span></button>
-      <button data-platform="zhihu"><span>知乎</span><span class="platform-state">打开</span></button>
-      <button data-platform="penguin"><span>企鹅号</span><span class="platform-state">打开</span></button>
-      <button data-platform="sohu"><span>搜狐号</span><span class="platform-state">打开</span></button>
-      <button data-platform="netease"><span>网易号</span><span class="platform-state">打开</span></button>
-
-      <p class="section-title integration-title">连接</p>
+      <p class="section-title">导航</p>
+      <button id="nav-dashboard" class="nav-button active" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4.75A.75.75 0 0 1 4.75 4h5.5a.75.75 0 0 1 .75.75v5.5a.75.75 0 0 1-.75.75h-5.5A.75.75 0 0 1 4 10.25v-5.5Zm9 0a.75.75 0 0 1 .75-.75h5.5a.75.75 0 0 1 .75.75v5.5a.75.75 0 0 1-.75.75h-5.5a.75.75 0 0 1-.75-.75v-5.5Zm-9 9a.75.75 0 0 1 .75-.75h5.5a.75.75 0 0 1 .75.75v5.5a.75.75 0 0 1-.75.75h-5.5a.75.75 0 0 1-.75-.75v-5.5Zm9 0a.75.75 0 0 1 .75-.75h5.5a.75.75 0 0 1 .75.75v5.5a.75.75 0 0 1-.75.75h-5.5a.75.75 0 0 1-.75-.75v-5.5Z"/></svg><span>发布中心</span>
+      </button>
+      <button id="nav-tutorial" class="nav-button" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.75A1.75 1.75 0 0 1 6.75 3h10.5A1.75 1.75 0 0 1 19 4.75v14.5A1.75 1.75 0 0 1 17.25 21H6.75A1.75 1.75 0 0 1 5 19.25V4.75Zm2 0v14.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V4.75a.25.25 0 0 0-.25-.25h-9.5a.25.25 0 0 0-.25.25Zm2.5 2.5h5a.75.75 0 0 1 0 1.5h-5a.75.75 0 0 1 0-1.5Zm0 3.5h5a.75.75 0 0 1 0 1.5h-5a.75.75 0 0 1 0-1.5Zm0 3.5h3a.75.75 0 0 1 0 1.5h-3a.75.75 0 0 1 0-1.5Z"/></svg><span>使用教程</span>
+      </button>
+      <p class="section-title integration-title">开始使用</p>
+      <p class="sidebar-hint">请从右侧平台卡片打开页面和查看发布状态。</p>
       <button id="connect-workbuddy" class="command-button"><span>连接 WorkBuddy</span><span id="workbuddy-state">未准备</span></button>
       <button id="check-update" class="command-button"><span>检查更新</span><span id="update-state">检查</span></button>
       <button id="install-update" class="primary-command" hidden>重启并安装更新</button>
     </aside>
-    <main id="empty">
-      <div class="setup">
-        <h1>开始使用</h1>
-        <div class="setup-row"><span class="step-number">1</span><div><strong>登录发布平台</strong><p>从左侧逐个平台打开并登录。</p></div></div>
-        <div class="setup-row"><span class="step-number">2</span><div><strong>连接 WorkBuddy</strong><p>点击后前往 WorkBuddy 粘贴已复制的连接指令。</p></div></div>
-        <div class="setup-row"><span class="step-number">3</span><div><strong>开始发布</strong><p>直接在 WorkBuddy 中说明文章和目标平台。</p></div></div>
-        <p id="action-message" class="action-message" aria-live="polite">桌面端已就绪</p>
+    <main id="dashboard">
+      <div id="publishing-view">
+        <section class="dashboard-head">
+          <div>
+            <p class="eyebrow">发布中心</p>
+            <h1 id="task-title">还没有发布任务</h1>
+            <p id="task-summary" class="task-summary">连接 WorkBuddy 后，文章会自动显示在这里。</p>
+          </div>
+          <div id="task-progress" class="task-progress">等待开始</div>
+        </section>
+        <section id="platform-progress" class="platform-progress" aria-live="polite"></section>
+        <section id="history-section" class="history-section" hidden>
+          <div class="section-heading">
+            <div><h2>最近记录</h2><p>自动保留最近 30 天，最多 200 条</p></div>
+            <button id="clear-history" class="text-button" type="button">清除记录</button>
+          </div>
+          <div id="history-list" class="history-list"></div>
+        </section>
       </div>
+      <section id="tutorial-view" class="tutorial-view" hidden>
+        <div class="tutorial-heading">
+          <p class="eyebrow">使用教程</p>
+          <h1>三步开始发布</h1>
+          <p>首次使用时依次完成，之后可以直接从 WorkBuddy 发起任务。</p>
+        </div>
+        <div class="tutorial-layout">
+          <div class="tutorial-steps">
+            <article class="tutorial-step">
+              <span class="tutorial-step-number">1</span>
+              <div class="tutorial-step-content">
+                <h2>登录发布平台</h2>
+                <p>打开需要使用的平台页面，完成账号登录。登录状态会保留在本机。</p>
+                <div class="platform-names" aria-label="支持的平台">
+                  <span>百家号</span><span>头条号</span><span>知乎</span><span>企鹅号</span><span>搜狐号</span><span>网易号</span>
+                </div>
+                <button id="tutorial-open-platforms" class="tutorial-action" type="button">前往平台登录</button>
+              </div>
+            </article>
+            <article class="tutorial-step">
+              <span class="tutorial-step-number">2</span>
+              <div class="tutorial-step-content">
+                <h2>连接 WorkBuddy</h2>
+                <p>安装配套 Skill 和 CLI，并复制连接指令到 WorkBuddy。</p>
+                <button id="tutorial-connect-workbuddy" class="tutorial-action" type="button">连接 WorkBuddy</button>
+              </div>
+            </article>
+            <article class="tutorial-step">
+              <span class="tutorial-step-number">3</span>
+              <div class="tutorial-step-content">
+                <h2>开始填充或发布</h2>
+                <p>在 WorkBuddy 中提供文章和目标平台，发布进度会自动回到发布中心。</p>
+              </div>
+            </article>
+          </div>
+          <section class="readiness-panel" aria-labelledby="readiness-title">
+            <div class="readiness-heading">
+              <p class="eyebrow">当前状态</p>
+              <h2 id="readiness-title">准备检查</h2>
+            </div>
+            <div class="readiness-list">
+              <div><span class="readiness-dot ready"></span><span>桌面端</span><strong>已就绪</strong></div>
+              <div><span id="tutorial-workbuddy-dot" class="readiness-dot"></span><span>WorkBuddy</span><strong id="tutorial-workbuddy-state">检查中</strong></div>
+              <div><span class="readiness-dot neutral"></span><span>平台账号</span><strong>按需登录</strong></div>
+            </div>
+            <p class="readiness-note">平台登录状态只保存在这台电脑上，不会随任务记录一起清除。</p>
+            <button id="tutorial-show-worker" class="secondary-action" type="button">打开平台窗口</button>
+          </section>
+        </div>
+      </section>
+      <p id="action-message" class="action-message" aria-live="polite">桌面端已就绪</p>
     </main>
     <script src="renderer.js"></script>
   </body>

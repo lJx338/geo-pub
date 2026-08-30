@@ -35,7 +35,18 @@ await Promise.all([
     external: ['electron'],
     sourcemap: true,
   }),
+  build({
+    entryPoints: ['src/worker-tabs/preload.ts'],
+    outfile: 'dist/worker-tabs-preload.cjs',
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    external: ['electron'],
+    sourcemap: true,
+  }),
 ]);
 
 await cp('src/renderer', 'dist/renderer', { recursive: true });
+await cp('src/worker-tabs', 'dist/worker-tabs', { recursive: true });
 await cp('build/icon.png', 'dist/renderer/logo.png');

@@ -28,9 +28,17 @@ export function cliDirectory(): string {
   return join(dataDirectory(), 'bin');
 }
 
-export function cliExecutablePath(version?: string): string {
-  if (process.platform === 'win32' && version) return join(cliDirectory(), 'versions', version, 'geo-publisher.exe');
+export function cliLauncherPath(): string {
   return join(cliDirectory(), process.platform === 'win32' ? 'geo-publisher.exe' : 'geo-publisher');
+}
+
+export function coreCliPath(version: string): string {
+  return join(cliDirectory(), 'versions', version, process.platform === 'win32' ? 'geo-publisher-core.exe' : 'geo-publisher-core');
+}
+
+/** @deprecated Use cliLauncherPath() for external callers or coreCliPath() internally. */
+export function cliExecutablePath(version?: string): string {
+  return version ? coreCliPath(version) : cliLauncherPath();
 }
 
 export function integrationsDirectory(): string {

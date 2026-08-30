@@ -1,7 +1,8 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 import { BrowserWindow, session, WebContentsView } from 'electron';
-import type { DesktopStatus, Platform, PlatformStatus } from '../shared/protocol.js';
+import type { DesktopStatus, Platform, PlatformStatus, PublishTaskAction, PublishTaskPhase, PublishTaskSnapshot } from '../shared/protocol.js';
 import { PLATFORMS } from '../shared/protocol.js';
 import { fillBaijiaDraft } from './baijia-adapter.js';
 import { fillPenguinDraft } from './penguin-adapter.js';
@@ -15,7 +16,10 @@ import { fillNeteaseDraft } from './netease-adapter.js';
 import { publishFilledDraft } from './publish-adapter.js';
 import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
 import { BrowserAutomationDriver, runWithBrowserAutomationDriver } from './browser-automation-driver.js';
+import { automationViewportForView } from './worker-window-layout.js';
 import { PublishTaskJournalStore } from './publish-task-journal.js';
+import { captureSuccessfulEvidence, captureUncertainEvidence } from './evidence-policy.js';
+import { PublishTaskHistoryStore, taskStatusForResult } from './publish-task-history.js';
 
 const PLATFORM_URLS: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -39,11 +43,14 @@ type TaskAction = 'open' | 'inspect' | 'fill' | 'publish';
 type TaskPhase = NonNullable<DesktopStatus['activeTask']>['phase'];
 
 interface ActiveTask {
-  action: TaskAction;
+  taskId: string;
+  action: PublishTaskAction;
   platform: Platform;
-  phase: TaskPhase;
+  phase: PublishTaskPhase;
+  title?: string;
   startedAt: number;
   deadlineAt: number;
+  snapshot?: PublishTaskSnapshot;
 }
 
 interface CookieSubscription {
@@ -52,13 +59,17 @@ interface CookieSubscription {
   snapshotTimer: NodeJS.Timeout | null;
 }
 
+/** One live platform is enough for the serial publisher and avoids six renderers idling in memory. */
 const MAX_RESIDENT_PLATFORM_VIEWS = 1;
+const RECENT_TASK_LIMIT = 20;
+const IDLE_VIEW_DISPOSAL_MS = 3 * 60 * 1000;
 const TASK_TIMEOUT_MS: Record<TaskAction, number> = {
   open: 135_000,
   inspect: 135_000,
   fill: 210_000,
   publish: 270_000,
 };
+const NAVIGATION_READY_TIMEOUT_MS = 30_000;
 
 export function pickEvictionCandidate(
   views: Array<{ platform: Platform; lastUsedAt: number }>,
@@ -86,6 +97,7 @@ export interface EvidenceCaptureResult {
 
 export interface PlatformSessionsOptions {
   layout?: 'dashboard' | 'execution';
+  tabBarHeight?: number;
 }
 
 export async function captureEvidenceBestEffort(
@@ -103,12 +115,36 @@ export async function captureEvidenceBestEffort(
   }
 }
 
+function evidencePathFrom(value: unknown, depth = 0): string | undefined {
+  if (!value || typeof value !== 'object' || depth > 3) return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ['screenshotPath', 'evidencePath', 'settingsScreenshotPath']) {
+    if (typeof record[key] === 'string' && record[key]) return record[key];
+  }
+  for (const nested of Object.values(record)) {
+    const path = evidencePathFrom(nested, depth + 1);
+    if (path) return path;
+  }
+  return undefined;
+}
+
+function messageFromResult(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.message === 'string' && record.message) return record.message;
+  if (typeof record.error === 'string' && record.error) return record.error;
+  return undefined;
+}
+
 export class PlatformSessions {
   private readonly views = new Map<Platform, ManagedView>();
   private activePlatform: Platform | null = null;
   private activeTask: ActiveTask | null = null;
   private readonly cookieSubscriptions = new Map<Platform, CookieSubscription>();
   private readonly publishJournal = new PublishTaskJournalStore();
+  private readonly taskHistory = new PublishTaskHistoryStore();
+  private recentTasks: PublishTaskSnapshot[] = [];
+  private idleViewDisposalTimer: NodeJS.Timeout | null = null;
   private maintenance: Pick<NonNullable<DesktopStatus['resourceDiagnostics']>, 'evidenceBytes' | 'cacheBytes' | 'lastMaintenanceAt'> = {};
 
   constructor(
@@ -117,11 +153,57 @@ export class PlatformSessions {
     private readonly options: PlatformSessionsOptions = {},
   ) {}
 
+  async loadTaskHistory(): Promise<void> {
+    // Older builds recorded a successful task when the user merely opened a
+    // platform. Those records are not publishing history and must not appear
+    // in the user-facing list after upgrade.
+    await this.taskHistory.migrateLegacyActions();
+    await this.taskHistory.prune();
+    this.recentTasks = (await this.taskHistory.list(RECENT_TASK_LIMIT))
+      .filter((task) => task.action === 'fill' || task.action === 'publish');
+  }
+
+  async clearCompletedTaskHistory(): Promise<void> {
+    const records = await this.taskHistory.list(Number.MAX_SAFE_INTEGER);
+    const evidenceRoot = `${resolve(evidenceDirectory())}${sep}`;
+    await Promise.all(records
+      .filter((record) => record.status !== 'running' && record.evidencePath)
+      .map(async (record) => {
+        const path = record.evidencePath;
+        const resolvedPath = path ? resolve(path) : '';
+        if (!resolvedPath.startsWith(evidenceRoot)) return;
+        await rm(resolvedPath, { force: true }).catch(() => undefined);
+      }));
+    await this.taskHistory.clearCompleted();
+    await this.loadTaskHistory();
+  }
+
+  cancelIdleViewDisposal(): void {
+    if (this.idleViewDisposalTimer) clearTimeout(this.idleViewDisposalTimer);
+    this.idleViewDisposalTimer = null;
+  }
+
+  scheduleIdleViewDisposal(): void {
+    this.cancelIdleViewDisposal();
+    if (this.activeTask || this.window.isVisible() || this.views.size === 0) return;
+    this.idleViewDisposalTimer = setTimeout(() => {
+      this.idleViewDisposalTimer = null;
+      if (this.activeTask || this.window.isVisible()) return;
+      void this.flushStorage()
+        .catch(() => undefined)
+        .finally(() => {
+          if (this.activeTask || this.window.isVisible()) return;
+          for (const managed of [...this.views.values()]) this.disposeManagedView(managed);
+        });
+    }, IDLE_VIEW_DISPOSAL_MS);
+  }
+
   async open(platform: Platform, mode: 'interactive' | 'background' = 'interactive'): Promise<PlatformStatus> {
     return await this.runExclusive('open', platform, async () => await this.openInternal(platform, mode));
   }
 
   private async openInternal(platform: Platform, mode: 'interactive' | 'background' = 'interactive'): Promise<PlatformStatus> {
+    this.cancelIdleViewDisposal();
     let managed = this.views.get(platform);
     if (!managed) {
       this.evictIdleView(platform);
@@ -204,6 +286,7 @@ export class PlatformSessions {
       if (active) {
         active.lastUsedAt = Date.now();
         active.view.webContents.setBackgroundThrottling(false);
+        active.view.setVisible(false);
         this.window.contentView.removeChildView(active.view);
       }
     }
@@ -221,7 +304,7 @@ export class PlatformSessions {
   }
 
   async fillDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
-    return await this.runExclusive('fill', platform, () => this.fillDraftInternal(platform, title, html, coverPath, tags));
+    return await this.runExclusive('fill', platform, () => this.fillDraftInternal(platform, title, html, coverPath, tags), title);
   }
 
   private async fillDraftInternal(
@@ -236,7 +319,9 @@ export class PlatformSessions {
     this.setTaskPhase('filling');
     const managed = this.views.get(platform);
     if (!managed) throw new Error(`${platform} 浏览器创建失败`);
-    const driver = taskDriver ?? new BrowserAutomationDriver(managed.view.webContents, platform);
+    const driver = taskDriver ?? new BrowserAutomationDriver(managed.view.webContents, platform, {
+      viewport: automationViewportForView(this.viewBounds()),
+    });
     const fill = async () => await driver.action('draft.fill', async () => platform === 'baijia'
       ? await fillBaijiaDraft(managed.view.webContents, title, html, coverPath)
       : platform === 'toutiao'
@@ -249,7 +334,7 @@ export class PlatformSessions {
               ? await fillSohuDraft(managed.view.webContents, title, html)
               : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath), { captureOnFailure: true });
     const result = taskDriver ? await fill() : await runWithBrowserAutomationDriver(driver, fill);
-    if (platform === 'sohu') {
+    if (platform === 'sohu' && captureSuccessfulEvidence()) {
       const settingsEvidence = await this.captureEvidence(platform, 'fill-settings');
       await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -262,7 +347,10 @@ export class PlatformSessions {
         automation: { actions: driver.results() },
       };
     }
-    if (platform === 'toutiao') {
+    if (platform === 'sohu') {
+      return { ...result, screenshotPath: null, screenshotWarning: null, automation: { actions: driver.results() } };
+    }
+    if (platform === 'toutiao' && captureSuccessfulEvidence()) {
       const settingsEvidence = await this.captureEvidence(platform, 'fill-settings');
       await managed.view.webContents.executeJavaScript(`(() => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -282,7 +370,12 @@ export class PlatformSessions {
         automation: { actions: driver.results() },
       };
     }
-    const evidence = await this.captureEvidence(platform, 'fill');
+    if (platform === 'toutiao') {
+      return { ...result, screenshotPath: null, screenshotWarning: null, automation: { actions: driver.results() } };
+    }
+    const evidence = captureSuccessfulEvidence()
+      ? await this.captureEvidence(platform, 'fill')
+      : { screenshotPath: null, screenshotWarning: null };
     return { ...result, ...evidence, automation: { actions: driver.results() } };
   }
 
@@ -295,8 +388,11 @@ export class PlatformSessions {
       if (journal.state === 'success') {
         return { ...(journal.result as object), automation: { taskId: journal.taskId, reused: true, actions: [] } };
       }
-      const driver = new BrowserAutomationDriver(managed.view.webContents, platform);
+      const driver = new BrowserAutomationDriver(managed.view.webContents, platform, {
+        viewport: automationViewportForView(this.viewBounds()),
+      });
       return await runWithBrowserAutomationDriver(driver, async () => {
+        let irreversibleDispatched = false;
         const fill = await this.fillDraftInternal(platform, title, html, coverPath, tags, driver);
         this.setTaskPhase('pre_publish');
         const active = this.views.get(platform);
@@ -309,6 +405,7 @@ export class PlatformSessions {
           },
           afterIrreversibleClick: async () => {
             this.setTaskPhase('dispatched');
+            irreversibleDispatched = true;
             journal = await this.publishJournal.update(journal, 'dispatched');
           },
           }), { captureOnFailure: true });
@@ -316,15 +413,17 @@ export class PlatformSessions {
           : result.status === 'result_uncertain' ? 'result_uncertain' : 'action_required';
         this.setTaskPhase('reconciling');
         journal = await this.publishJournal.update(journal, state, result);
-        const evidence = await this.captureEvidence(platform, `publish-${result.status}`);
+        const evidence = captureUncertainEvidence(result.status) || captureSuccessfulEvidence()
+          ? await this.captureEvidence(platform, `publish-${result.status}`)
+          : { screenshotPath: null, screenshotWarning: null };
         return {
           fill,
           ...result,
           ...evidence,
-          automation: { taskId: journal.taskId, irreversibleDispatched: journal.state === 'dispatched', actions: driver.results() },
+          automation: { taskId: journal.taskId, irreversibleDispatched, actions: driver.results() },
         };
       });
-    });
+    }, title);
   }
 
   async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
@@ -408,12 +507,15 @@ export class PlatformSessions {
       ready: true,
       busy: this.isBusy(),
       activeTask: this.activeTask ? {
+        taskId: this.activeTask.taskId,
         action: this.activeTask.action,
         platform: this.activeTask.platform,
         phase: this.activeTask.phase,
+        ...(this.activeTask.title ? { title: this.activeTask.title } : {}),
         startedAt: new Date(this.activeTask.startedAt).toISOString(),
         deadlineAt: new Date(this.activeTask.deadlineAt).toISOString(),
       } : null,
+      recentTasks: this.recentTasks,
       activePlatform: this.activePlatform,
       platforms: PLATFORMS.map((platform) => this.platformStatus(platform)),
       resourceDiagnostics: {
@@ -442,6 +544,7 @@ export class PlatformSessions {
   }
 
   async dispose(): Promise<void> {
+    this.cancelIdleViewDisposal();
     await this.flushStorage().catch(() => undefined);
     for (const managed of [...this.views.values()]) this.disposeManagedView(managed);
     for (const subscription of this.cookieSubscriptions.values()) {
@@ -486,10 +589,27 @@ export class PlatformSessions {
     if (managed.loading) return;
     managed.loading = true;
     try {
-      await managed.view.webContents.loadURL(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/ERR_ABORTED \(-3\)/.test(message)) throw error;
+      const contents = managed.view.webContents;
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (operation: () => void): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          contents.removeListener('dom-ready', ready);
+          operation();
+        };
+        const ready = (): void => finish(resolve);
+        const timeout = setTimeout(ready, NAVIGATION_READY_TIMEOUT_MS);
+        contents.once('dom-ready', ready);
+        void contents.loadURL(url)
+          .then(() => finish(resolve))
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/ERR_ABORTED \(-3\)/.test(message)) finish(resolve);
+            else finish(() => reject(error));
+          });
+      });
     } finally {
       managed.loading = managed.view.webContents.isLoading();
       this.restoreActiveView(managed.platform);
@@ -507,7 +627,8 @@ export class PlatformSessions {
   private viewBounds(): { x: number; y: number; width: number; height: number } {
     if (this.options.layout === 'execution') {
       const [width = 1440, height = 1000] = this.window.getContentSize();
-      return { x: 0, y: 0, width, height };
+      const tabBarHeight = Math.max(0, this.options.tabBarHeight ?? 0);
+      return { x: 0, y: tabBarHeight, width: Math.max(1, width), height: Math.max(1, height - tabBarHeight) };
     }
     const [width = 920, height = 640] = this.window.getContentSize();
     return { x: 220, y: 56, width: Math.max(320, width - 220), height: Math.max(240, height - 56) };
@@ -518,7 +639,8 @@ export class PlatformSessions {
       if (!this.window.isVisible()) this.window.show();
       return;
     }
-    if (this.window.isVisible()) this.window.hide();
+    // Background work is described in the publishing center. The user can open
+    // the live page at any time, without a browser window appearing over work.
   }
 
   private async captureEvidence(platform: Platform, stage: string): Promise<EvidenceCaptureResult> {
@@ -534,7 +656,7 @@ export class PlatformSessions {
     }, platform, stage);
   }
 
-  private async runExclusive<T>(action: TaskAction, platform: Platform, operation: () => Promise<T>): Promise<T> {
+  private async runExclusive<T>(action: TaskAction, platform: Platform, operation: () => Promise<T>, title?: string): Promise<T> {
     if (this.activeTask) {
       const error = new Error(`TASK_BUSY: ${this.activeTask.action}/${this.activeTask.platform} 正在执行`) as Error & { details: unknown };
       error.details = {
@@ -547,16 +669,81 @@ export class PlatformSessions {
       throw error;
     }
     const startedAt = Date.now();
-    this.activeTask = { action, platform, phase: 'opening', startedAt, deadlineAt: startedAt + TASK_TIMEOUT_MS[action] };
+    const shouldRecordHistory = action === 'fill' || action === 'publish';
+    const snapshot = shouldRecordHistory
+      ? await this.taskHistory.start({
+          action,
+          platform,
+          phase: 'opening',
+          ...(title ? { title } : {}),
+          lastKnownUrl: this.platformStatus(platform).url || undefined,
+        })
+      : undefined;
+    if (snapshot) this.upsertRecentTask(snapshot);
+    this.activeTask = {
+      taskId: snapshot?.taskId || randomUUID(),
+      action,
+      platform,
+      phase: 'opening',
+      ...(title ? { title } : {}),
+      startedAt,
+      deadlineAt: startedAt + TASK_TIMEOUT_MS[action],
+      ...(snapshot ? { snapshot } : {}),
+    };
     try {
-      return await operation();
+      const result = await operation();
+      await this.finishActiveTask(taskStatusForResult(result), result);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = message.match(/^([A-Z][A-Z0-9_]+):/)?.[1];
+      const status = code === 'RESULT_UNCERTAIN' ? 'result_uncertain' : 'failed';
+      await this.finishActiveTask(status, undefined, message, code);
+      throw error;
     } finally {
       this.activeTask = null;
+      this.scheduleIdleViewDisposal();
     }
   }
 
   private setTaskPhase(phase: TaskPhase): void {
-    if (this.activeTask) this.activeTask.phase = phase;
+    if (!this.activeTask) return;
+    this.activeTask.phase = phase;
+    if (this.activeTask.snapshot) {
+      this.activeTask.snapshot = { ...this.activeTask.snapshot, phase };
+      this.upsertRecentTask(this.activeTask.snapshot);
+    }
+  }
+
+  private async finishActiveTask(
+    status: PublishTaskSnapshot['status'],
+    result?: unknown,
+    errorMessage?: string,
+    errorCode?: string,
+  ): Promise<void> {
+    const task = this.activeTask;
+    if (!task?.snapshot) return;
+    const finishedAt = new Date().toISOString();
+    const evidencePath = evidencePathFrom(result);
+    const message = errorMessage || messageFromResult(result);
+    const next = await this.taskHistory.update(task.snapshot, {
+      status,
+      phase: task.phase,
+      finishedAt,
+      elapsedMs: Math.max(0, Date.now() - task.startedAt),
+      ...(message ? { message } : {}),
+      ...(errorCode ? { errorCode } : {}),
+      ...(evidencePath ? { evidencePath } : {}),
+      lastKnownUrl: this.platformStatus(task.platform).url || task.snapshot.lastKnownUrl,
+    });
+    task.snapshot = next;
+    this.upsertRecentTask(next);
+  }
+
+  private upsertRecentTask(task: PublishTaskSnapshot): void {
+    this.recentTasks = [task, ...this.recentTasks.filter((entry) => entry.taskId !== task.taskId)]
+      .sort((left, right) => Date.parse(right.finishedAt || right.startedAt) - Date.parse(left.finishedAt || left.startedAt))
+      .slice(0, RECENT_TASK_LIMIT);
   }
 
   private ensureCookieSubscription(platformSession: Electron.Session, platform: Platform): void {

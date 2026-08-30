@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -75,6 +76,17 @@ func TestInstructionsAndSchemaAreAvailableOffline(t *testing.T) {
 	}
 }
 
+func TestInstructionsExposeCurrentCapabilities(t *testing.T) {
+	var result map[string]any
+	if err := json.Unmarshal(instructions(), &result); err != nil {
+		t.Fatal(err)
+	}
+	capabilities, ok := result["capabilities"].([]any)
+	if !ok || len(capabilities) != len(controlCapabilities) {
+		t.Fatalf("unexpected capabilities: %#v", result["capabilities"])
+	}
+}
+
 func TestDesktopPathFromDiscovery(t *testing.T) {
 	directory := t.TempDir()
 	appPath := filepath.Join(directory, "GEO Publisher.exe")
@@ -117,6 +129,32 @@ func TestControlEndpointMatchesDesktopConvention(t *testing.T) {
 	endpoint := controlEndpoint()
 	if endpoint == "" || (!strings.Contains(endpoint, "geo-publisher-") && !strings.Contains(endpoint, `geo-publisher-`)) {
 		t.Fatalf("unexpected endpoint: %s", endpoint)
+	}
+}
+
+func TestControlRequestCarriesCompatibilityMetadata(t *testing.T) {
+	request := controlRequest{Action: "status"}
+	request.ProtocolVersion = controlProtocolVersion
+	request.ClientVersion = version
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"protocolVersion":1`) || !strings.Contains(string(encoded), `"clientVersion":"`+version+`"`) {
+		t.Fatalf("request metadata missing: %s", encoded)
+	}
+}
+
+func TestDiscoveryCompatibilityAllowsDifferentAppVersionWhenProtocolMatches(t *testing.T) {
+	if err := validateDiscoveryCompatibility([]byte(`{"appVersion":"0.2.3","protocolVersion":1}`)); err != nil {
+		t.Fatalf("compatible protocol should be allowed: %v", err)
+	}
+}
+
+func TestDiscoveryCompatibilityRejectsDifferentProtocol(t *testing.T) {
+	err := validateDiscoveryCompatibility([]byte(`{"appVersion":"0.2.3","protocolVersion":2}`))
+	if typed, ok := err.(*cliError); !ok || typed.code != "CONTROL_PROTOCOL_MISMATCH" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

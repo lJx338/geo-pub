@@ -4,11 +4,13 @@ import type { Session } from 'electron';
 import { PLATFORMS, type Platform } from '../shared/protocol.js';
 import { dataDirectory, evidenceDirectory } from './runtime-paths.js';
 import { PublishTaskJournalStore } from './publish-task-journal.js';
+import { PublishTaskHistoryStore } from './publish-task-history.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const EVIDENCE_MAX_AGE_MS = 30 * DAY_MS;
-export const EVIDENCE_MAX_BYTES = 500 * 1024 * 1024;
+export const EVIDENCE_MAX_BYTES = 200 * 1024 * 1024;
 export const CACHE_LIMIT_BYTES = 1024 * 1024 * 1024;
+export const CACHE_TARGET_BYTES = 800 * 1024 * 1024;
 
 export interface MaintenanceResult {
   ranAt: string;
@@ -18,6 +20,7 @@ export interface MaintenanceResult {
   clearedCache: boolean;
   cacheBytes: number;
   prunedJournalRecords: number;
+  prunedTaskHistoryRecords: number;
 }
 
 interface EvidenceFile {
@@ -32,7 +35,11 @@ export function isFailureEvidence(name: string): boolean {
   return /(failure|failed|action_required|uncertain|timeout)/i.test(name);
 }
 
-export async function maintainEvidence(root = evidenceDirectory(), now = Date.now()): Promise<{ bytes: number; deleted: number }> {
+export async function maintainEvidence(
+  root = evidenceDirectory(),
+  now = Date.now(),
+  maxBytes = EVIDENCE_MAX_BYTES,
+): Promise<{ bytes: number; deleted: number }> {
   const files = await evidenceFiles(root);
   const protectedPaths = new Set<string>();
   for (const platform of PLATFORMS) {
@@ -48,7 +55,7 @@ export async function maintainEvidence(root = evidenceDirectory(), now = Date.no
     return left.modifiedAt - right.modifiedAt;
   })) {
     if (protectedPaths.has(file.path)) continue;
-    if (file.modifiedAt >= now - EVIDENCE_MAX_AGE_MS && total <= EVIDENCE_MAX_BYTES) continue;
+    if (file.modifiedAt >= now - EVIDENCE_MAX_AGE_MS && total <= maxBytes) continue;
     await rm(file.path, { force: true });
     total -= file.bytes;
     deleted += 1;
@@ -109,33 +116,47 @@ export async function removeStaleProjectPartitions(
   return removed;
 }
 
-export async function maintainSessionCaches(sessions: Session[]): Promise<{ cacheBytes: number; cleared: boolean }> {
-  const sizes = await Promise.all(sessions.map(async (platformSession) => {
+type CacheSession = Pick<Session, 'getCacheSize' | 'clearCache' | 'clearCodeCaches'>;
+
+export async function maintainSessionCaches(
+  sessions: CacheSession[],
+  protectedSession: CacheSession | null = null,
+): Promise<{ cacheBytes: number; cleared: boolean }> {
+  const measured = await Promise.all(sessions.map(async (platformSession) => {
     try {
-      return await platformSession.getCacheSize();
+      return { platformSession, bytes: await platformSession.getCacheSize() };
     } catch {
-      return 0;
+      return { platformSession, bytes: 0 };
     }
   }));
-  const cacheBytes = sizes.reduce((sum, size) => sum + size, 0);
+  let cacheBytes = measured.reduce((sum, item) => sum + item.bytes, 0);
   if (cacheBytes <= CACHE_LIMIT_BYTES) return { cacheBytes, cleared: false };
-  await Promise.all(sessions.map(async (platformSession) => {
+
+  let cleared = false;
+  const candidates = measured
+    .filter(({ platformSession }) => platformSession !== protectedSession)
+    .sort((left, right) => right.bytes - left.bytes);
+  for (const { platformSession, bytes } of candidates) {
+    if (cacheBytes <= CACHE_TARGET_BYTES) break;
     try {
       await platformSession.clearCache();
       await platformSession.clearCodeCaches({});
+      cacheBytes = Math.max(0, cacheBytes - bytes);
+      cleared = true;
     } catch {
       // Cache cleanup is best effort and does not touch login storage.
     }
-  }));
-  return { cacheBytes, cleared: true };
+  }
+  return { cacheBytes, cleared };
 }
 
-export async function runResourceMaintenance(sessions: Session[]): Promise<MaintenanceResult> {
-  const [evidence, deletedStalePartitions, cache, prunedJournalRecords] = await Promise.all([
+export async function runResourceMaintenance(sessions: Session[], protectedSession: Session | null = null): Promise<MaintenanceResult> {
+  const [evidence, deletedStalePartitions, cache, prunedJournalRecords, prunedTaskHistoryRecords] = await Promise.all([
     maintainEvidence(),
     removeStaleProjectPartitions(),
-    maintainSessionCaches(sessions),
+    maintainSessionCaches(sessions, protectedSession),
     new PublishTaskJournalStore().prune(),
+    new PublishTaskHistoryStore().prune(),
   ]);
   return {
     ranAt: new Date().toISOString(),
@@ -145,6 +166,7 @@ export async function runResourceMaintenance(sessions: Session[]): Promise<Maint
     clearedCache: cache.cleared,
     cacheBytes: cache.cacheBytes,
     prunedJournalRecords,
+    prunedTaskHistoryRecords,
   };
 }
 

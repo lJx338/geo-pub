@@ -4,6 +4,7 @@ import {
   isNeteasePreflightRunning,
   isNeteasePreflightComplete,
   isPublishSuccess,
+  nextToutiaoPublishAction,
   shouldContinueNeteaseAfterPreflight,
 } from './publish-adapter.js';
 
@@ -43,6 +44,26 @@ describe('publish result reconciliation', () => {
       pageTitle: '作品管理',
       text: '其他文章 审核中',
     }, '内容发布前如何减少重复修改')).toBe(false);
+  });
+
+  it('waits for the no-ads warning before clicking any visible publish confirmation', () => {
+    expect(nextToutiaoPublishAction({
+      success: false,
+      noAdsWarningVisible: true,
+      confirmPublishVisible: true,
+      confirmationClicked: false,
+      noAdsConfirmed: false,
+    })).toBe('confirm_no_ads');
+  });
+
+  it('keeps waiting for delayed dialogs after the publish confirmation was clicked', () => {
+    expect(nextToutiaoPublishAction({
+      success: false,
+      noAdsWarningVisible: false,
+      confirmPublishVisible: false,
+      confirmationClicked: true,
+      noAdsConfirmed: false,
+    })).toBe('wait_result');
   });
 });
 
