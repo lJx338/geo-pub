@@ -25,6 +25,7 @@ import {
   appendDiagnosticConsoleEvent,
   captureFailureDiagnostic,
   exportDiagnosticBundle,
+  installEditorDiagnostics,
   removeTaskDiagnostic,
   type DiagnosticConsoleEvent,
 } from './diagnostic-bundle.js';
@@ -153,6 +154,14 @@ function messageFromResult(value: unknown): string | undefined {
   if (typeof record.message === 'string' && record.message) return record.message;
   if (typeof record.error === 'string' && record.error) return record.error;
   return undefined;
+}
+
+export function formatWarningsFromResult(value: unknown): string[] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const warnings = (value as Record<string, unknown>).formatWarnings;
+  if (!Array.isArray(warnings)) return undefined;
+  const normalized = warnings.filter((warning): warning is string => typeof warning === 'string' && Boolean(warning.trim()));
+  return normalized.length ? [...new Set(normalized)] : undefined;
 }
 
 export class PlatformSessions {
@@ -355,6 +364,9 @@ export class PlatformSessions {
     this.setTaskPhase('filling');
     const managed = this.views.get(platform);
     if (!managed) throw new Error(`${platform} 浏览器创建失败`);
+    if (process.platform === 'win32' && (platform === 'zhihu' || platform === 'netease' || platform === 'sohu')) {
+      await installEditorDiagnostics(managed.view.webContents).catch((error) => reportError('Editor diagnostics install failed:', error));
+    }
     const driver = taskDriver ?? new BrowserAutomationDriver(managed.view.webContents, platform, {
       viewport: automationViewportForView(this.viewBounds()),
     });
@@ -798,6 +810,7 @@ export class PlatformSessions {
     const finishedAt = new Date().toISOString();
     const evidencePath = explicitEvidencePath || evidencePathFrom(result);
     const message = errorMessage || messageFromResult(result);
+    const formatWarnings = formatWarningsFromResult(result);
     const next = await this.taskHistory.update(task.snapshot, {
       status,
       phase: task.phase,
@@ -807,6 +820,7 @@ export class PlatformSessions {
       ...(errorCode ? { errorCode } : {}),
       ...(evidencePath ? { evidencePath } : {}),
       ...(diagnosticPath ? { diagnosticPath } : {}),
+      ...(formatWarnings ? { formatWarnings } : {}),
       lastKnownUrl: this.platformStatus(task.platform).url || task.snapshot.lastKnownUrl,
     });
     task.snapshot = next;

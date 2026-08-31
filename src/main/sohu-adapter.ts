@@ -17,6 +17,7 @@ export interface SohuDraftFillResult {
     preserved: boolean;
     degradedBlocks: string[];
   };
+  formatWarnings?: string[];
   summaryClicked: boolean;
   summaryGenerated: boolean;
   summaryUnavailable: boolean;
@@ -108,7 +109,7 @@ async function clickPoint(webContents: WebContents, point: { x: number; y: numbe
  * Sohu serves more than one editor tree. Keep discovery, writing and reading
  * in one script so a Vue/Quill/iframe variation cannot produce a false failure.
  */
-function contentScript(title: string, html: string, write: boolean): string {
+function contentScript(title: string, html: string, write: boolean, runtimePlatform = process.platform): string {
   return `(async () => {
     const normalize = (value) => String(value || '').replace(/[\\u200B-\\u200D\\uFEFF]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
     const contentMatchesExpected = ${contentMatchesExpected.toString()};
@@ -140,11 +141,24 @@ function contentScript(title: string, html: string, write: boolean): string {
     const expectedBody = normalize(holder.innerText || holder.textContent || '');
     const countStructure = (root) => ({ headings: root.querySelectorAll('h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
     const expectedStructure = countStructure(holder);
+    const findQuill = (element) => {
+      const roots = []; let node = element;
+      for (let depth = 0; node && depth < 7; depth += 1, node = node.parentElement) if (node.__vue__) roots.push(node.__vue__);
+      const candidates = [element?.__quill, element?.closest?.('.ql-container')?.__quill];
+      try { candidates.push(element?.ownerDocument?.defaultView?.Quill?.find?.(element)); } catch {}
+      const seen = new Set();
+      for (const root of roots) {
+        if (!root || seen.has(root)) continue;
+        seen.add(root);
+        candidates.push(root.quill, root.editor?.quill, root.$refs?.editor?.quill, root.$refs?.quillEditor?.quill,
+          root.$refs?.articleEditor?.quill, root.$refs?.contentEditor?.quill);
+        if (Array.isArray(root.$children)) candidates.push(...root.$children.slice(0, 30).flatMap((child) => [child?.quill, child?.editor?.quill]));
+      }
+      return candidates.find((candidate) => typeof candidate?.getText === 'function' && typeof candidate?.clipboard?.dangerouslyPasteHTML === 'function') || null;
+    };
     const readValues = (element) => {
       const values = isInput(element) || isTextarea(element) ? [element.value] : [element.innerText, element.textContent];
-      const container = element.closest?.('.ql-container'); const view = element.ownerDocument?.defaultView || window;
-      let quill = element.__quill || container?.__quill;
-      try { quill ||= view.Quill?.find?.(element) || view.Quill?.find?.(container); } catch {}
+      const quill = findQuill(element);
       try { if (typeof quill?.getText === 'function') values.push(quill.getText()); } catch {}
       return values.map(normalize).filter(Boolean);
     };
@@ -174,8 +188,7 @@ function contentScript(title: string, html: string, write: boolean): string {
       if (isInput(bodyElement) || isTextarea(bodyElement)) { setValue(bodyElement, expectedBody); writeMethod = 'native_value'; }
       else if (isElement(bodyElement)) {
         bodyElement.scrollIntoView({ block: 'center', inline: 'nearest' }); bodyElement.focus({ preventScroll: true });
-        const container = bodyElement.closest?.('.ql-container'); const view = bodyElement.ownerDocument?.defaultView || window;
-        let quill = bodyElement.__quill || container?.__quill; try { quill ||= view.Quill?.find?.(bodyElement) || view.Quill?.find?.(container); } catch {}
+        const quill = findQuill(bodyElement);
         let editorApiWrote = false;
         try { if (typeof quill?.clipboard?.dangerouslyPasteHTML === 'function') { quill.setText?.(''); quill.clipboard.dangerouslyPasteHTML(0, ${JSON.stringify(html)}, 'api'); editorApiWrote = true; writeMethod = 'quill_html'; } } catch {}
         if (!editorApiWrote) {
@@ -187,11 +200,23 @@ function contentScript(title: string, html: string, write: boolean): string {
           } catch {}
         }
         await pause(180);
-        if (!readValues(bodyElement).some((value) => contentMatchesExpected(value, expectedBody))) { bodyElement.innerHTML = ${JSON.stringify(html)}; writeMethod = 'dom_fallback'; }
+        ${runtimePlatform === 'win32' ? '' : `if (!readValues(bodyElement).some((value) => contentMatchesExpected(value, expectedBody))) { bodyElement.innerHTML = ${JSON.stringify(html)}; writeMethod = 'dom_fallback'; }`}
         dispatchChanges(bodyElement, expectedBody, 'insertFromPaste');
       }
-      await pause(350);
-      window.__geoPublisherLastWrite = { adapter: 'sohu', writeMethod, editorFound: Boolean(bodyElement), quillFound: Boolean(bodyElement?.__quill || bodyElement?.closest?.('.ql-container')?.__quill), expectedLength: expectedBody.length, recordedAt: Date.now() };
+      const fingerprint = (value) => { const text=String(value||''); let hash=2166136261; for(let i=0;i<text.length;i+=1){hash^=text.charCodeAt(i);hash=Math.imul(hash,16777619);} return (hash>>>0).toString(16).padStart(8,'0'); };
+      const sample = (afterMs) => {
+        const quill=isElement(bodyElement)?findQuill(bodyElement):null;
+        let quillText=''; let delta='';
+        try { quillText=String(quill?.getText?.()||''); delta=JSON.stringify(quill?.getContents?.()?.ops||[]); } catch {}
+        const domText=isElement(bodyElement)?String(bodyElement.innerText||bodyElement.textContent||''):'';
+        const pageText=String(document.body?.innerText||'');
+        return { afterMs, domLength:domText.length, domFingerprint:fingerprint(domText), quillLength:quillText.length,
+          quillFingerprint:fingerprint(quillText), deltaLength:delta.length, deltaFingerprint:fingerprint(delta),
+          saving:/保存中/.test(pageText), saved:/已保存|草稿已保存/.test(pageText) };
+      };
+      const samples=[]; await pause(100); samples.push(sample(100)); await pause(400); samples.push(sample(500)); await pause(1500); samples.push(sample(2000));
+      window.__geoPublisherLastWrite = { adapter: 'sohu', writeMethod, editorFound: Boolean(bodyElement), quillFound: Boolean(isElement(bodyElement) && findQuill(bodyElement)), expectedLength: expectedBody.length, samples, recordedAt: Date.now() };
+      if (${JSON.stringify(runtimePlatform)} === 'win32' && !readValues(bodyElement).some((value) => contentMatchesExpected(value, expectedBody))) throw new Error('SOHU_EDITOR_MODEL_NOT_UPDATED: Windows 搜狐编辑器未确认内部模型已更新');
     }
     const actualTitle = normalize(isInput(titleElement) || isTextarea(titleElement) ? titleElement.value : titleElement?.textContent);
     const actualBodies = bodyCandidates.flatMap(({ element }) => readValues(element));
@@ -208,8 +233,8 @@ function contentScript(title: string, html: string, write: boolean): string {
   })()`;
 }
 
-export function buildSohuContentScriptForTest(title: string, html: string, write = false): string {
-  return contentScript(title, html, write);
+export function buildSohuContentScriptForTest(title: string, html: string, write = false, runtimePlatform = process.platform): string {
+  return contentScript(title, html, write, runtimePlatform);
 }
 
 export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
@@ -318,17 +343,17 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
   await ensureSohuEditor(webContents);
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`SOHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
-  if (!content.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
+  const formatWarnings = content.formatVerification.preserved ? [] : [...content.formatVerification.degradedBlocks];
   await delay(1_000);
   const beforeSettings = await webContents.executeJavaScript(contentScript(title, html, false));
   if (!beforeSettings.titleFilled || !beforeSettings.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE_BEFORE_SETTINGS: title=${beforeSettings.titleFilled}, body=${beforeSettings.bodyFilled}`);
-  if (!beforeSettings.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${beforeSettings.formatVerification.degradedBlocks.join('、')}`);
+  if (!beforeSettings.formatVerification.preserved) formatWarnings.push(...beforeSettings.formatVerification.degradedBlocks.filter((item: string) => !formatWarnings.includes(item)));
   const optional = await applyOptionalSettings(webContents);
   if (!optional.aiContentFound) throw new Error('SOHU_AI_DECLARATION_NOT_FOUND: 未找到搜狐号“含有AI生成内容”声明');
   if (!optional.aiContentSelected) throw new Error('SOHU_AI_DECLARATION_NOT_SELECTED: 搜狐号“含有AI生成内容”声明未选中');
   const stableContent = await webContents.executeJavaScript(contentScript(title, html, false));
   if (!stableContent.titleFilled || !stableContent.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}`);
-  if (!stableContent.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${stableContent.formatVerification.degradedBlocks.join('、')}`);
+  if (!stableContent.formatVerification.preserved) formatWarnings.push(...stableContent.formatVerification.degradedBlocks.filter((item: string) => !formatWarnings.includes(item)));
   const draftSaveState = await waitForSohuDraftSaved(webContents);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim(); const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
@@ -337,5 +362,5 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
     return { publishButtonDetected, url: location.href };
   })()`);
   await delay(500);
-  return { ...content, ...stableContent, ...optional, draftSaveState, ...finalState };
+  return { ...content, ...stableContent, ...(formatWarnings.length ? { formatWarnings } : {}), ...optional, draftSaveState, ...finalState };
 }

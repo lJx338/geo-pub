@@ -12,6 +12,41 @@ const MAX_CONSOLE_MESSAGE_LENGTH = 600;
 const MAX_DIAGNOSTIC_SESSIONS = 20;
 const DIAGNOSTIC_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
+export function installEditorDiagnostics(webContents: WebContents): Promise<unknown> {
+  if (webContents.isDestroyed()) return Promise.resolve(false);
+  return webContents.executeJavaScript(`(() => {
+    if (window.__geoPublisherInputDiagnosticsInstalled) return true;
+    window.__geoPublisherInputDiagnosticsInstalled = true;
+    window.__geoPublisherInputEvents = [];
+    const fingerprint = (value) => { const text = String(value || ''); let hash = 2166136261; for (let i = 0; i < text.length; i += 1) { hash ^= text.charCodeAt(i); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16).padStart(8, '0'); };
+    const record = (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const selection = window.getSelection();
+      const selectionElement = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
+      const editor = target?.closest?.('.public-DraftEditor-content,[contenteditable="true"],.ql-editor')
+        || selectionElement?.closest?.('.public-DraftEditor-content,[contenteditable="true"],.ql-editor');
+      const blockElements = editor ? [...editor.querySelectorAll('[data-block="true"]')] : [];
+      const activeBlock = selection?.anchorNode ? blockElements.findIndex((block) => block.contains(selection.anchorNode)) : -1;
+      const activeBlockElement = activeBlock >= 0 ? blockElements[activeBlock] : null;
+      const text = editor ? String(editor.textContent || '') : '';
+      window.__geoPublisherInputEvents.push({
+        at: Date.now(), type: event.type, key: event.type === 'keydown' || event.type === 'keyup' ? String(event.key || '') : undefined,
+        code: event.type === 'keydown' || event.type === 'keyup' ? String(event.code || '') : undefined,
+        inputType: event.type === 'beforeinput' || event.type === 'input' ? String(event.inputType || '') : undefined,
+        trusted: Boolean(event.isTrusted), defaultPrevented: Boolean(event.defaultPrevented),
+        target: target ? { tag: target.tagName.toLowerCase(), className: String(target.className || '').slice(0, 180) } : null,
+        activeElement: document.activeElement instanceof Element ? { tag: document.activeElement.tagName.toLowerCase(), className: String(document.activeElement.className || '').slice(0, 180) } : null,
+        inputMethod: window.__geoPublisherInputMethod || null,
+        editorTextLength: text.length, editorTextFingerprint: fingerprint(text), blockCount: blockElements.length,
+        activeBlock, activeBlockType: activeBlockElement ? String(activeBlockElement.getAttribute('data-block-type') || activeBlockElement.closest('h1,h2,h3,h4,h5,h6,blockquote,li')?.tagName || 'unstyled').toLowerCase() : null,
+      });
+      if (window.__geoPublisherInputEvents.length > 120) window.__geoPublisherInputEvents.splice(0, window.__geoPublisherInputEvents.length - 120);
+    };
+    ['keydown','keyup','beforeinput','input','mousedown','click'].forEach((type) => document.addEventListener(type, record, true));
+    return true;
+  })()`);
+}
+
 export interface DiagnosticConsoleEvent {
   timestamp: string;
   level: number;
@@ -79,6 +114,19 @@ function pageSnapshotScript(platform: Platform): string {
             dividers: element.querySelectorAll('hr').length, images: element.querySelectorAll('img').length }, quill: quillState };
       });
     const selection = window.getSelection();
+    const inputEvents = Array.isArray(window.__geoPublisherInputEvents) ? window.__geoPublisherInputEvents.slice(-120) : [];
+    const classifyDraftInput = () => {
+      const enter = [...inputEvents].reverse().find((event) => event.type === 'keydown' && event.key === 'Enter');
+      if (!enter) return { state: 'key_event_not_observed' };
+      const after = inputEvents.filter((event) => event.at >= enter.at);
+      const paragraphInput = after.find((event) => event.type === 'beforeinput' && /insertParagraph|insertLineBreak/.test(event.inputType || ''));
+      if (!paragraphInput) return { state: 'beforeinput_not_observed', enter };
+      const counts = after.map((event) => Number(event.blockCount || 0));
+      const initial = counts[0] || 0; const peak = Math.max(initial, ...counts); const latest = counts.at(-1) || 0;
+      if (peak <= initial) return { state: 'content_state_not_committed', enter, paragraphInput };
+      if (latest < peak) return { state: 'blocks_merged_after_commit', enter, paragraphInput, initial, peak, latest };
+      return { state: 'block_created', enter, paragraphInput, initial, latest };
+    };
     return {
       platform: ${JSON.stringify(platform)}, url: location.origin + location.pathname,
       titleLength: document.title.length, titleFingerprint: fingerprint(document.title), readyState: document.readyState,
@@ -88,6 +136,7 @@ function pageSnapshotScript(platform: Platform): string {
       technologies: { draftJs: Boolean(document.querySelector('.public-DraftEditor-content,[data-block="true"]')), quill: Boolean(document.querySelector('.ql-editor,.ql-container')),
         prosemirror: Boolean(document.querySelector('.ProseMirror')), iframeCount: document.querySelectorAll('iframe').length },
       adapterTrace: window.__geoPublisherLastWrite || null,
+      inputEvents, editorInputDiagnosis: classifyDraftInput(),
       editors: candidates,
       dialogs: [...document.querySelectorAll('[role="dialog"],.el-dialog,.modal')].filter(visible).slice(0, 8).map((element) => ({ ...descriptor(element), textLength: String(element.textContent || '').length, textFingerprint: fingerprint(element.textContent) })),
     };

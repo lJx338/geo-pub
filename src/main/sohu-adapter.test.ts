@@ -40,6 +40,25 @@ describe('Sohu editor compatibility', () => {
     expect(script).toContain("writeMethod = 'dom_fallback'");
   });
 
+  it('keeps Windows Quill discovery bounded and does not emit a DOM body fallback', () => {
+    const script = buildSohuContentScriptForTest('标题', '<p>正文内容</p>', true, 'win32');
+    expect(script).toContain('depth < 7');
+    expect(script).toContain('$children.slice(0, 30)');
+    expect(script).toContain('$refs?.articleEditor?.quill');
+    expect(script).not.toContain('Object.values(root.$refs)');
+    expect(script).not.toContain('bodyElement.innerHTML');
+    expect(script).toContain('SOHU_EDITOR_MODEL_NOT_UPDATED');
+  });
+
+  it('samples the Quill model, DOM, and save signal after a Windows write', () => {
+    const script = buildSohuContentScriptForTest('标题', '<p>正文内容</p>', true, 'win32');
+    expect(script).toContain('sample(100)');
+    expect(script).toContain('sample(500)');
+    expect(script).toContain('sample(2000)');
+    expect(script).toContain('deltaFingerprint');
+    expect(script).toContain("saving:/保存中/");
+  });
+
   it('never accepts page or draft-banner text as filled editor content', () => {
     const script = buildSohuContentScriptForTest('标题', '<p>正文内容</p>');
     expect(script).toContain("bodyFilled: bodyVerificationSource === 'editor'");

@@ -37,7 +37,10 @@ const statusLabels = {
 
 function taskStatusLabel(task) {
   if (!task) return '未开始';
-  if (task.status === 'success') return task.action === 'publish' ? '已发布' : '已填充';
+  if (task.status === 'success') {
+    if (task.formatWarnings?.length) return task.action === 'publish' ? '已发布，部分格式已调整' : '已填充，部分格式已调整';
+    return task.action === 'publish' ? '已发布' : '已填充';
+  }
   if (task.status === 'failed') return task.action === 'publish' ? '发布失败' : '填充失败';
   if (task.status === 'running') {
     if (task.action === 'publish') return phaseLabels[task.phase] || '正在发布';
@@ -119,7 +122,8 @@ function renderTaskStatus(status) {
       (() => {
         const copy = textElement('div', 'progress-copy', '');
         copy.append(textElement('strong', '', label), textElement('span', '', statusText));
-        if (task?.message && state !== 'success') copy.append(textElement('small', '', task.message));
+        if (task?.formatWarnings?.length && state === 'success') copy.append(textElement('small', '', `未保留：${task.formatWarnings.join('、')}`));
+        else if (task?.message && state !== 'success') copy.append(textElement('small', '', task.message));
         return copy;
       })(),
     );

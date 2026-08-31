@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { appendDiagnosticConsoleEvent, sanitizeDiagnosticMessage, type DiagnosticConsoleEvent } from './diagnostic-bundle.js';
+import type { WebContents } from 'electron';
+import { appendDiagnosticConsoleEvent, installEditorDiagnostics, sanitizeDiagnosticMessage, type DiagnosticConsoleEvent } from './diagnostic-bundle.js';
 
 describe('failure diagnostic privacy', () => {
   it('redacts credentials from renderer messages', () => {
@@ -21,5 +22,20 @@ describe('failure diagnostic privacy', () => {
     expect(events).toHaveLength(80);
     expect(events[0]?.message).toBe('failure-20');
     expect(events.at(-1)?.message).toBe('failure-99');
+  });
+
+  it('records event delivery and editor structure without retaining article text', async () => {
+    let script = '';
+    const webContents = {
+      isDestroyed: () => false,
+      executeJavaScript: async (value: string) => { script = value; return true; },
+    } as unknown as WebContents;
+    await installEditorDiagnostics(webContents);
+    expect(script).toContain("'keydown','keyup','beforeinput','input','mousedown','click'");
+    expect(script).toContain('trusted: Boolean(event.isTrusted)');
+    expect(script).toContain('defaultPrevented');
+    expect(script).toContain('activeBlockType');
+    expect(script).toContain('editorTextFingerprint');
+    expect(script).not.toContain('editorText: text');
   });
 });

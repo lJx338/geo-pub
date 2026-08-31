@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureEvidenceBestEffort, pickEvictionCandidate, platformRuntimeState, shouldUseWindowsEditorForeground } from './platform-sessions.js';
+import { captureEvidenceBestEffort, formatWarningsFromResult, pickEvictionCandidate, platformRuntimeState, shouldUseWindowsEditorForeground } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -54,5 +54,12 @@ describe('evidence capture', () => {
       screenshotPath: null,
       screenshotWarning: 'EVIDENCE_CAPTURE_FAILED: zhihu/fill: Current display surface not available for capture',
     });
+  });
+});
+
+describe('optional editor formatting warnings', () => {
+  it('deduplicates additive warnings without changing success semantics', () => {
+    expect(formatWarningsFromResult({ status: 'success', formatWarnings: ['小标题', '列表', '小标题'] })).toEqual(['小标题', '列表']);
+    expect(formatWarningsFromResult({ status: 'success' })).toBeUndefined();
   });
 });
