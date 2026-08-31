@@ -21,6 +21,13 @@ import { PublishTaskJournalStore } from './publish-task-journal.js';
 import { captureSuccessfulEvidence, captureUncertainEvidence } from './evidence-policy.js';
 import { PublishTaskHistoryStore, taskStatusForResult } from './publish-task-history.js';
 import { concealWorkerWindow, revealWorkerWindow } from './worker-window-visibility.js';
+import {
+  appendDiagnosticConsoleEvent,
+  captureFailureDiagnostic,
+  exportDiagnosticBundle,
+  removeTaskDiagnostic,
+  type DiagnosticConsoleEvent,
+} from './diagnostic-bundle.js';
 
 const PLATFORM_URLS: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -38,6 +45,7 @@ interface ManagedView {
   loading: boolean;
   lastUsedAt: number;
   recoveryTimer: NodeJS.Timeout | null;
+  consoleEvents: DiagnosticConsoleEvent[];
 }
 
 type TaskAction = 'open' | 'inspect' | 'fill' | 'publish';
@@ -78,7 +86,7 @@ export function shouldUseWindowsEditorForeground(
   runtimePlatform = process.platform,
 ): boolean {
   return runtimePlatform === 'win32'
-    && (platform === 'zhihu' || platform === 'netease')
+    && (platform === 'zhihu' || platform === 'sohu' || platform === 'netease')
     && (action === 'fill' || action === 'publish');
 }
 
@@ -186,8 +194,17 @@ export class PlatformSessions {
         if (!resolvedPath.startsWith(evidenceRoot)) return;
         await rm(resolvedPath, { force: true }).catch(() => undefined);
       }));
+    await Promise.all(records
+      .filter((record) => record.status !== 'running' && record.diagnosticPath)
+      .map(async (record) => await removeTaskDiagnostic(record.taskId)));
     await this.taskHistory.clearCompleted();
     await this.loadTaskHistory();
+  }
+
+  async exportTaskDiagnostic(taskId: string): Promise<{ path: string; fileName: string }> {
+    const task = await this.taskHistory.get(taskId);
+    if (!task || task.status === 'running') throw new Error('DIAGNOSTIC_TASK_NOT_FOUND: 找不到这条失败记录');
+    return await exportDiagnosticBundle(task);
   }
 
   cancelIdleViewDisposal(): void {
@@ -249,7 +266,7 @@ export class PlatformSessions {
       else setupStealthUserAgent(platformSession);
       await restorePlatformCookies(platformSession, platform);
 
-      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now(), recoveryTimer: null };
+      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now(), recoveryTimer: null, consoleEvents: [] };
       this.views.set(platform, managed);
       view.webContents.setWindowOpenHandler(({ url }) => {
         if (managed && !managed.loading && url !== managed.view.webContents.getURL()) {
@@ -259,6 +276,7 @@ export class PlatformSessions {
       });
       view.webContents.on('did-start-loading', () => { if (managed) managed.loading = true; });
       view.webContents.on('console-message', (_event, level, message) => {
+        if (managed) appendDiagnosticConsoleEvent(managed.consoleEvents, level, message);
         if (level >= 2) reportError(`[${platform}] renderer: ${message}`);
       });
       view.webContents.on('render-process-gone', (_event, details) => {
@@ -722,7 +740,31 @@ export class PlatformSessions {
       const message = error instanceof Error ? error.message : String(error);
       const code = message.match(/^([A-Z][A-Z0-9_]+):/)?.[1];
       const status = code === 'RESULT_UNCERTAIN' ? 'result_uncertain' : 'failed';
-      await this.finishActiveTask(status, undefined, message, code);
+      const managed = this.views.get(platform);
+      const evidence = this.activeTask?.snapshot
+        ? await this.captureEvidence(platform, 'failure')
+        : { screenshotPath: null, screenshotWarning: null };
+      let diagnosticPath: string | undefined;
+      if (this.activeTask?.snapshot) {
+        try {
+          diagnosticPath = await captureFailureDiagnostic({
+            task: { ...this.activeTask.snapshot, phase: this.activeTask.phase },
+            errorMessage: message,
+            ...(code ? { errorCode: code } : {}),
+            ...(managed ? { webContents: managed.view.webContents } : {}),
+            window: this.window,
+            version: this.version,
+            consoleEvents: managed?.consoleEvents || [],
+            automationActions: error && typeof error === 'object'
+              ? (error as { automationActions?: unknown }).automationActions
+              : undefined,
+            ...(evidence.screenshotPath ? { evidencePath: evidence.screenshotPath } : {}),
+          });
+        } catch (diagnosticError) {
+          reportError('Failure diagnostic capture failed:', diagnosticError);
+        }
+      }
+      await this.finishActiveTask(status, undefined, message, code, evidence.screenshotPath || undefined, diagnosticPath);
       throw error;
     } finally {
       if (restoreHiddenWindow && this.automationRevealedWindow) {
@@ -748,11 +790,13 @@ export class PlatformSessions {
     result?: unknown,
     errorMessage?: string,
     errorCode?: string,
+    explicitEvidencePath?: string,
+    diagnosticPath?: string,
   ): Promise<void> {
     const task = this.activeTask;
     if (!task?.snapshot) return;
     const finishedAt = new Date().toISOString();
-    const evidencePath = evidencePathFrom(result);
+    const evidencePath = explicitEvidencePath || evidencePathFrom(result);
     const message = errorMessage || messageFromResult(result);
     const next = await this.taskHistory.update(task.snapshot, {
       status,
@@ -762,6 +806,7 @@ export class PlatformSessions {
       ...(message ? { message } : {}),
       ...(errorCode ? { errorCode } : {}),
       ...(evidencePath ? { evidencePath } : {}),
+      ...(diagnosticPath ? { diagnosticPath } : {}),
       lastKnownUrl: this.platformStatus(task.platform).url || task.snapshot.lastKnownUrl,
     });
     task.snapshot = next;

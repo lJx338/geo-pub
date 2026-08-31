@@ -35,6 +35,9 @@ describe('Sohu editor compatibility', () => {
     expect(script).toContain('bodyElement.innerHTML');
     expect(script).toContain('countStructure');
     expect(script).toContain('formatVerification');
+    expect(script).toContain('__geoPublisherLastWrite');
+    expect(script).toContain("writeMethod = 'quill_html'");
+    expect(script).toContain("writeMethod = 'dom_fallback'");
   });
 
   it('never accepts page or draft-banner text as filled editor content', () => {

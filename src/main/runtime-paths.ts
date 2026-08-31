@@ -20,6 +20,10 @@ export function evidenceDirectory(): string {
   return join(dataDirectory(), 'evidence');
 }
 
+export function diagnosticsDirectory(): string {
+  return join(dataDirectory(), 'diagnostics');
+}
+
 export function discoveryFilePath(): string {
   return join(dataDirectory(), 'discovery.json');
 }

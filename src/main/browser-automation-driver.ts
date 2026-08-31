@@ -139,6 +139,9 @@ export class BrowserAutomationDriver {
         ...(options.captureOnFailure === false ? {} : { evidencePath: await this.capture(`${action}-failed`).catch(() => undefined) }),
         errorCode: errorCode(message),
       });
+      if (error instanceof Error) {
+        Object.assign(error, { automationActions: this.results() });
+      }
       throw error;
     }
   }

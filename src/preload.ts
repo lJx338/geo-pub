@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   installUpdate: (): Promise<{ accepted: boolean; message: string }> => ipcRenderer.invoke('geo:update-install'),
   clearTaskHistory: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:history-clear'),
   openEvidence: (path: string): Promise<{ opened: boolean; message?: string }> => ipcRenderer.invoke('geo:evidence-open', path),
+  exportDiagnostic: (taskId: string): Promise<{ exported: boolean; path?: string; message?: string }> => ipcRenderer.invoke('geo:diagnostic-export', taskId),
   onUpdateStatus: (listener: (status: UpdateStatus) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
     ipcRenderer.on('geo:update-status-changed', handler);

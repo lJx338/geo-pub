@@ -98,6 +98,7 @@ export interface PublishTaskSnapshot {
   message?: string;
   errorCode?: string;
   evidencePath?: string;
+  diagnosticPath?: string;
   lastKnownUrl?: string;
 }
 

@@ -148,6 +148,11 @@ export class BrowserWorkerClient {
     return status;
   }
 
+  async exportDiagnostic(taskId: string): Promise<{ path: string; fileName: string }> {
+    await this.ensureStarted();
+    return await this.request('diagnostic.export', { taskId }, 15_000);
+  }
+
   async open(platform: Platform): Promise<PlatformStatus> {
     await this.ensureStarted();
     return await this.requestTask('platform.open', { platform }, 135_000);

@@ -13,6 +13,7 @@ declare global {
       installUpdate(): Promise<{ accepted: boolean; message: string }>;
       clearTaskHistory(): Promise<DesktopStatus>;
       openEvidence(path: string): Promise<{ opened: boolean; message?: string }>;
+      exportDiagnostic(taskId: string): Promise<{ exported: boolean; path?: string; message?: string }>;
       onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
     };
   }

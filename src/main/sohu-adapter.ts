@@ -167,29 +167,31 @@ function contentScript(title: string, html: string, write: boolean): string {
       if (setter) setter.call(element, value); else element.value = value;
       dispatchChanges(element, value);
     };
+    let writeMethod = 'read_only';
     if (${write}) {
       if (isInput(titleElement) || isTextarea(titleElement)) setValue(titleElement, ${JSON.stringify(title)});
       else if (isElement(titleElement)) { titleElement.replaceChildren(titleElement.ownerDocument.createTextNode(${JSON.stringify(title)})); dispatchChanges(titleElement, ${JSON.stringify(title)}); }
-      if (isInput(bodyElement) || isTextarea(bodyElement)) setValue(bodyElement, expectedBody);
+      if (isInput(bodyElement) || isTextarea(bodyElement)) { setValue(bodyElement, expectedBody); writeMethod = 'native_value'; }
       else if (isElement(bodyElement)) {
         bodyElement.scrollIntoView({ block: 'center', inline: 'nearest' }); bodyElement.focus({ preventScroll: true });
         const container = bodyElement.closest?.('.ql-container'); const view = bodyElement.ownerDocument?.defaultView || window;
         let quill = bodyElement.__quill || container?.__quill; try { quill ||= view.Quill?.find?.(bodyElement) || view.Quill?.find?.(container); } catch {}
         let editorApiWrote = false;
-        try { if (typeof quill?.clipboard?.dangerouslyPasteHTML === 'function') { quill.setText?.(''); quill.clipboard.dangerouslyPasteHTML(0, ${JSON.stringify(html)}, 'api'); editorApiWrote = true; } } catch {}
+        try { if (typeof quill?.clipboard?.dangerouslyPasteHTML === 'function') { quill.setText?.(''); quill.clipboard.dangerouslyPasteHTML(0, ${JSON.stringify(html)}, 'api'); editorApiWrote = true; writeMethod = 'quill_html'; } } catch {}
         if (!editorApiWrote) {
           const root = bodyElement.closest?.('.article-container') || bodyElement.closest?.('.container-section')?.parentElement;
           const articleComponent = root?.__vue__; const editorComponent = bodyElement.parentElement?.parentElement?.__vue__;
           try {
-            if (typeof articleComponent?.setEditorContent === 'function') { articleComponent.setEditorContent(${JSON.stringify(html)}); articleComponent.content = ${JSON.stringify(html)}; editorApiWrote = true; }
-            else if (typeof editorComponent?.setHTML === 'function') { editorComponent.setHTML(${JSON.stringify(html)}); editorApiWrote = true; }
+            if (typeof articleComponent?.setEditorContent === 'function') { articleComponent.setEditorContent(${JSON.stringify(html)}); articleComponent.content = ${JSON.stringify(html)}; editorApiWrote = true; writeMethod = 'vue_article'; }
+            else if (typeof editorComponent?.setHTML === 'function') { editorComponent.setHTML(${JSON.stringify(html)}); editorApiWrote = true; writeMethod = 'vue_editor'; }
           } catch {}
         }
         await pause(180);
-        if (!readValues(bodyElement).some((value) => contentMatchesExpected(value, expectedBody))) bodyElement.innerHTML = ${JSON.stringify(html)};
+        if (!readValues(bodyElement).some((value) => contentMatchesExpected(value, expectedBody))) { bodyElement.innerHTML = ${JSON.stringify(html)}; writeMethod = 'dom_fallback'; }
         dispatchChanges(bodyElement, expectedBody, 'insertFromPaste');
       }
       await pause(350);
+      window.__geoPublisherLastWrite = { adapter: 'sohu', writeMethod, editorFound: Boolean(bodyElement), quillFound: Boolean(bodyElement?.__quill || bodyElement?.closest?.('.ql-container')?.__quill), expectedLength: expectedBody.length, recordedAt: Date.now() };
     }
     const actualTitle = normalize(isInput(titleElement) || isTextarea(titleElement) ? titleElement.value : titleElement?.textContent);
     const actualBodies = bodyCandidates.flatMap(({ element }) => readValues(element));
@@ -202,7 +204,7 @@ function contentScript(title: string, html: string, write: boolean): string {
     const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
     const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
     if (bodyVerificationSource !== 'editor' && degradedBlocks.length === 0 && Object.values(expectedStructure).some(Boolean)) degradedBlocks.push('编辑器结构无法确认');
-    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource === 'editor', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks }, editorFound: Boolean(titleElement && bodyElement), documentCount: documents.length, bodyCandidateCount: bodyCandidates.length };
+    return { titleFilled: actualTitle === normalize(${JSON.stringify(title)}), bodyFilled: bodyVerificationSource === 'editor', bodyVerificationSource, title: actualTitle, bodyTextLength: actualBody.length, formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks }, editorFound: Boolean(titleElement && bodyElement), documentCount: documents.length, bodyCandidateCount: bodyCandidates.length, writeMethod, lastWrite: window.__geoPublisherLastWrite || null };
   })()`;
 }
 

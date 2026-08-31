@@ -158,6 +158,13 @@ export async function runBrowserWorker(version: string): Promise<void> {
       publishTabStatus();
       return sessions.status();
     }
+    if (request.action === 'diagnostic.export') {
+      const taskId = request.payload?.taskId;
+      if (typeof taskId !== 'string' || !/^[0-9a-f-]{36}$/i.test(taskId)) {
+        throw new Error('DIAGNOSTIC_TASK_INVALID: 诊断任务编号无效');
+      }
+      return await sessions.exportTaskDiagnostic(taskId);
+    }
     if (request.action === 'platform.open') {
       const operation = sessions.open(requiredPlatform(request), 'interactive');
       publishTabStatus();

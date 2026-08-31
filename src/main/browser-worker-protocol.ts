@@ -1,6 +1,6 @@
 import type { Platform } from '../shared/protocol.js';
 
-export const BROWSER_WORKER_PROTOCOL_VERSION = 3;
+export const BROWSER_WORKER_PROTOCOL_VERSION = 4;
 export const BROWSER_WORKER_TOKEN_ENV = 'GEO_BROWSER_WORKER_TOKEN';
 export const BROWSER_WORKER_ENDPOINT_ENV = 'GEO_BROWSER_WORKER_ENDPOINT';
 export const BROWSER_WORKER_PROTOCOL_ENV = 'GEO_BROWSER_WORKER_PROTOCOL';
@@ -9,6 +9,7 @@ export const BROWSER_WORKER_APP_VERSION_ENV = 'GEO_BROWSER_WORKER_APP_VERSION';
 export type BrowserWorkerAction =
   | 'status'
   | 'history.clear'
+  | 'diagnostic.export'
   | 'worker.show'
   | 'platform.open'
   | 'platform.inspect'
@@ -28,6 +29,7 @@ export interface BrowserWorkerRequest {
     html?: string;
     coverPath?: string;
     tags?: string[];
+    taskId?: string;
   };
 }
 

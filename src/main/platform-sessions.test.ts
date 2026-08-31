@@ -27,8 +27,9 @@ describe('platform runtime status', () => {
 });
 
 describe('Windows editor foreground policy', () => {
-  it('raises the two Draft.js editors for fill and publish only on Windows', () => {
+  it('raises Windows editors that need a native foreground surface for fill and publish', () => {
     expect(shouldUseWindowsEditorForeground('zhihu', 'fill', 'win32')).toBe(true);
+    expect(shouldUseWindowsEditorForeground('sohu', 'fill', 'win32')).toBe(true);
     expect(shouldUseWindowsEditorForeground('netease', 'publish', 'win32')).toBe(true);
     expect(shouldUseWindowsEditorForeground('toutiao', 'fill', 'win32')).toBe(false);
     expect(shouldUseWindowsEditorForeground('zhihu', 'open', 'win32')).toBe(false);

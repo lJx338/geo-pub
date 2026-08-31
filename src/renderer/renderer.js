@@ -62,6 +62,24 @@ function textElement(tag, className, text) {
   return element;
 }
 
+function diagnosticButton(task) {
+  const button = textElement('button', 'diagnostic-button', '导出诊断');
+  button.type = 'button';
+  button.title = '导出已脱敏的失败现场，发给技术支持定位问题';
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const result = await window.geoPublisher.exportDiagnostic(task.taskId);
+      showMessage(result.exported ? '诊断包已保存，可直接发给技术支持' : (result.message || '诊断包保存失败'), !result.exported && result.message !== '已取消保存');
+    } catch (error) {
+      showMessage(`诊断包导出失败：${error.message}`, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  return button;
+}
+
 function renderTaskStatus(status) {
   const active = status.activeTask;
   const publishingTask = active && (active.action === 'fill' || active.action === 'publish') ? active : null;
@@ -117,6 +135,7 @@ function renderTaskStatus(status) {
         showMessage(result.opened ? '问题画面已打开' : (result.message || '问题画面打开失败'), !result.opened);
       });
     }
+    if (task?.diagnosticPath && state !== 'success') item.append(diagnosticButton(task));
     pageButton.addEventListener('click', async () => {
       pageButton.disabled = true;
       try {
@@ -140,6 +159,7 @@ function renderTaskStatus(status) {
       textElement('span', '', task.title || '未命名文章'),
       textElement('span', `history-status state-${task.status}`, taskStatusLabel(task)),
       textElement('time', '', new Date(task.finishedAt || task.startedAt).toLocaleString()),
+      task.diagnosticPath && task.status !== 'success' ? diagnosticButton(task) : textElement('span', '', ''),
     );
     return row;
   }));
