@@ -15,6 +15,7 @@ import { PlatformSessions } from './platform-sessions.js';
 import { runResourceMaintenance } from './resource-maintenance.js';
 import { setupStealthSession } from './stealth.js';
 import { constrainWorkerWindowToWorkArea, fitWorkerWindowToWorkArea } from './worker-window-layout.js';
+import { concealWorkerWindow } from './worker-window-visibility.js';
 
 function environment(name: string): string {
   const value = process.env[name]?.trim();
@@ -44,7 +45,9 @@ export async function runBrowserWorker(version: string): Promise<void> {
     ...initialBounds,
     show: false,
     title: 'GEO Publisher Browser Worker',
-    skipTaskbar: true,
+    // A hidden window does not occupy the Windows taskbar. Keeping the native
+    // taskbar style allows an explicit user show request to surface reliably.
+    skipTaskbar: process.platform !== 'win32',
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -73,7 +76,7 @@ export async function runBrowserWorker(version: string): Promise<void> {
   screen.on('display-removed', fitWindowToCurrentDisplay);
   window.on('close', (event) => {
     event.preventDefault();
-    window.hide();
+    concealWorkerWindow(window, process.platform === 'win32');
   });
   const sessions = new PlatformSessions(window, version, { layout: 'execution', tabBarHeight: 48 });
   await sessions.loadTaskHistory();
@@ -142,8 +145,11 @@ export async function runBrowserWorker(version: string): Promise<void> {
       };
     }
     if (request.action === 'worker.show') {
-      window.show();
-      window.focus();
+      fitWindowToCurrentDisplay();
+      sessions.showWindow();
+      if (!window.isVisible()) {
+        throw new Error('WORKER_WINDOW_SHOW_FAILED: Windows 未确认发布窗口已显示');
+      }
       publishTabStatus();
       return sessions.status();
     }

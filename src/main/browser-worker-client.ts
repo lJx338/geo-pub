@@ -65,7 +65,9 @@ export class BrowserWorkerClient {
         [BROWSER_WORKER_APP_VERSION_ENV]: this.appVersion,
       },
       stdio: 'ignore',
-      windowsHide: true,
+      // The Worker owns a user-visible BrowserWindow. Starting it with
+      // STARTUPINFO/SW_HIDE can prevent a later show() from surfacing on Windows.
+      windowsHide: false,
     });
     this.child = child;
     this.health.pid = child.pid ?? null;

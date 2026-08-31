@@ -30,6 +30,25 @@ type FormatVerification = {
 
 type FormatCounts = { headings: number; lists: number; quotes: number; dividers: number; images: number };
 export type ZhihuDraftVerificationSource = 'word_count' | 'stable_editor' | 'none';
+export type ZhihuInsertionEffect = 'applied' | 'none' | 'uncertain';
+
+function compactDraftText(value: unknown): string {
+  return String(value || '').replace(/[\s\-•·]/g, '');
+}
+
+export function classifyZhihuInsertionEffect(
+  beforeValue: unknown,
+  afterValue: unknown,
+  insertedValue: unknown,
+): ZhihuInsertionEffect {
+  const before = compactDraftText(beforeValue);
+  const after = compactDraftText(afterValue);
+  const inserted = compactDraftText(insertedValue);
+  if (!inserted) return 'applied';
+  if (after === before) return 'none';
+  if (after === before + inserted) return 'applied';
+  return 'uncertain';
+}
 
 export function verifyZhihuDraftState(input: {
   titleFilled: boolean;
@@ -122,14 +141,39 @@ async function waitForEditorEmpty(webContents: WebContents, timeoutMs = 12_000):
   throw new Error('ZHIHU_CLEAR_FAILED: 旧正文未清空，已停止以避免内容追加');
 }
 
-async function draftEditorContains(webContents: WebContents, text: string): Promise<boolean> {
-  const expected = text.replace(/[\s\-•·]/g, '');
-  if (!expected) return true;
+async function readDraftEditorText(webContents: WebContents): Promise<string> {
   return await webContents.executeJavaScript(`(() => {
     const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-    const normalize = (value) => String(value || '').replace(/[\\s\\-•·]/g, '');
-    return body instanceof HTMLElement && normalize(body.innerText || body.textContent || '').includes(${JSON.stringify(expected)});
+    return body instanceof HTMLElement ? String(body.innerText || body.textContent || '') : '';
   })()`);
+}
+
+async function waitForDraftInsertionEffect(
+  webContents: WebContents,
+  beforeText: string,
+  insertedText: string,
+  timeoutMs = 3_000,
+): Promise<Exclude<ZhihuInsertionEffect, 'uncertain'>> {
+  const deadline = Date.now() + timeoutMs;
+  let previous = compactDraftText(beforeText);
+  let stableSamples = 0;
+  let effect: ZhihuInsertionEffect = 'none';
+  while (Date.now() < deadline) {
+    const current = await readDraftEditorText(webContents);
+    const compactCurrent = compactDraftText(current);
+    effect = classifyZhihuInsertionEffect(beforeText, current, insertedText);
+    stableSamples = compactCurrent === previous ? stableSamples + 1 : 0;
+    if (effect === 'applied' && stableSamples >= 2) return 'applied';
+    if (effect === 'uncertain' && stableSamples >= 4) {
+      throw new Error('ZHIHU_INPUT_EFFECT_UNCERTAIN: 正文出现部分或重复输入，已停止以避免继续追加');
+    }
+    previous = compactCurrent;
+    await delay(120);
+  }
+  if (effect === 'uncertain') {
+    throw new Error('ZHIHU_INPUT_EFFECT_UNCERTAIN: 正文输入结果不明确，已停止以避免继续追加');
+  }
+  return effect;
 }
 
 async function focusDraftEditor(webContents: WebContents, selectContents = false): Promise<boolean> {
@@ -156,30 +200,36 @@ async function insertDraftText(
     // the renderer widget has no native focus. execCommand produces the
     // beforeinput/input sequence Draft.js uses to update React ContentState.
     await focusDraftEditor(webContents);
+    const beforeText = await readDraftEditorText(webContents);
     await webContents.executeJavaScript(`(() => {
       const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
       if (!(body instanceof HTMLElement)) return false;
       try { return document.execCommand('insertText', false, ${JSON.stringify(text)}); } catch { return false; }
     })()`);
-    if (await draftEditorContains(webContents, text)) {
+    if (await waitForDraftInsertionEffect(webContents, beforeText, text) === 'applied') {
       await waitForEditorCommit(webContents, text);
       return;
     }
   }
 
+  const beforeCdpText = await readDraftEditorText(webContents);
   await debuggerApi.sendCommand('Input.insertText', { text });
-  if (await draftEditorContains(webContents, text)) {
+  if (await waitForDraftInsertionEffect(webContents, beforeCdpText, text) === 'applied') {
     await waitForEditorCommit(webContents, text);
     return;
   }
 
   // Some Chromium builds only deliver Draft.js beforeInput from character
   // events. Send a final per-character fallback without using the clipboard.
+  const beforeCharacterText = await readDraftEditorText(webContents);
   for (const character of Array.from(text)) {
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', {
       type: 'char', key: character, text: character, unmodifiedText: character,
       code: '', windowsVirtualKeyCode: 0,
     });
+  }
+  if (await waitForDraftInsertionEffect(webContents, beforeCharacterText, text) !== 'applied') {
+    throw new Error('ZHIHU_INPUT_NOT_APPLIED: 知乎编辑器未接收正文输入');
   }
   await waitForEditorCommit(webContents, text);
 }

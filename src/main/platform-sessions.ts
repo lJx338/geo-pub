@@ -20,6 +20,7 @@ import { automationViewportForView } from './worker-window-layout.js';
 import { PublishTaskJournalStore } from './publish-task-journal.js';
 import { captureSuccessfulEvidence, captureUncertainEvidence } from './evidence-policy.js';
 import { PublishTaskHistoryStore, taskStatusForResult } from './publish-task-history.js';
+import { concealWorkerWindow, revealWorkerWindow } from './worker-window-visibility.js';
 
 const PLATFORM_URLS: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -70,6 +71,16 @@ const TASK_TIMEOUT_MS: Record<TaskAction, number> = {
   publish: 270_000,
 };
 const NAVIGATION_READY_TIMEOUT_MS = 30_000;
+
+export function shouldUseWindowsEditorForeground(
+  platform: Platform,
+  action: TaskAction,
+  runtimePlatform = process.platform,
+): boolean {
+  return runtimePlatform === 'win32'
+    && (platform === 'zhihu' || platform === 'netease')
+    && (action === 'fill' || action === 'publish');
+}
 
 export function pickEvictionCandidate(
   views: Array<{ platform: Platform; lastUsedAt: number }>,
@@ -145,6 +156,7 @@ export class PlatformSessions {
   private readonly taskHistory = new PublishTaskHistoryStore();
   private recentTasks: PublishTaskSnapshot[] = [];
   private idleViewDisposalTimer: NodeJS.Timeout | null = null;
+  private automationRevealedWindow = false;
   private maintenance: Pick<NonNullable<DesktopStatus['resourceDiagnostics']>, 'evidenceBytes' | 'cacheBytes' | 'lastMaintenanceAt'> = {};
 
   constructor(
@@ -181,6 +193,12 @@ export class PlatformSessions {
   cancelIdleViewDisposal(): void {
     if (this.idleViewDisposalTimer) clearTimeout(this.idleViewDisposalTimer);
     this.idleViewDisposalTimer = null;
+  }
+
+  showWindow(): void {
+    this.automationRevealedWindow = false;
+    revealWorkerWindow(this.window, process.platform === 'win32');
+    this.cancelIdleViewDisposal();
   }
 
   scheduleIdleViewDisposal(): void {
@@ -636,7 +654,7 @@ export class PlatformSessions {
 
   private setWindowMode(mode: 'interactive' | 'background'): void {
     if (mode === 'interactive') {
-      if (!this.window.isVisible()) this.window.show();
+      this.showWindow();
       return;
     }
     // Background work is described in the publishing center. The user can open
@@ -690,6 +708,12 @@ export class PlatformSessions {
       deadlineAt: startedAt + TASK_TIMEOUT_MS[action],
       ...(snapshot ? { snapshot } : {}),
     };
+    const revealForAutomation = shouldUseWindowsEditorForeground(platform, action);
+    const restoreHiddenWindow = revealForAutomation && !this.window.isVisible();
+    if (revealForAutomation) {
+      this.automationRevealedWindow = restoreHiddenWindow;
+      revealWorkerWindow(this.window, true);
+    }
     try {
       const result = await operation();
       await this.finishActiveTask(taskStatusForResult(result), result);
@@ -701,6 +725,10 @@ export class PlatformSessions {
       await this.finishActiveTask(status, undefined, message, code);
       throw error;
     } finally {
+      if (restoreHiddenWindow && this.automationRevealedWindow) {
+        concealWorkerWindow(this.window, true);
+        this.automationRevealedWindow = false;
+      }
       this.activeTask = null;
       this.scheduleIdleViewDisposal();
     }

@@ -28,7 +28,7 @@ const (
 	controlProtocolVersion = 1
 )
 
-var version = "0.2.5"
+var version = "0.2.6"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,

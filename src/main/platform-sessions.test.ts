@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureEvidenceBestEffort, pickEvictionCandidate, platformRuntimeState } from './platform-sessions.js';
+import { captureEvidenceBestEffort, pickEvictionCandidate, platformRuntimeState, shouldUseWindowsEditorForeground } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -23,6 +23,16 @@ describe('platform runtime status', () => {
     expect(platformRuntimeState(false, false)).toBe('not_loaded');
     expect(platformRuntimeState(true, false)).toBe('resident');
     expect(platformRuntimeState(true, true)).toBe('active');
+  });
+});
+
+describe('Windows editor foreground policy', () => {
+  it('raises the two Draft.js editors for fill and publish only on Windows', () => {
+    expect(shouldUseWindowsEditorForeground('zhihu', 'fill', 'win32')).toBe(true);
+    expect(shouldUseWindowsEditorForeground('netease', 'publish', 'win32')).toBe(true);
+    expect(shouldUseWindowsEditorForeground('toutiao', 'fill', 'win32')).toBe(false);
+    expect(shouldUseWindowsEditorForeground('zhihu', 'open', 'win32')).toBe(false);
+    expect(shouldUseWindowsEditorForeground('zhihu', 'fill', 'darwin')).toBe(false);
   });
 });
 

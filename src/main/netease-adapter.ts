@@ -5,6 +5,14 @@ import { contentMatchesExpected } from './content-verification.js';
 
 const PUBLISH_URL = 'https://mp.163.com/subscribe_v4/index.html#/article-publish';
 
+type NeteaseFormatCounts = { headings: number; lists: number; quotes: number; dividers: number; images: number };
+
+export function normalizeNeteaseExpectedFormat(counts: NeteaseFormatCounts): NeteaseFormatCounts {
+  // NetEase Draft.js has no stable divider control. Source <hr> elements are
+  // represented by paragraph spacing and must not fail an otherwise valid draft.
+  return { ...counts, dividers: 0 };
+}
+
 export interface NeteaseDraftFillResult {
   titleFilled: boolean;
   bodyFilled: boolean;
@@ -325,7 +333,7 @@ async function fillText(webContents: WebContents, title: string, html: string): 
     const contentMatchesExpected=${contentMatchesExpected.toString()};
     const count=(root,actual=false)=>({headings:root.querySelectorAll(actual?'h2,h3,h4,h5,h6':'h2,h3').length,lists:root.querySelectorAll('ul,ol').length,quotes:root.querySelectorAll('blockquote').length,dividers:root.querySelectorAll('hr').length,images:root.querySelectorAll('img').length});
     const source=document.createElement('div'); source.innerHTML=${JSON.stringify(html)};
-    const expectedStructure=count(source); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
+    const expectedStructure=(${normalizeNeteaseExpectedFormat.toString()})(count(source)); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
     const labels={headings:'小标题',lists:'列表',quotes:'引用',dividers:'分隔线',images:'正文图片'};
     const degradedBlocks=Object.keys(expectedStructure).filter(key=>actualStructure[key]<expectedStructure[key]).map(key=>labels[key]);
     return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&contentMatchesExpected(actualBody,expected),formatVerification:{expected:expectedStructure,actual:actualStructure,preserved:degradedBlocks.length===0,degradedBlocks}};
@@ -344,7 +352,7 @@ async function fillText(webContents: WebContents, title: string, html: string): 
       const contentMatchesExpected=${contentMatchesExpected.toString()};
       const count=(root,actual=false)=>({headings:root.querySelectorAll(actual?'h2,h3,h4,h5,h6':'h2,h3').length,lists:root.querySelectorAll('ul,ol').length,quotes:root.querySelectorAll('blockquote').length,dividers:root.querySelectorAll('hr').length,images:root.querySelectorAll('img').length});
       const source=document.createElement('div'); source.innerHTML=${JSON.stringify(html)};
-      const expectedStructure=count(source); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
+      const expectedStructure=(${normalizeNeteaseExpectedFormat.toString()})(count(source)); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
       const labels={headings:'小标题',lists:'列表',quotes:'引用',dividers:'分隔线',images:'正文图片'};
       const degradedBlocks=Object.keys(expectedStructure).filter(key=>actualStructure[key]<expectedStructure[key]).map(key=>labels[key]);
       return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&expected.length>0&&contentMatchesExpected(actualBody,expected),formatVerification:{expected:expectedStructure,actual:actualStructure,preserved:degradedBlocks.length===0,degradedBlocks}};
