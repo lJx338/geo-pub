@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { classifyZhihuInsertionEffect, verifyZhihuDraftState } from './zhihu-adapter.js';
+import { classifyZhihuInsertionEffect, verifyZhihuDraftState, zhihuHeadingLabels } from './zhihu-adapter.js';
+
+describe('Zhihu heading controls', () => {
+  it('keeps H2 and H3 label probes distinct while covering common menu variants', () => {
+    expect(zhihuHeadingLabels(2)).toContain('大标题');
+    expect(zhihuHeadingLabels(2)).toContain('H2');
+    expect(zhihuHeadingLabels(3)).toContain('小标题');
+    expect(zhihuHeadingLabels(3)).toContain('H3');
+    expect(zhihuHeadingLabels(2)).not.toContain('小标题');
+    expect(zhihuHeadingLabels(3)).not.toContain('大标题');
+  });
+});
 
 describe('Zhihu draft verification', () => {
   it('does not accept editor-only samples while the platform word count is zero', () => {

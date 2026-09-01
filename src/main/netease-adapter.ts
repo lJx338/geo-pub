@@ -12,6 +12,24 @@ type NeteaseInputBlock =
   | {type:'list';items:string[];ordered:boolean}
   | {type:'quote';text:string};
 
+export type NeteaseSourceBlockDescriptor = {
+  tag: string;
+  text: string;
+  listItemCount: number;
+};
+
+export function countNeteaseExpectedBlocks(blocks: NeteaseSourceBlockDescriptor[]): number {
+  return blocks.reduce((count, block) => {
+    if (block.tag === 'hr' || !block.text) return count;
+    if (block.tag === 'ul' || block.tag === 'ol') return count + block.listItemCount;
+    return count + 1;
+  }, 0);
+}
+
+export function neteaseEditorNeedsReset(state: { textLength: number; imageCount: number }): boolean {
+  return state.textLength > 0 || state.imageCount > 0;
+}
+
 export function normalizeNeteaseExpectedFormat(counts: NeteaseFormatCounts): NeteaseFormatCounts {
   // NetEase Draft.js has no stable divider control. Source <hr> elements are
   // represented by paragraph spacing and must not fail an otherwise valid draft.
@@ -40,6 +58,77 @@ export interface NeteaseDraftFillResult {
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const normalize = (value: unknown) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+
+async function readNeteaseEditorState(webContents: WebContents): Promise<{ textLength: number; imageCount: number }> {
+  return await webContents.executeJavaScript(`(() => {
+    const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+    if (!(editor instanceof HTMLElement)) return {textLength:-1,imageCount:-1};
+    const text=[...editor.querySelectorAll('[data-text="true"]')]
+      .map((node)=>String(node.textContent||''))
+      .join('')
+      .replace(/[\u200b-\u200d\ufeff]/g,'')
+      .trim();
+    return {textLength:text.length,imageCount:editor.querySelectorAll('.rich-editor-image-container img').length};
+  })()`);
+}
+
+async function waitForNeteaseEditorEmpty(webContents: WebContents, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let stableSamples = 0;
+  while (Date.now() < deadline) {
+    const state = await readNeteaseEditorState(webContents);
+    stableSamples = !neteaseEditorNeedsReset(state) ? stableSamples + 1 : 0;
+    if (stableSamples >= 6) return true;
+    await delay(200);
+  }
+  return false;
+}
+
+async function clearNeteaseEditor(webContents: WebContents): Promise<void> {
+  const initial = await readNeteaseEditorState(webContents);
+  if (initial.textLength < 0 || initial.imageCount < 0) {
+    throw new Error('NETEASE_EDITOR_NOT_READY: 找不到正文编辑器');
+  }
+  if (!neteaseEditorNeedsReset(initial)) return;
+
+  const debuggerApi = webContents.debugger;
+  const attachedHere = !debuggerApi.isAttached();
+  try {
+    if (attachedHere) debuggerApi.attach('1.3');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await webContents.focus();
+      const point = await webContents.executeJavaScript(`(() => {
+        const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+        if (!(editor instanceof HTMLElement)) return null;
+        editor.scrollIntoView({block:'center',inline:'nearest'});
+        const rect=editor.getBoundingClientRect();
+        return {x:rect.left+Math.min(rect.width/2,320),y:rect.top+Math.min(rect.height/2,120)};
+      })()`);
+      if (!point) throw new Error('NETEASE_EDITOR_NOT_READY: 找不到正文编辑器');
+      await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type:'mousePressed', x:point.x, y:point.y, button:'left', clickCount:1 });
+      await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type:'mouseReleased', x:point.x, y:point.y, button:'left', clickCount:1 });
+      const selectionReady = await webContents.executeJavaScript(`(() => {
+        const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+        if (!(editor instanceof HTMLElement)) return false;
+        editor.focus({preventScroll:true});
+        const range=document.createRange(); range.selectNodeContents(editor);
+        const selection=window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+        return document.activeElement===editor&&Boolean(selection?.rangeCount);
+      })()`);
+      if (!selectionReady) throw new Error('NETEASE_CLEAR_SELECTION_FAILED: 无法选中旧正文');
+      const modifiers = process.platform === 'darwin' ? 4 : 2;
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type:'rawKeyDown', key:'a', code:'KeyA', windowsVirtualKeyCode:65, modifiers, commands:['selectAll'] });
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type:'keyUp', key:'a', code:'KeyA', windowsVirtualKeyCode:65, modifiers });
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type:'rawKeyDown', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8, commands:['deleteBackward'] });
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type:'keyUp', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8 });
+      if (await waitForNeteaseEditorEmpty(webContents)) return;
+    }
+  } finally {
+    if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
+  }
+  const state = await readNeteaseEditorState(webContents);
+  throw new Error(`NETEASE_CLEAR_FAILED: 旧草稿未稳定清空 ${JSON.stringify(state)}`);
+}
 
 function isTransientPageError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -179,6 +268,9 @@ async function fillText(webContents: WebContents, title: string, html: string): 
   formatVerification: NeteaseDraftFillResult['formatVerification'];
 }> {
   const bodyText = await webContents.executeJavaScript(`(() => { const parser=document.createElement('div'); parser.innerHTML=${JSON.stringify(html)}; return String(parser.innerText||parser.textContent||'').replace(/\\u00a0/g,' ').trim(); })()`);
+  // Reset the existing Draft.js content before changing the title so a failed
+  // clear cannot leave the draft partially mutated.
+  await clearNeteaseEditor(webContents);
   const setTitle = async (): Promise<boolean> => {
     return await webContents.executeJavaScript(`(async () => {
       const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
@@ -419,7 +511,7 @@ async function fillText(webContents: WebContents, title: string, html: string): 
     const expectedStructure=(${normalizeNeteaseExpectedFormat.toString()})(count(source)); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
     const labels={headings:'小标题',lists:'列表',quotes:'引用',dividers:'分隔线',images:'正文图片'};
     const degradedBlocks=Object.keys(expectedStructure).filter(key=>actualStructure[key]<expectedStructure[key]).map(key=>labels[key]);
-    const expectedBlockCount=[...source.querySelectorAll('p,h1,h2,h3,h4,h5,h6,blockquote,li')].filter((node)=>String(node.textContent||'').trim()).length;
+    const expectedBlockCount=(${countNeteaseExpectedBlocks.toString()})([...source.children].map((node)=>({tag:node.tagName.toLowerCase(),text:String(node.textContent||'').trim(),listItemCount:(node.tagName==='UL'||node.tagName==='OL')?node.querySelectorAll(':scope > li').length:0})));
     const actualBlockCount=bodyEl instanceof HTMLElement?bodyEl.querySelectorAll('[data-block="true"]').length:0;
     return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&contentMatchesExpected(actualBody,expected),expectedBlockCount,actualBlockCount,formatVerification:{expected:expectedStructure,actual:actualStructure,preserved:degradedBlocks.length===0,degradedBlocks}};
   })()`);
@@ -440,7 +532,7 @@ async function fillText(webContents: WebContents, title: string, html: string): 
       const expectedStructure=(${normalizeNeteaseExpectedFormat.toString()})(count(source)); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
       const labels={headings:'小标题',lists:'列表',quotes:'引用',dividers:'分隔线',images:'正文图片'};
       const degradedBlocks=Object.keys(expectedStructure).filter(key=>actualStructure[key]<expectedStructure[key]).map(key=>labels[key]);
-      const expectedBlockCount=[...source.querySelectorAll('p,h1,h2,h3,h4,h5,h6,blockquote,li')].filter((node)=>String(node.textContent||'').trim()).length;
+      const expectedBlockCount=(${countNeteaseExpectedBlocks.toString()})([...source.children].map((node)=>({tag:node.tagName.toLowerCase(),text:String(node.textContent||'').trim(),listItemCount:(node.tagName==='UL'||node.tagName==='OL')?node.querySelectorAll(':scope > li').length:0})));
       const actualBlockCount=bodyEl instanceof HTMLElement?bodyEl.querySelectorAll('[data-block="true"]').length:0;
       return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&expected.length>0&&contentMatchesExpected(actualBody,expected),expectedBlockCount,actualBlockCount,formatVerification:{expected:expectedStructure,actual:actualStructure,preserved:degradedBlocks.length===0,degradedBlocks}};
     })()`);

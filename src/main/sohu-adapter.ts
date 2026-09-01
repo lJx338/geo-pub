@@ -233,7 +233,9 @@ function contentScript(title: string, html: string, write: boolean, runtimePlatf
   })()`;
 }
 
-export function buildSohuContentScriptForTest(title: string, html: string, write = false, runtimePlatform = process.platform): string {
+// Keep the default fixture deterministic on Windows; production calls pass
+// the real process platform through contentScript directly.
+export function buildSohuContentScriptForTest(title: string, html: string, write = false, runtimePlatform: NodeJS.Platform = 'linux'): string {
   return contentScript(title, html, write, runtimePlatform);
 }
 

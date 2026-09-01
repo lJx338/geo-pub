@@ -35,6 +35,13 @@ type FormatVerification = {
 type FormatCounts = { headings: number; lists: number; quotes: number; dividers: number; images: number };
 export type ZhihuDraftVerificationSource = 'word_count' | 'stable_editor' | 'none';
 export type ZhihuInsertionEffect = 'applied' | 'none' | 'uncertain';
+export type ZhihuHeadingApplication = 'exact' | 'fallback' | 'failed';
+
+export function zhihuHeadingLabels(level: 2 | 3): string[] {
+  return level === 2
+    ? ['二级标题', '标题 2', '标题2', 'H2', '标题二', '大标题']
+    : ['三级标题', '标题 3', '标题3', 'H3', '标题三', '小标题'];
+}
 
 function compactDraftText(value: unknown): string {
   return String(value || '').replace(/[\s\-•·]/g, '');
@@ -278,7 +285,8 @@ async function selectZhihuBlockRange(webContents: WebContents, start: number, en
   })()`);
 }
 
-async function applyZhihuWindowsFormatting(webContents: WebContents, blocks: ZhihuInputBlock[]): Promise<void> {
+async function applyZhihuWindowsFormatting(webContents: WebContents, blocks: ZhihuInputBlock[]): Promise<string[]> {
+  const warnings: string[] = [];
   let offset = 0;
   for (const block of blocks) {
     const length = block.type === 'list' ? block.items.length : 1;
@@ -286,12 +294,17 @@ async function applyZhihuWindowsFormatting(webContents: WebContents, blocks: Zhi
     const end = offset + length - 1;
     offset += length;
     if (block.type === 'paragraph' || block.type === 'divider' || !await selectZhihuBlockRange(webContents, start, end)) continue;
-    if (block.type === 'heading') await setHeadingLevel(webContents, block.level);
+    if (block.type === 'heading') {
+      const application = await setHeadingLevel(webContents, block.level);
+      if (application === 'fallback') warnings.push('三级标题已降级为二级标题');
+      if (application === 'failed') warnings.push(`${block.level}级标题未能应用，已保留为普通段落`);
+    }
     else if (block.type === 'list') await setListStyle(webContents, block.ordered);
     else if (block.type === 'quote') await clickEditorControl(webContents, ['引用']);
     await delay(300);
   }
   await focusDraftEditor(webContents);
+  return warnings;
 }
 
 async function clickEditorControl(webContents: WebContents, labels: string[], scope: 'toolbar' | 'menu' = 'toolbar'): Promise<boolean> {
@@ -305,8 +318,13 @@ async function clickEditorControl(webContents: WebContents, labels: string[], sc
     })();
     const menuOnly = ${JSON.stringify(scope)} === 'menu';
     const candidates = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],li,div,span')]
-      .filter(visible).map((element) => ({ element, text: normalize(element.textContent), rect: element.getBoundingClientRect() }))
-      .filter(({ element, text }) => labels.includes(text)
+      .filter(visible).map((element) => ({
+        element,
+        names: [element.textContent, element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-tooltip'), element.getAttribute('data-tip')]
+          .map(normalize).filter(Boolean),
+        rect: element.getBoundingClientRect(),
+      }))
+      .filter(({ element, names }) => names.some((name) => labels.some((label) => name === label || name.includes(label)))
         && (!menuOnly || Boolean(element.closest('[role="menu"],[role="listbox"],[class*="Menu"],[class*="menu"],[class*="Popover"],[class*="popover"]'))))
       .sort((left, right) => left.rect.width * left.rect.height - right.rect.width * right.rect.height);
     const target = candidates[0];
@@ -321,16 +339,29 @@ async function clickEditorControl(webContents: WebContents, labels: string[], sc
   return true;
 }
 
-async function setHeadingLevel(webContents: WebContents, level: 2 | 3): Promise<boolean> {
+async function selectHeadingMenuLevel(webContents: WebContents, labels: string[]): Promise<boolean> {
   if (!await clickEditorControl(webContents, ['标题'])) return false;
-  const labels = level === 2
-    ? ['二级标题', '标题 2', '标题2', 'H2', '标题二']
-    : ['三级标题', '标题 3', '标题3', 'H3', '标题三'];
   for (let attempt = 0; attempt < 10; attempt += 1) {
     if (await clickEditorControl(webContents, labels, 'menu')) return true;
     await delay(120);
   }
   return false;
+}
+
+async function setHeadingLevel(webContents: WebContents, level: 2 | 3): Promise<ZhihuHeadingApplication> {
+  if (await selectHeadingMenuLevel(webContents, zhihuHeadingLabels(level))) return 'exact';
+  await closeFormattingMenu(webContents);
+  // Some Zhihu accounts expose only H2. Keep heading semantics by degrading
+  // H3 to H2 instead of silently inserting a paragraph.
+  if (level === 3) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (await selectHeadingMenuLevel(webContents, zhihuHeadingLabels(2))) return 'fallback';
+      await closeFormattingMenu(webContents);
+      await delay(120);
+    }
+  }
+  await closeFormattingMenu(webContents);
+  return 'failed';
 }
 
 async function setListStyle(webContents: WebContents, ordered: boolean): Promise<boolean> {
@@ -404,9 +435,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
   draftStateVerified: boolean;
   draftVerificationSource: ZhihuDraftVerificationSource;
   formatVerification: FormatVerification;
+  formatWarnings?: string[];
   expectedBlockCount?: number;
   actualBlockCount?: number;
 }> {
+  const formatWarnings: string[] = [];
   const prepared = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
     const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
@@ -451,7 +484,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
     return { ready: true, expected, requestedBody, blocks, expectedBlockCount, point: { x: rect.left + Math.min(rect.width / 2, 320), y: rect.top + Math.min(rect.height / 2, 120) } };
   })()`);
   if (!prepared.ready || !prepared.point) {
-    return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, draftVerificationSource: 'none', expectedBlockCount: prepared.expectedBlockCount || 0, actualBlockCount: 0, formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
+    return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, draftVerificationSource: 'none', expectedBlockCount: prepared.expectedBlockCount || 0, actualBlockCount: 0, formatWarnings: ['编辑器'], formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
   }
 
   const debuggerApi = webContents.debugger;
@@ -507,13 +540,15 @@ async function fillContent(webContents: WebContents, title: string, html: string
         await insert(plainBlocks[index] || ' ');
         if (index < plainBlocks.length - 1) await enter(true);
       }
-      await applyZhihuWindowsFormatting(webContents, blocks);
+      formatWarnings.push(...await applyZhihuWindowsFormatting(webContents, blocks));
     } else {
       for (let index = 0; !richPasteApplied && index < blocks.length; index += 1) {
         const block = blocks[index];
         if (!block) continue;
         if (block.type === 'heading') {
-          if (!await setHeadingLevel(webContents, block.level)) await closeFormattingMenu(webContents);
+          const application = await setHeadingLevel(webContents, block.level);
+          if (application === 'fallback') formatWarnings.push('三级标题已降级为二级标题');
+          if (application === 'failed') formatWarnings.push(`${block.level}级标题未能应用，已保留为普通段落`);
           await insert(block.text);
           await enter();
         } else if (block.type === 'list') {
@@ -587,12 +622,13 @@ async function fillContent(webContents: WebContents, title: string, html: string
         wordCount: result.draftWordCount,
         expectedTextLength: result.bodyExpectedLength,
       });
-      return { ...result, draftStateVerified: verification.verified, draftVerificationSource: verification.source };
+      return { ...result, ...(formatWarnings.length ? { formatWarnings: [...new Set(formatWarnings)] } : {}), draftStateVerified: verification.verified, draftVerificationSource: verification.source };
     }
   }
   result.bodyFilled = false;
   result.draftStateVerified = false;
   result.draftVerificationSource = 'none';
+  if (formatWarnings.length) result.formatWarnings = [...new Set(formatWarnings)];
   return result;
 }
 
@@ -729,7 +765,10 @@ export async function fillZhihuDraft(
   if (process.platform === 'win32' && classifyDraftBlockCount(content.expectedBlockCount || 0, content.actualBlockCount || 0) !== 'match') {
     throw new Error(`ZHIHU_PARAGRAPH_STRUCTURE_FAILED: 正文段落结构不一致，expected=${content.expectedBlockCount}, actual=${content.actualBlockCount}`);
   }
-  const formatWarnings = content.formatVerification.preserved ? [] : [...content.formatVerification.degradedBlocks];
+  const formatWarnings = [...new Set([
+    ...(content.formatWarnings || []),
+    ...(content.formatVerification.preserved ? [] : content.formatVerification.degradedBlocks),
+  ])];
   await delay(1000);
   const publishSettingsOpened = await openPublishSettings(webContents);
   if (publishSettingsOpened) {
