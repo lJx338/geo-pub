@@ -264,7 +264,7 @@ installUpdateButton.addEventListener('click', async () => {
 });
 
 clearHistoryButton.addEventListener('click', async () => {
-  if (!window.confirm('清除最近记录和关联的失败画面？登录状态和防重复发布保护不会受影响。')) return;
+  if (!window.confirm('清除最近记录和关联的失败画面？登录状态不会受影响。')) return;
   clearHistoryButton.disabled = true;
   try {
     renderTaskStatus(await window.geoPublisher.clearTaskHistory());

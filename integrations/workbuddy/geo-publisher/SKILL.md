@@ -55,7 +55,7 @@ Use these platform mappings:
 
 - For login, captcha, or risk-control errors, ask the user to complete the visible action in GEO Publisher, then retry once.
 - For quota exhaustion, stop that platform and report the platform message.
-- For `result_uncertain`, query status or reconcile the management page. Never click publish again automatically.
+- For `result_uncertain`, query status or reconcile the management page and report that another explicit publish may create duplicate content. Do not retry within the same action, but allow a new publish when the user explicitly requests it.
 - Never weaken required input validation to force a task through.
 - Preserve complete JSON errors when asking WorkBuddy or technical support for help.
 

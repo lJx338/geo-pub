@@ -19,27 +19,30 @@ describe('publish task journal', () => {
     expect(publishContentHash(request())).toBe(publishContentHash({ ...request(), tags: ['测试', '自动化'] }));
   });
 
-  it('reuses a confirmed result for the same content', async () => {
+  it('creates a fresh task for the same content after a confirmed result', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-publisher-journal-'));
     directories.push(directory);
     const store = new PublishTaskJournalStore(directory);
     const first = await store.prepare(request());
     await store.update(first, 'success', { status: 'success' });
     const second = await store.prepare(request());
-    expect(second.taskId).toBe(first.taskId);
-    expect(second.state).toBe('success');
+    expect(second.taskId).not.toBe(first.taskId);
+    expect(second.state).toBe('prepared');
+    expect(second.contentHash).toBe(first.contentHash);
   });
 
-  it('rejects repeat publication while a submitted task remains unresolved', async () => {
+  it('creates a fresh task when an earlier submission remains unresolved', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-publisher-journal-'));
     directories.push(directory);
     const store = new PublishTaskJournalStore(directory);
     const first = await store.prepare(request());
     await store.update(first, 'dispatched');
-    await expect(store.prepare(request())).rejects.toThrow('RESULT_UNCERTAIN');
+    const second = await store.prepare(request());
+    expect(second.taskId).not.toBe(first.taskId);
+    expect(second.state).toBe('prepared');
   });
 
-  it('prunes old completed records but preserves unresolved publish attempts', async () => {
+  it('prunes old completed and unresolved records', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-publisher-journal-'));
     directories.push(directory);
     const store = new PublishTaskJournalStore(directory);
@@ -47,8 +50,8 @@ describe('publish task journal', () => {
     const unresolved = await store.prepare({ ...request(), title: '另一篇文章' });
     await store.update(completed, 'success');
     await store.update(unresolved, 'dispatched');
-    await expect(store.prune(Date.now() + 31 * 24 * 60 * 60 * 1000)).resolves.toBe(1);
+    await expect(store.prune(Date.now() + 31 * 24 * 60 * 60 * 1000)).resolves.toBe(2);
     await expect(readFile(join(directory, `${completed.taskId}.json`), 'utf8')).rejects.toThrow();
-    await expect(readFile(join(directory, `${unresolved.taskId}.json`), 'utf8')).resolves.toContain('dispatched');
+    await expect(readFile(join(directory, `${unresolved.taskId}.json`), 'utf8')).rejects.toThrow();
   });
 });

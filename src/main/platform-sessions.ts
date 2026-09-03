@@ -433,9 +433,6 @@ export class PlatformSessions {
       const managed = this.views.get(platform);
       if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
       let journal = await this.publishJournal.prepare({ platform, title, html, coverPath, tags });
-      if (journal.state === 'success') {
-        return { ...(journal.result as object), automation: { taskId: journal.taskId, reused: true, actions: [] } };
-      }
       const driver = new BrowserAutomationDriver(managed.view.webContents, platform, {
         viewport: automationViewportForView(this.viewBounds()),
       });

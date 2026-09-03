@@ -31,11 +31,6 @@ export class PublishTaskJournalStore {
 
   async prepare(input: { platform: Platform; title: string; html: string; coverPath: string; tags: string[] }): Promise<PublishTaskJournal> {
     const contentHash = publishContentHash(input);
-    const prior = await this.findRecent(input.platform, contentHash);
-    if (prior && ['dispatching', 'dispatched', 'result_uncertain'].includes(prior.state)) {
-      throw new Error(`RESULT_UNCERTAIN: 检测到同内容未完成对账的发布任务 ${prior.taskId}，禁止自动重发`);
-    }
-    if (prior?.state === 'success') return prior;
     const now = new Date().toISOString();
     const journal: PublishTaskJournal = {
       taskId: randomUUID(), platform: input.platform, contentHash, state: 'prepared', createdAt: now, updatedAt: now,
@@ -50,7 +45,7 @@ export class PublishTaskJournalStore {
     return updated;
   }
 
-  /** Keeps unresolved publish attempts as the duplicate-publish guard. */
+  /** Journals are diagnostic history only and must never block a new explicit publish. */
   async prune(now = Date.now(), maxCompleted = 1000, maxAgeMs = 30 * 24 * 60 * 60 * 1000): Promise<number> {
     let names: string[];
     try {
@@ -58,19 +53,18 @@ export class PublishTaskJournalStore {
     } catch {
       return 0;
     }
-    const completed: Array<{ path: string; updatedAt: number }> = [];
+    const records: Array<{ path: string; updatedAt: number }> = [];
     for (const name of names.filter((entry) => entry.endsWith('.json'))) {
       const path = join(this.directory(), name);
       try {
         const journal = JSON.parse(await readFile(path, 'utf8')) as PublishTaskJournal;
-        if (['dispatching', 'dispatched', 'result_uncertain'].includes(journal.state)) continue;
-        completed.push({ path, updatedAt: Date.parse(journal.updatedAt) || 0 });
+        records.push({ path, updatedAt: Date.parse(journal.updatedAt) || 0 });
       } catch {
         // Invalid historical files are left for manual inspection.
       }
     }
-    completed.sort((left, right) => right.updatedAt - left.updatedAt);
-    const removals = completed.filter((entry, index) => index >= maxCompleted || entry.updatedAt < now - maxAgeMs);
+    records.sort((left, right) => right.updatedAt - left.updatedAt);
+    const removals = records.filter((entry, index) => index >= maxCompleted || entry.updatedAt < now - maxAgeMs);
     await Promise.all(removals.map(async ({ path }) => await rm(path, { force: true })));
     return removals.length;
   }
@@ -81,25 +75,6 @@ export class PublishTaskJournalStore {
 
   private path(taskId: string): string {
     return join(this.directory(), `${taskId}.json`);
-  }
-
-  private async findRecent(platform: Platform, contentHash: string): Promise<PublishTaskJournal | null> {
-    let names: string[];
-    try {
-      names = await readdir(this.directory());
-    } catch {
-      return null;
-    }
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    for (const name of names.filter((entry) => entry.endsWith('.json'))) {
-      try {
-        const journal = JSON.parse(await readFile(join(this.directory(), name), 'utf8')) as PublishTaskJournal;
-        if (journal.platform === platform && journal.contentHash === contentHash && Date.parse(journal.updatedAt) >= cutoff) return journal;
-      } catch {
-        // A corrupt historical journal cannot prevent a fresh task from running.
-      }
-    }
-    return null;
   }
 
   private async write(journal: PublishTaskJournal): Promise<void> {

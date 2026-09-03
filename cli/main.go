@@ -28,7 +28,7 @@ const (
 	controlProtocolVersion = 1
 )
 
-var version = "0.2.7"
+var version = "0.2.8"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
@@ -190,7 +190,7 @@ func call(command string, request controlRequest, timeout time.Duration) (string
 			return command, nil, &cliError{
 				code:       typed.code,
 				message:    "桌面端 4 分钟内尚未返回结果，网络可能过慢，原任务也可能仍在执行",
-				suggestion: "先检查网络，不要立即重复发布；运行 geo-publisher status，待 busy=false 后再 inspect 对应平台",
+				suggestion: "先运行 geo-publisher status，待 busy=false 后再 inspect 对应平台；如仍需再次发布，请在确认可能产生重复内容后重新明确发起",
 			}
 		}
 		return command, nil, err
@@ -495,7 +495,7 @@ func instructions() json.RawMessage {
 			"Use fill for preview or any request that says not to publish",
 			"Use publish only after explicit user authorization and confirmPublish=true",
 			"Process platforms serially and preserve every structured result",
-			"Never republish automatically when status=result_uncertain; reconcile first",
+			"When status=result_uncertain, report the uncertainty and do not retry within the same action; a new explicit publish request is allowed but may create duplicate content",
 		},
 		"platformOrder": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
 		"platformNames": map[string]string{

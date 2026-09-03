@@ -194,7 +194,7 @@ export class BrowserWorkerClient {
       throw this.recoveryError(
         ambiguousPublish ? 'RESULT_UNCERTAIN' : 'BACKGROUND_LIFECYCLE_LOST',
         ambiguousPublish
-          ? '发布任务超时且结果可能已提交，已重启浏览器进程；禁止自动重发，请先对账。'
+          ? '发布任务超时且结果可能已提交，已重启浏览器进程；再次发布可能产生重复内容，请先确认平台结果。'
           : '浏览器任务超时，已重启浏览器进程；该任务可以人工确认后重试。',
         !ambiguousPublish,
         phase,

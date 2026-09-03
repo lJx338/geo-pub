@@ -510,7 +510,7 @@ export async function publishFilledDraft(
     }
   }
   const message = platform === 'netease'
-    ? `网易号发布结果未确认（检测已观察=${neteasePreflightObserved}，第二阶段点击=${neteaseSecondPublishClicked}），已停止操作，禁止自动重发`
-    : '点击发布后未检测到明确成功结果，已停止操作，禁止自动重发';
+    ? `网易号发布结果未确认（检测已观察=${neteasePreflightObserved}，第二阶段点击=${neteaseSecondPublishClicked}），已停止本次操作；再次发布可能产生重复内容`
+    : '点击发布后未检测到明确成功结果，已停止本次操作；再次发布可能产生重复内容';
   return { status: 'result_uncertain', platform, title, stage: 'result_check', message, url: state.url, pageText: state.text.slice(0, 1000), primaryClicked, confirmationClicked };
 }
