@@ -29,3 +29,10 @@ export function contentMatchesExpected(actualValue: unknown, expectedValue: unkn
   const lengthRatio = actual.length / expected.length;
   return hits >= Math.min(3, samples.length) && lengthRatio >= 0.7;
 }
+
+export type DraftBlockCountState = 'match' | 'missing' | 'duplicate';
+
+export function classifyDraftBlockCount(expected: number, actual: number): DraftBlockCountState {
+  if (actual === expected) return 'match';
+  return actual < expected ? 'missing' : 'duplicate';
+}

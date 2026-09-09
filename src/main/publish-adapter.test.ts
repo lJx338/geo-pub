@@ -4,6 +4,10 @@ import {
   isNeteasePreflightRunning,
   isNeteasePreflightComplete,
   isPublishSuccess,
+  knownPublishBlocker,
+  nextToutiaoPublishAction,
+  nextToutiaoResultCheckAction,
+  nextPenguinResultCheckAction,
   shouldContinueNeteaseAfterPreflight,
 } from './publish-adapter.js';
 
@@ -44,9 +48,98 @@ describe('publish result reconciliation', () => {
       text: '其他文章 审核中',
     }, '内容发布前如何减少重复修改')).toBe(false);
   });
+
+  it('waits for the no-ads warning before clicking any visible publish confirmation', () => {
+    expect(nextToutiaoPublishAction({
+      success: false,
+      noAdsWarningVisible: true,
+      confirmPublishVisible: true,
+      confirmationClicked: false,
+      noAdsConfirmed: false,
+    })).toBe('confirm_no_ads');
+  });
+
+  it('keeps waiting for delayed dialogs after the publish confirmation was clicked', () => {
+    expect(nextToutiaoPublishAction({
+      success: false,
+      noAdsWarningVisible: false,
+      confirmPublishVisible: false,
+      confirmationClicked: true,
+      noAdsConfirmed: false,
+    })).toBe('wait_result');
+  });
+
+  it('does not click the same Toutiao confirmation twice while it is disappearing', () => {
+    expect(nextToutiaoPublishAction({
+      success: false,
+      noAdsWarningVisible: false,
+      confirmPublishVisible: true,
+      confirmationClicked: true,
+      noAdsConfirmed: false,
+    })).toBe('wait_result');
+  });
+
+  it('opens the management page once when the result page does not appear after confirmation', () => {
+    expect(nextToutiaoResultCheckAction({
+      confirmed: true,
+      managementPage: false,
+      elapsedMs: 10_000,
+      managementFallbackOpened: false,
+      msSinceLastRefresh: 0,
+    })).toBe('open_management');
+    expect(nextToutiaoResultCheckAction({
+      confirmed: true,
+      managementPage: false,
+      elapsedMs: 30_000,
+      managementFallbackOpened: true,
+      msSinceLastRefresh: 0,
+    })).toBe('wait');
+  });
+
+  it('refreshes the management list while waiting for an asynchronously created article', () => {
+    expect(nextToutiaoResultCheckAction({
+      confirmed: true,
+      managementPage: true,
+      elapsedMs: 20_000,
+      managementFallbackOpened: false,
+      msSinceLastRefresh: 15_000,
+    })).toBe('refresh_management');
+  });
+
+  it('accepts an explicit Penguin success message on the editor route', () => {
+    expect(isPublishSuccess('penguin', {
+      url: 'https://om.qq.com/main/creation/article',
+      pageTitle: '腾讯内容开放平台',
+      text: '文章发布成功，请等待审核',
+    }, '测试文章')).toBe(true);
+  });
+
+  it('opens and refreshes Penguin management while reconciling the result', () => {
+    expect(nextPenguinResultCheckAction({
+      managementPage: false,
+      elapsedMs: 10_000,
+      managementFallbackOpened: false,
+      msSinceLastRefresh: 0,
+    })).toBe('open_management');
+    expect(nextPenguinResultCheckAction({
+      managementPage: true,
+      elapsedMs: 30_000,
+      managementFallbackOpened: true,
+      msSinceLastRefresh: 15_000,
+    })).toBe('refresh_management');
+  });
 });
 
 describe('NetEase pre-publish check', () => {
+  it('blocks Penguin when the daily publishing quota is exhausted', () => {
+    expect(knownPublishBlocker('已保存 正文字数：2594 今日发文额度已用尽 发布 定时发布')).toBe('今日发文额度已用尽');
+  });
+
+  it('blocks an account that is still being reviewed before clicking publish', () => {
+    expect(knownPublishBlocker('您的账号信息正在审核中，请耐心等待哦')).toBe('您的账号信息正在审核中，请耐心等待哦');
+    expect(knownPublishBlocker('您的账号未上线，暂不支持发布')).toBe('您的账号未上线，暂不支持发布');
+  });
+
   it('waits while the pre-publish check is still running', () => {
     const state = { text: '为保证展现效果，正在为您进行发文前检测…' };
     expect(isNeteasePreflightRunning(state.text)).toBe(true);

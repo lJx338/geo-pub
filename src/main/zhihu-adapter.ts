@@ -1,4 +1,5 @@
-import type { WebContents } from 'electron';
+import { BrowserWindow, type WebContents } from 'electron';
+import { classifyDraftBlockCount } from './content-verification.js';
 
 const PUBLISH_URL = 'https://zhuanlan.zhihu.com/write';
 const TITLE_SELECTOR = 'textarea[placeholder*="请输入标题"]';
@@ -14,6 +15,9 @@ export interface ZhihuDraftFillResult {
   draftStateVerified: boolean;
   draftVerificationSource: ZhihuDraftVerificationSource;
   formatVerification: FormatVerification;
+  formatWarnings?: string[];
+  expectedBlockCount?: number;
+  actualBlockCount?: number;
   publishSettingsOpened: boolean;
   aiDeclarationFound: boolean;
   aiDeclarationSelected: boolean;
@@ -30,6 +34,32 @@ type FormatVerification = {
 
 type FormatCounts = { headings: number; lists: number; quotes: number; dividers: number; images: number };
 export type ZhihuDraftVerificationSource = 'word_count' | 'stable_editor' | 'none';
+export type ZhihuInsertionEffect = 'applied' | 'none' | 'uncertain';
+export type ZhihuHeadingApplication = 'exact' | 'fallback' | 'failed';
+
+export function zhihuHeadingLabels(level: 2 | 3): string[] {
+  return level === 2
+    ? ['二级标题', '标题 2', '标题2', 'H2', '标题二', '大标题']
+    : ['三级标题', '标题 3', '标题3', 'H3', '标题三', '小标题'];
+}
+
+function compactDraftText(value: unknown): string {
+  return String(value || '').replace(/[\s\-•·]/g, '');
+}
+
+export function classifyZhihuInsertionEffect(
+  beforeValue: unknown,
+  afterValue: unknown,
+  insertedValue: unknown,
+): ZhihuInsertionEffect {
+  const before = compactDraftText(beforeValue);
+  const after = compactDraftText(afterValue);
+  const inserted = compactDraftText(insertedValue);
+  if (!inserted) return 'applied';
+  if (after === before) return 'none';
+  if (after === before + inserted) return 'applied';
+  return 'uncertain';
+}
 
 export function verifyZhihuDraftState(input: {
   titleFilled: boolean;
@@ -37,11 +67,12 @@ export function verifyZhihuDraftState(input: {
   stableSamples: number;
   wordCount: number;
   expectedTextLength: number;
+  persistedAfterReload?: boolean;
 }): { verified: boolean; source: ZhihuDraftVerificationSource } {
   if (!input.titleFilled || !input.bodyFilled) return { verified: false, source: 'none' };
   const wordCountThreshold = Math.max(1, Math.floor(input.expectedTextLength * 0.6));
   if (input.wordCount >= wordCountThreshold) return { verified: true, source: 'word_count' };
-  if (input.stableSamples >= 3) return { verified: true, source: 'stable_editor' };
+  if (input.persistedAfterReload && input.stableSamples >= 3) return { verified: true, source: 'stable_editor' };
   return { verified: false, source: 'none' };
 }
 type ZhihuInputBlock =
@@ -123,10 +154,165 @@ async function waitForEditorEmpty(webContents: WebContents, timeoutMs = 12_000):
   throw new Error('ZHIHU_CLEAR_FAILED: 旧正文未清空，已停止以避免内容追加');
 }
 
+async function readDraftEditorText(webContents: WebContents): Promise<string> {
+  return await webContents.executeJavaScript(`(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    return body instanceof HTMLElement ? String(body.innerText || body.textContent || '') : '';
+  })()`);
+}
+
+async function waitForDraftInsertionEffect(
+  webContents: WebContents,
+  beforeText: string,
+  insertedText: string,
+  timeoutMs = 3_000,
+): Promise<Exclude<ZhihuInsertionEffect, 'uncertain'>> {
+  const deadline = Date.now() + timeoutMs;
+  let previous = compactDraftText(beforeText);
+  let stableSamples = 0;
+  let effect: ZhihuInsertionEffect = 'none';
+  while (Date.now() < deadline) {
+    const current = await readDraftEditorText(webContents);
+    const compactCurrent = compactDraftText(current);
+    effect = classifyZhihuInsertionEffect(beforeText, current, insertedText);
+    stableSamples = compactCurrent === previous ? stableSamples + 1 : 0;
+    if (effect === 'applied' && stableSamples >= 2) return 'applied';
+    if (effect === 'uncertain' && stableSamples >= 4) {
+      throw new Error('ZHIHU_INPUT_EFFECT_UNCERTAIN: 正文出现部分或重复输入，已停止以避免继续追加');
+    }
+    previous = compactCurrent;
+    await delay(120);
+  }
+  if (effect === 'uncertain') {
+    throw new Error('ZHIHU_INPUT_EFFECT_UNCERTAIN: 正文输入结果不明确，已停止以避免继续追加');
+  }
+  return effect;
+}
+
+async function focusDraftEditor(webContents: WebContents, selectContents = false): Promise<boolean> {
+  await webContents.focus();
+  return await webContents.executeJavaScript(`(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!(body instanceof HTMLElement)) return false;
+    body.focus({ preventScroll: true });
+    if (${selectContents ? 'true' : 'false'}) {
+      const range = document.createRange(); range.selectNodeContents(body);
+      const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    }
+    return document.activeElement === body || body.contains(document.activeElement);
+  })()`);
+}
+
+async function insertDraftText(
+  webContents: WebContents,
+  debuggerApi: Electron.Debugger,
+  text: string,
+): Promise<void> {
+  const beforeCdpText = await readDraftEditorText(webContents);
+  if (process.platform === 'win32') await focusDraftEditor(webContents);
+  await webContents.executeJavaScript(`window.__geoPublisherInputMethod='cdp.insertText'`);
+  await debuggerApi.sendCommand('Input.insertText', { text });
+  if (await waitForDraftInsertionEffect(webContents, beforeCdpText, text) === 'applied') {
+    await waitForEditorCommit(webContents, text);
+    return;
+  }
+
+  // Some Chromium builds only deliver Draft.js beforeInput from character
+  // events. Send a final per-character fallback without using the clipboard.
+  const beforeCharacterText = await readDraftEditorText(webContents);
+  await webContents.executeJavaScript(`window.__geoPublisherInputMethod='cdp.charEvents'`);
+  for (const character of Array.from(text)) {
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', {
+      type: 'char', key: character, text: character, unmodifiedText: character,
+      code: '', windowsVirtualKeyCode: 0,
+    });
+  }
+  if (await waitForDraftInsertionEffect(webContents, beforeCharacterText, text) !== 'applied') {
+    throw new Error('ZHIHU_INPUT_NOT_APPLIED: 知乎编辑器未接收正文输入');
+  }
+  await waitForEditorCommit(webContents, text);
+}
+
+async function zhihuDraftBlockState(webContents: WebContents): Promise<{ count: number; activeBlock: number }> {
+  return await webContents.executeJavaScript(`(() => {
+    const editor=document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!(editor instanceof HTMLElement)) return {count:0,activeBlock:-1};
+    const blocks=[...editor.querySelectorAll('[data-block="true"]')];
+    const selection=window.getSelection();
+    const activeBlock=selection?.anchorNode ? blocks.findIndex((block)=>block.contains(selection.anchorNode)) : -1;
+    return {count:blocks.length,activeBlock};
+  })()`);
+}
+
+async function pressZhihuEnter(webContents: WebContents, debuggerApi: Electron.Debugger, expectNewBlock = true): Promise<void> {
+  if (process.platform !== 'win32') {
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await waitForEditorCommit(webContents);
+    return;
+  }
+  const before = await zhihuDraftBlockState(webContents);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!await focusDraftEditor(webContents)) throw new Error('ZHIHU_EDITOR_CARET_FAILED: 无法恢复知乎正文光标');
+    await webContents.executeJavaScript(`window.__geoPublisherInputMethod='cdp.keyDown.windows'`);
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+      text: '\n', unmodifiedText: '\n',
+    });
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+    if (!expectNewBlock) { await waitForEditorCommit(webContents); return; }
+    const deadline = Date.now() + 1_500;
+    while (Date.now() < deadline) {
+      const current = await zhihuDraftBlockState(webContents);
+      if (current.count === before.count + 1 && current.activeBlock >= before.count) return;
+      if (current.count > before.count + 1) throw new Error(`ZHIHU_PARAGRAPH_BREAK_UNCERTAIN: 知乎一次换段产生了 ${current.count - before.count} 个新段落`);
+      await delay(120);
+    }
+  }
+  throw new Error(`ZHIHU_PARAGRAPH_BREAK_FAILED: 知乎换段后段落数未从 ${before.count} 变为 ${before.count + 1}`);
+}
+
+async function selectZhihuBlockRange(webContents: WebContents, start: number, end: number): Promise<boolean> {
+  return await webContents.executeJavaScript(`(() => {
+    const editor=document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!(editor instanceof HTMLElement)) return false;
+    const blocks=[...editor.querySelectorAll('[data-block="true"]')];
+    const first=blocks[${start}], last=blocks[${end}];
+    if (!(first instanceof HTMLElement)||!(last instanceof HTMLElement)) return false;
+    editor.focus({preventScroll:true});
+    const range=document.createRange(); range.setStart(first,0); range.setEnd(last,last.childNodes.length);
+    const selection=window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    document.dispatchEvent(new Event('selectionchange',{bubbles:true}));
+    return Boolean(selection?.rangeCount);
+  })()`);
+}
+
+async function applyZhihuWindowsFormatting(webContents: WebContents, blocks: ZhihuInputBlock[]): Promise<string[]> {
+  const warnings: string[] = [];
+  let offset = 0;
+  for (const block of blocks) {
+    const length = block.type === 'list' ? block.items.length : 1;
+    const start = offset;
+    const end = offset + length - 1;
+    offset += length;
+    if (block.type === 'paragraph' || block.type === 'divider' || !await selectZhihuBlockRange(webContents, start, end)) continue;
+    if (block.type === 'heading') {
+      const application = await setHeadingLevel(webContents, block.level);
+      if (application === 'fallback') warnings.push('三级标题已降级为二级标题');
+      if (application === 'failed') warnings.push(`${block.level}级标题未能应用，已保留为普通段落`);
+    }
+    else if (block.type === 'list') await setListStyle(webContents, block.ordered);
+    else if (block.type === 'quote') await clickEditorControl(webContents, ['引用']);
+    await delay(300);
+  }
+  await focusDraftEditor(webContents);
+  return warnings;
+}
+
 async function clickEditorControl(webContents: WebContents, labels: string[], scope: 'toolbar' | 'menu' = 'toolbar'): Promise<boolean> {
   const point = await webContents.executeJavaScript(`(() => {
     const labels = ${JSON.stringify(labels)};
-    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none'
@@ -134,8 +320,13 @@ async function clickEditorControl(webContents: WebContents, labels: string[], sc
     })();
     const menuOnly = ${JSON.stringify(scope)} === 'menu';
     const candidates = [...document.querySelectorAll('button,[role="button"],[role="menuitem"],[role="option"],li,div,span')]
-      .filter(visible).map((element) => ({ element, text: normalize(element.textContent), rect: element.getBoundingClientRect() }))
-      .filter(({ element, text }) => labels.includes(text)
+      .filter(visible).map((element) => ({
+        element,
+        names: [element.textContent, element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-tooltip'), element.getAttribute('data-tip')]
+          .map(normalize).filter(Boolean),
+        rect: element.getBoundingClientRect(),
+      }))
+      .filter(({ element, names }) => names.some((name) => labels.some((label) => name === label || name.includes(label)))
         && (!menuOnly || Boolean(element.closest('[role="menu"],[role="listbox"],[class*="Menu"],[class*="menu"],[class*="Popover"],[class*="popover"]'))))
       .sort((left, right) => left.rect.width * left.rect.height - right.rect.width * right.rect.height);
     const target = candidates[0];
@@ -150,16 +341,29 @@ async function clickEditorControl(webContents: WebContents, labels: string[], sc
   return true;
 }
 
-async function setHeadingLevel(webContents: WebContents, level: 2 | 3): Promise<boolean> {
+async function selectHeadingMenuLevel(webContents: WebContents, labels: string[]): Promise<boolean> {
   if (!await clickEditorControl(webContents, ['标题'])) return false;
-  const labels = level === 2
-    ? ['二级标题', '标题 2', '标题2', 'H2', '标题二']
-    : ['三级标题', '标题 3', '标题3', 'H3', '标题三'];
   for (let attempt = 0; attempt < 10; attempt += 1) {
     if (await clickEditorControl(webContents, labels, 'menu')) return true;
     await delay(120);
   }
   return false;
+}
+
+async function setHeadingLevel(webContents: WebContents, level: 2 | 3): Promise<ZhihuHeadingApplication> {
+  if (await selectHeadingMenuLevel(webContents, zhihuHeadingLabels(level))) return 'exact';
+  await closeFormattingMenu(webContents);
+  // Some Zhihu accounts expose only H2. Keep heading semantics by degrading
+  // H3 to H2 instead of silently inserting a paragraph.
+  if (level === 3) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (await selectHeadingMenuLevel(webContents, zhihuHeadingLabels(2))) return 'fallback';
+      await closeFormattingMenu(webContents);
+      await delay(120);
+    }
+  }
+  await closeFormattingMenu(webContents);
+  return 'failed';
 }
 
 async function setListStyle(webContents: WebContents, ordered: boolean): Promise<boolean> {
@@ -195,7 +399,7 @@ export async function ensureZhihuEditor(webContents: WebContents, timeoutMs = 12
       const blockingDialog = [...document.querySelectorAll('[role="dialog"],.Modal-wrapper,.Modal-content')]
         .filter(visible).find((element) => /草稿加载中|草稿正在加载|正在加载草稿/.test(String(element.textContent || '')));
       const confirm = blockingDialog ? [...blockingDialog.querySelectorAll('button,[role="button"]')]
-        .filter(visible).find((element) => String(element.textContent || '').replace(/\s+/g, '') === '确定') : null;
+        .filter(visible).find((element) => String(element.textContent || '').replace(/\\s+/g, '') === '确定') : null;
       if (confirm instanceof HTMLElement) {
         const rect = confirm.getBoundingClientRect();
         return { ready: false, loginBlocked: false, dismiss: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } };
@@ -223,6 +427,72 @@ export async function ensureZhihuEditor(webContents: WebContents, timeoutMs = 12
   throw new Error('ZHIHU_EDITOR_NOT_READY: 知乎编辑器 120 秒内未就绪');
 }
 
+async function waitForZhihuAutosave(webContents: WebContents, title: string, html: string, timeoutMs = 30_000): Promise<boolean> {
+  await webContents.executeJavaScript(`(() => {
+    const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (body instanceof HTMLElement) body.blur();
+    if (title instanceof HTMLElement) title.blur();
+  })()`);
+  const deadline = Date.now() + timeoutMs;
+  let stableSamples = 0;
+  while (Date.now() < deadline) {
+    const state = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+      const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
+      const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
+      const expectedBody = compact(parser.innerText || parser.textContent || '');
+      const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
+      const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+      const pageText = normalize(document.body?.innerText || '');
+      return {
+        contentMatches: title instanceof HTMLTextAreaElement && normalize(title.value) === normalize(${JSON.stringify(title)})
+          && body instanceof HTMLElement && compact(body.innerText || body.textContent || '') === expectedBody,
+        saving: /草稿保存中|正在保存草稿|正在保存/.test(pageText),
+        saved: /草稿已保存|草稿保存成功|自动保存成功/.test(pageText),
+      };
+    })()`);
+    stableSamples = state.contentMatches ? stableSamples + 1 : 0;
+    if (state.saved && !state.saving && stableSamples >= 3) return true;
+    await delay(500);
+  }
+  return false;
+}
+
+async function verifyZhihuDraftPersistence(
+  webContents: WebContents,
+  title: string,
+  html: string,
+): Promise<{ persisted: boolean; wordCount: number }> {
+  const url = webContents.getURL();
+  if (!/zhuanlan\.zhihu\.com\/p\/\d+\/edit/.test(url)) return { persisted: false, wordCount: 0 };
+  await webContents.loadURL(url);
+  await ensureZhihuEditor(webContents, 60_000);
+  let stableSamples = 0;
+  let wordCount = 0;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const state = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+      const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
+      const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
+      const expectedBody = compact(parser.innerText || parser.textContent || '');
+      const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
+      const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+      const pageText = normalize(document.body?.innerText || '');
+      return {
+        matches: title instanceof HTMLTextAreaElement && normalize(title.value) === normalize(${JSON.stringify(title)})
+          && body instanceof HTMLElement && compact(body.innerText || body.textContent || '') === expectedBody,
+        wordCount: Number(pageText.match(/字数[：:]\\s*(\\d+)/)?.[1] || 0),
+      };
+    })()`);
+    wordCount = state.wordCount;
+    stableSamples = state.matches ? stableSamples + 1 : 0;
+    if (stableSamples >= 3) return { persisted: true, wordCount };
+    await delay(500 + attempt * 100);
+  }
+  return { persisted: false, wordCount };
+}
+
 async function fillContent(webContents: WebContents, title: string, html: string): Promise<{
   titleFilled: boolean;
   bodyFilled: boolean;
@@ -233,9 +503,13 @@ async function fillContent(webContents: WebContents, title: string, html: string
   draftStateVerified: boolean;
   draftVerificationSource: ZhihuDraftVerificationSource;
   formatVerification: FormatVerification;
+  formatWarnings?: string[];
+  expectedBlockCount?: number;
+  actualBlockCount?: number;
 }> {
+  const formatWarnings: string[] = [];
   const prepared = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
     const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
     const requestedTitle = ${JSON.stringify(title)};
     const sourceHtml = ${JSON.stringify(html)};
@@ -260,10 +534,11 @@ async function fillContent(webContents: WebContents, title: string, html: string
       if (tag === 'hr') return [{ type: 'divider' }];
       return text ? [{ type: 'paragraph', text }] : [];
     });
+    const expectedBlockCount = blocks.reduce((sum, block) => sum + (block.type === 'list' ? block.items.length : 1), 0);
     const titleElement = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
     const bodyElement = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
     if (!(titleElement instanceof HTMLTextAreaElement) || !(bodyElement instanceof HTMLElement)) {
-      return { ready: false, expected, requestedBody, blocks, point: null };
+      return { ready: false, expected, requestedBody, blocks, expectedBlockCount, point: null };
     }
 
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -274,26 +549,27 @@ async function fillContent(webContents: WebContents, title: string, html: string
 
     bodyElement.scrollIntoView({ block: 'center', inline: 'nearest' });
     const rect = bodyElement.getBoundingClientRect();
-    return { ready: true, expected, requestedBody, blocks, point: { x: rect.left + Math.min(rect.width / 2, 320), y: rect.top + Math.min(rect.height / 2, 120) } };
+    return { ready: true, expected, requestedBody, blocks, expectedBlockCount, point: { x: rect.left + Math.min(rect.width / 2, 320), y: rect.top + Math.min(rect.height / 2, 120) } };
   })()`);
   if (!prepared.ready || !prepared.point) {
-    return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, draftVerificationSource: 'none', formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
+    return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, draftVerificationSource: 'none', expectedBlockCount: prepared.expectedBlockCount || 0, actualBlockCount: 0, formatWarnings: ['编辑器'], formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
   }
 
-  // Draft.js persists React ContentState, not direct DOM assignments. Use one
-  // Chromium input path throughout so a hidden Windows WebContents cannot lose
-  // focus between an Electron event and a CDP event.
-  await webContents.executeJavaScript(`(() => {
-    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-    if (!(body instanceof HTMLElement)) return false;
-    body.focus({ preventScroll: true });
-    const range = document.createRange(); range.selectNodeContents(body);
-    const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
-    return true;
-  })()`);
   const debuggerApi = webContents.debugger;
   const attachedHere = !debuggerApi.isAttached();
+  const ownerWindow = process.platform === 'win32' ? BrowserWindow.fromWebContents(webContents) : null;
+  const initiallyVisible = ownerWindow?.isVisible() ?? true;
+  let foregroundRaised = false;
   try {
+    // Draft.js persists React ContentState, not direct DOM assignments. Use one
+    // Chromium input path throughout. Windows may require the owner window to
+    // receive native focus before the hidden RenderWidget accepts editing.
+    if (process.platform === 'win32' && ownerWindow && !initiallyVisible) {
+      ownerWindow.show();
+      ownerWindow.focus();
+      foregroundRaised = true;
+    }
+    await focusDraftEditor(webContents, true);
     if (attachedHere) debuggerApi.attach('1.3');
     await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: prepared.point.x, y: prepared.point.y });
     await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: prepared.point.x, y: prepared.point.y, button: 'left', clickCount: 1 });
@@ -304,45 +580,66 @@ async function fillContent(webContents: WebContents, title: string, html: string
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, commands: ['deleteBackward'] });
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
     await waitForEditorEmpty(webContents);
-    const enter = async () => {
-      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-      await waitForEditorCommit(webContents);
-    };
+    // System clipboard is intentionally never used. Draft.js receives every
+    // block through Chromium's input pipeline below.
+    const richPasteApplied = false;
+    const enter = async (expectNewBlock = true) => await pressZhihuEnter(webContents, debuggerApi, expectNewBlock);
     const insert = async (text: string) => {
-      await debuggerApi.sendCommand('Input.insertText', { text });
-      await waitForEditorCommit(webContents, text);
+      try {
+        await insertDraftText(webContents, debuggerApi, text);
+      } catch (error) {
+        if (process.platform !== 'win32' || !ownerWindow || foregroundRaised) throw error;
+        // A hidden Windows RenderWidget may reject all editor input until its
+        // owner window has a native focus. Raise it once, retry the same block,
+        // then restore the original hidden state in the outer finally block.
+        ownerWindow.show();
+        ownerWindow.focus();
+        foregroundRaised = true;
+        await insertDraftText(webContents, debuggerApi, text);
+      }
     };
     const blocks = prepared.blocks as ZhihuInputBlock[];
-    for (let index = 0; index < blocks.length; index += 1) {
-      const block = blocks[index];
-      if (!block) continue;
-      if (block.type === 'heading') {
-        if (!await setHeadingLevel(webContents, block.level)) await closeFormattingMenu(webContents);
-        await insert(block.text);
-        await enter();
-      } else if (block.type === 'list') {
-        if (!await setListStyle(webContents, block.ordered)) await closeFormattingMenu(webContents);
-        for (const item of block.items) {
-          await insert(item);
+    if (process.platform === 'win32') {
+      const plainBlocks = blocks.flatMap((block) => block.type === 'list'
+        ? block.items
+        : [block.type === 'divider' ? '---' : block.text]);
+      for (let index = 0; index < plainBlocks.length; index += 1) {
+        await focusDraftEditor(webContents);
+        await insert(plainBlocks[index] || ' ');
+        if (index < plainBlocks.length - 1) await enter(true);
+      }
+      formatWarnings.push(...await applyZhihuWindowsFormatting(webContents, blocks));
+    } else {
+      for (let index = 0; !richPasteApplied && index < blocks.length; index += 1) {
+        const block = blocks[index];
+        if (!block) continue;
+        if (block.type === 'heading') {
+          const application = await setHeadingLevel(webContents, block.level);
+          if (application === 'fallback') formatWarnings.push('三级标题已降级为二级标题');
+          if (application === 'failed') formatWarnings.push(`${block.level}级标题未能应用，已保留为普通段落`);
+          await insert(block.text);
           await enter();
+        } else if (block.type === 'list') {
+          if (!await setListStyle(webContents, block.ordered)) await closeFormattingMenu(webContents);
+          for (const item of block.items) { await insert(item); await enter(); }
+          await enter(false);
+        } else if (block.type === 'quote') {
+          const quoteEnabled = await clickEditorControl(webContents, ['引用']);
+          await insert(block.text);
+          await enter();
+          if (quoteEnabled) await clickEditorControl(webContents, ['引用']);
+        } else if (block.type === 'divider') {
+          if (!await clickEditorControl(webContents, ['分割线', '分隔线'])) await insert('---');
+          await enter();
+        } else {
+          await insert(block.text);
+          if (index < blocks.length - 1) await enter();
         }
-        await enter();
-      } else if (block.type === 'quote') {
-        const quoteEnabled = await clickEditorControl(webContents, ['引用']);
-        await insert(block.text);
-        await enter();
-        if (quoteEnabled) await clickEditorControl(webContents, ['引用']);
-      } else if (block.type === 'divider') {
-        if (!await clickEditorControl(webContents, ['分割线', '分隔线'])) await insert('---');
-        await enter();
-      } else {
-        await insert(block.text);
-        if (index < blocks.length - 1) await enter();
       }
     }
     await delay(1_800);
   } finally {
+    if (foregroundRaised && ownerWindow && !initiallyVisible && !ownerWindow.isDestroyed()) ownerWindow.hide();
     if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
   }
 
@@ -351,7 +648,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
   for (let attempt = 0; attempt < 16; attempt += 1) {
     await delay(500 + attempt * 150);
     result = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+      const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
       const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
       const requestedTitle = ${JSON.stringify(title)};
       const parser = document.createElement('div');
@@ -364,6 +661,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
       const actualTitle = titleElement instanceof HTMLTextAreaElement ? normalize(titleElement.value) : '';
       const actualBody = bodyElement instanceof HTMLElement ? normalize(bodyElement.innerText || bodyElement.textContent || '') : '';
       const actual = bodyElement instanceof HTMLElement ? count(bodyElement) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+      const actualBlockCount = bodyElement instanceof HTMLElement ? bodyElement.querySelectorAll('[data-block="true"]').length : 0;
       const pageText = normalize(document.body?.innerText || '');
       const wordCount = Number(pageText.match(/字数[：:]\\s*(\\d+)/)?.[1] || 0);
       const expectedCompactLength = compact(requestedBody).length;
@@ -376,6 +674,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
         title: actualTitle,
         bodyTextLength: actualBody.length,
         bodyExpectedLength: requestedBody.length,
+        expectedBlockCount: ${Number(prepared.expectedBlockCount || 0)}, actualBlockCount,
         draftWordCount: wordCount,
         draftStateVerified,
         draftVerificationSource: draftStateVerified ? 'word_count' : 'none',
@@ -391,19 +690,20 @@ async function fillContent(webContents: WebContents, title: string, html: string
         wordCount: result.draftWordCount,
         expectedTextLength: result.bodyExpectedLength,
       });
-      return { ...result, draftStateVerified: verification.verified, draftVerificationSource: verification.source };
+      return { ...result, ...(formatWarnings.length ? { formatWarnings: [...new Set(formatWarnings)] } : {}), draftStateVerified: verification.verified, draftVerificationSource: verification.source };
     }
   }
   result.bodyFilled = false;
   result.draftStateVerified = false;
   result.draftVerificationSource = 'none';
+  if (formatWarnings.length) result.formatWarnings = [...new Set(formatWarnings)];
   return result;
 }
 
 async function openPublishSettings(webContents: WebContents): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const state = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+      const normalize = (value) => String(value || '').replace(/\\u200b/g, '').replace(/\\s+/g, ' ').trim();
       const visible = (element) => element instanceof HTMLElement && (() => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -430,7 +730,7 @@ async function openPublishSettings(webContents: WebContents): Promise<boolean> {
 
 async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: boolean; selected: boolean }> {
   const readCurrentSelection = async (): Promise<{ found: boolean; selected: boolean }> => await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
@@ -438,20 +738,11 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
     const label = [...document.querySelectorAll('body *')]
       .filter(visible).find((element) => normalize(element.textContent) === '创作声明');
     if (!(label instanceof HTMLElement)) return { found: false, selected: false };
-    const labelRect = label.getBoundingClientRect();
-    let container = label.parentElement;
-    for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
-      const value = [...container.querySelectorAll('button,[role="button"],[role="combobox"],input,div')]
-        .filter(visible)
-        .filter((element) => element !== label && !element.contains(label))
-        .map((element) => ({ element, text: normalize(element.textContent), rect: element.getBoundingClientRect() }))
-        .filter(({ text }) => text === '无声明' || (text.length <= 32 && /(?:AI|人工智能)/i.test(text)
-          && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(text)))
-        .filter(({ rect }) => rect.width > 40 && rect.height > 18
-          && rect.left >= labelRect.right - 20
-          && rect.top <= labelRect.bottom + 40 && rect.bottom >= labelRect.top - 40)
-        .sort((left, right) => left.rect.width * left.rect.height - right.rect.width * right.rect.height)[0];
-      if (!value) continue;
+    const value = [...document.querySelectorAll('button,[role="button"],[role="combobox"]')]
+      .filter(visible).map((element) => ({ element, text: normalize(element.textContent) }))
+      .find(({ text }) => text === '无声明' || (text.length <= 32 && /(?:AI|人工智能)/i.test(text)
+        && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(text)));
+    if (value) {
       return { found: true, selected: value.text.length <= 32 && /(?:AI|人工智能)/i.test(value.text)
         && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(value.text)
         && !/(?:不包含|未使用|无AI|非AI)/i.test(value.text) };
@@ -462,7 +753,7 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
   const current = await readCurrentSelection();
   if (current.selected) return current;
   const control = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
@@ -470,20 +761,11 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
     const label = [...document.querySelectorAll('body *')]
       .filter(visible).find((element) => normalize(element.textContent) === '创作声明');
     if (!(label instanceof HTMLElement)) return { found: false, selected: false, target: null };
-    const labelRect = label.getBoundingClientRect();
-    let container = label.parentElement;
-    for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
-      const value = [...container.querySelectorAll('button,[role="button"],[role="combobox"],input,div')]
-        .filter(visible)
-        .filter((element) => element !== label && !element.contains(label))
-        .map((element) => ({ element, text: normalize(element.textContent), rect: element.getBoundingClientRect() }))
-        .filter(({ text }) => text === '无声明' || (text.length <= 32 && /(?:AI|人工智能)/i.test(text)
-          && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(text)))
-        .filter(({ rect }) => rect.width > 40 && rect.height > 18
-          && rect.left >= labelRect.right - 20
-          && rect.top <= labelRect.bottom + 40 && rect.bottom >= labelRect.top - 40)
-        .sort((left, right) => left.rect.width * left.rect.height - right.rect.width * right.rect.height)[0];
-      if (!value) continue;
+    const value = [...document.querySelectorAll('button,[role="button"],[role="combobox"]')]
+      .filter(visible).map((element) => ({ element, text: normalize(element.textContent), rect: element.getBoundingClientRect() }))
+      .find(({ text }) => text === '无声明' || (text.length <= 32 && /(?:AI|人工智能)/i.test(text)
+        && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(text)));
+    if (value) {
       const selected = value.text.length <= 32 && /(?:AI|人工智能)/i.test(value.text)
         && /(?:辅助创作|创作内容|生成内容|AI创作)/i.test(value.text)
         && !/(?:不包含|未使用|无AI|非AI)/i.test(value.text);
@@ -501,7 +783,7 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
   }
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const state = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+      const normalize = (value) => String(value || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').replace(/\\s+/g, ' ').trim();
       const visible = (element) => element instanceof HTMLElement && (() => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -548,6 +830,32 @@ export async function fillZhihuDraft(
   if (!content.titleFilled || !content.bodyFilled) {
     throw new Error(`ZHIHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}, expectedLength=${content.bodyExpectedLength}, actualLength=${content.bodyTextLength}, draftWordCount=${content.draftWordCount}`);
   }
+  if (process.platform === 'win32' && classifyDraftBlockCount(content.expectedBlockCount || 0, content.actualBlockCount || 0) !== 'match') {
+    throw new Error(`ZHIHU_PARAGRAPH_STRUCTURE_FAILED: 正文段落结构不一致，expected=${content.expectedBlockCount}, actual=${content.actualBlockCount}`);
+  }
+  const formatWarnings = [...new Set([
+    ...(content.formatWarnings || []),
+    ...(content.formatVerification.preserved ? [] : content.formatVerification.degradedBlocks),
+  ])];
+  let persistedAfterReload = false;
+  if (!content.draftStateVerified && await waitForZhihuAutosave(webContents, title, html)) {
+    const persistence = await verifyZhihuDraftPersistence(webContents, title, html);
+    persistedAfterReload = persistence.persisted;
+    content.draftWordCount = persistence.wordCount;
+    const verification = verifyZhihuDraftState({
+      titleFilled: content.titleFilled,
+      bodyFilled: content.bodyFilled,
+      stableSamples: persistence.persisted ? 3 : 0,
+      wordCount: persistence.wordCount,
+      expectedTextLength: content.bodyExpectedLength,
+      persistedAfterReload,
+    });
+    content.draftStateVerified = verification.verified;
+    content.draftVerificationSource = verification.source;
+  }
+  if (!content.draftStateVerified) {
+    throw new Error(`ZHIHU_DRAFT_STATE_MISMATCH: 知乎未确认正文已保存（页面字数=${content.draftWordCount}），已停止发布`);
+  }
   await delay(1000);
   const publishSettingsOpened = await openPublishSettings(webContents);
   if (publishSettingsOpened) {
@@ -563,6 +871,7 @@ export async function fillZhihuDraft(
         stableSamples: 3,
         wordCount,
         expectedTextLength: content.bodyExpectedLength,
+        persistedAfterReload,
       });
       content.draftStateVerified = verification.verified;
       content.draftVerificationSource = verification.source;
@@ -570,13 +879,13 @@ export async function fillZhihuDraft(
       await delay(500 + attempt * 150);
     }
   }
-  if (!content.draftStateVerified) {
-    throw new Error(`ZHIHU_DRAFT_STATE_MISMATCH: 页面正文看似完整，但知乎内部只识别到 ${content.draftWordCount} 字，已停止发布`);
-  }
   let declaration = { found: false, selected: false };
   if (publishSettingsOpened) declaration = await ensureAiDeclaration(webContents);
+  if (!declaration.found || !declaration.selected) {
+    throw new Error('ZHIHU_AI_DECLARATION_NOT_SELECTED: 未确认知乎创作声明中的 AI 生成内容选项');
+  }
   const finalState = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => String(value || '').replace(/\\u200b/g, '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
@@ -592,6 +901,7 @@ export async function fillZhihuDraft(
   await delay(1_500);
   return {
     ...content,
+    ...(formatWarnings.length ? { formatWarnings } : {}),
     publishSettingsOpened,
     aiDeclarationFound: declaration.found,
     aiDeclarationSelected: declaration.selected,

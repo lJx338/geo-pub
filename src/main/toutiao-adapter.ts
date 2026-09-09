@@ -1,7 +1,9 @@
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { WebContents } from 'electron';
+import { cdpClick } from './browser-automation-driver.js';
 import { resumeVisibleDraft } from './editor-draft.js';
+import { reportError } from './logging.js';
 
 const PUBLISH_URL = 'https://mp.toutiao.com/profile_v4/graphic/publish';
 const TITLE_SELECTOR = 'textarea[placeholder*="标题"],input[placeholder*="标题"]';
@@ -21,6 +23,12 @@ export interface DraftFillResult {
   coverUploaded: boolean;
   noAdsSelected: boolean | null;
   aiDeclarationSelected: boolean;
+  microPostDisabled: boolean;
+  optionalSettings: {
+    noAds: 'applied' | 'not_applied' | 'unavailable';
+    aiDeclaration: 'applied' | 'not_applied';
+    microPost: 'applied' | 'not_applied';
+  };
   draftSaveState: 'saved' | 'saving' | 'failed' | 'unknown';
   previewButtonDetected: boolean;
   url: string;
@@ -28,6 +36,15 @@ export interface DraftFillResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+async function optionalSetting<T>(name: string, fallback: T, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    reportError(`[toutiao] optional setting ${name} failed:`, error);
+    return fallback;
+  }
 }
 
 async function collapseAssistant(webContents: WebContents): Promise<void> {
@@ -83,10 +100,9 @@ async function ensureNoAds(webContents: WebContents): Promise<boolean | null> {
         || candidate.classList.contains('checked')
         || candidate.getAttribute('aria-checked') === 'true'
       )) : [];
-      const selected = selectedLabels.length === 1
-        ? selectedLabels[0] === label
-        : Boolean(input instanceof HTMLInputElement && input.checked
-          && !group?.querySelector('input[type="radio"][value="3"]:checked'));
+      const selected = input instanceof HTMLInputElement
+        ? input.checked && !group?.querySelector('input[type="radio"][value="3"]:checked')
+        : selectedLabels.length === 1 && selectedLabels[0] === label;
       label.scrollIntoView({ block: 'center', inline: 'nearest' });
       if (!selected && input instanceof HTMLElement) input.click();
       const rect = label.getBoundingClientRect();
@@ -105,8 +121,7 @@ async function ensureNoAds(webContents: WebContents): Promise<boolean | null> {
       if (stable) return true;
       continue;
     }
-    webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(result.x), y: Math.round(result.y), button: 'left', clickCount: 1 });
-    webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(result.x), y: Math.round(result.y), button: 'left', clickCount: 1 });
+    await cdpClick(webContents, { x: Math.round(result.x), y: Math.round(result.y) });
     await delay(500 + attempt * 250);
   }
   return await webContents.executeJavaScript(`(() => {
@@ -122,11 +137,47 @@ async function ensureNoAds(webContents: WebContents): Promise<boolean | null> {
       || candidate.classList.contains('checked')
       || candidate.getAttribute('aria-checked') === 'true'
     )) : [];
-    return selectedLabels.length === 1
-      ? selectedLabels[0] === label
-      : Boolean(input instanceof HTMLInputElement && input.checked
-        && !group?.querySelector('input[type="radio"][value="3"]:checked'));
+    return input instanceof HTMLInputElement
+      ? input.checked && !group?.querySelector('input[type="radio"][value="3"]:checked')
+      : selectedLabels.length === 1 && selectedLabels[0] === label;
   })()`);
+}
+
+async function ensureMicroPostDisabled(webContents: WebContents): Promise<boolean> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const state = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+      const label = [...document.querySelectorAll('label,[role="checkbox"]')]
+        .find((candidate) => normalize(candidate.textContent) === '发布得更多收益');
+      if (!(label instanceof HTMLElement)) return { found: false, selected: false };
+      let section = label.parentElement;
+      let ownsMicroPost = false;
+      for (let depth = 0; section && depth < 6; depth += 1, section = section.parentElement) {
+        if (normalize(section.textContent).includes('同时发布微头条')) { ownsMicroPost = true; break; }
+      }
+      if (!ownsMicroPost) return { found: false, selected: false };
+      const input = label.querySelector('input[type="checkbox"]');
+      const selected = input instanceof HTMLInputElement
+        ? input.checked
+        : label.getAttribute('aria-checked') === 'true' || label.classList.contains('byte-checkbox-checked');
+      if (selected) label.click();
+      return { found: true, selected };
+    })()`);
+    if (!state.found) return false;
+    await delay(state.selected ? 650 : 250);
+    const disabled = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, '').trim();
+      const label = [...document.querySelectorAll('label,[role="checkbox"]')]
+        .find((candidate) => normalize(candidate.textContent) === '发布得更多收益');
+      if (!(label instanceof HTMLElement)) return false;
+      const input = label.querySelector('input[type="checkbox"]');
+      return input instanceof HTMLInputElement
+        ? !input.checked
+        : label.getAttribute('aria-checked') !== 'true' && !label.classList.contains('byte-checkbox-checked');
+    })()`);
+    if (disabled) return true;
+  }
+  return false;
 }
 
 async function ensureAiDeclaration(webContents: WebContents): Promise<boolean> {
@@ -273,13 +324,15 @@ async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
     }) || buttons[0];
     if (!(button instanceof HTMLElement)) return null;
     button.scrollIntoView({ block: 'center', inline: 'center' });
-    const rect = button.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    button.click();
+    return true;
   })()`);
   if (!target) return false;
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  await delay(700);
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await delay(250);
+    const open = await webContents.executeJavaScript(`(() => [...document.querySelectorAll('button,[role="button"]')].some((button) => button instanceof HTMLElement && button.getAttribute('data-e2e') === 'imageUploadConfirm-btn' && button.getBoundingClientRect().width > 0))()`);
+    if (!open) return true;
+  }
   return true;
 }
 
@@ -501,18 +554,8 @@ export async function fillToutiaoDraft(
     throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}, actualLength=${result.bodyTextLength}`);
   }
   if (!result.formatVerification.preserved) throw new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${result.formatVerification.degradedBlocks.join('、')}`);
-  let noAdsSelected: boolean | null;
-  try {
-    noAdsSelected = await ensureNoAds(webContents);
-  } catch (error) {
-    throw new Error(`TOUTIAO_NO_ADS_STAGE: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  let aiDeclarationSelected: boolean;
-  try {
-    aiDeclarationSelected = await ensureAiDeclaration(webContents);
-  } catch (error) {
-    throw new Error(`TOUTIAO_AI_DECLARATION_STAGE: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const noAdsSelected = await optionalSetting('no_ads', null, async () => await ensureNoAds(webContents));
+  const aiDeclarationSelected = await optionalSetting('ai_declaration', false, async () => await ensureAiDeclaration(webContents));
   let coverUploaded: boolean;
   try {
     coverUploaded = await uploadCover(webContents, coverPath);
@@ -520,8 +563,10 @@ export async function fillToutiaoDraft(
     throw new Error(`TOUTIAO_COVER_STAGE: ${error instanceof Error ? error.message : String(error)}`);
   }
   await delay(1200);
-  const finalNoAdsSelected = await ensureNoAds(webContents);
-  const finalAiDeclarationSelected = await ensureAiDeclaration(webContents);
+  const finalNoAdsSelected = await optionalSetting('no_ads_verify', null, async () => await ensureNoAds(webContents));
+  const finalAiDeclarationSelected = await optionalSetting('ai_declaration_verify', false, async () => await ensureAiDeclaration(webContents));
+  const microPostDisabled = await optionalSetting('micro_post', false, async () => await ensureMicroPostDisabled(webContents));
+  if (!coverUploaded) throw new Error('TOUTIAO_COVER_NOT_APPLIED: 封面上传后未确认应用状态');
   let draftSaveState: DraftFillResult['draftSaveState'] = 'unknown';
   for (let attempt = 0; attempt < 12; attempt += 1) {
     draftSaveState = await webContents.executeJavaScript(`(() => { const text=String(document.body?.innerText||'').replace(/\\s+/g,' '); if(/保存失败/.test(text))return 'failed'; if(/(?:草稿)?已保存|保存成功/.test(text))return 'saved'; if(/保存中|正在保存/.test(text))return 'saving'; return 'unknown'; })()`);
@@ -559,6 +604,13 @@ export async function fillToutiaoDraft(
     coverUploaded,
     noAdsSelected: finalNoAdsSelected ?? noAdsSelected,
     aiDeclarationSelected: finalAiDeclarationSelected || aiDeclarationSelected,
+    microPostDisabled,
+    optionalSettings: {
+      noAds: finalNoAdsSelected === true || noAdsSelected === true ? 'applied'
+        : finalNoAdsSelected === null && noAdsSelected === null ? 'unavailable' : 'not_applied',
+      aiDeclaration: finalAiDeclarationSelected || aiDeclarationSelected ? 'applied' : 'not_applied',
+      microPost: microPostDisabled ? 'applied' : 'not_applied',
+    },
     draftSaveState,
     previewButtonDetected: finalState.previewButtonDetected,
     url: finalState.url,

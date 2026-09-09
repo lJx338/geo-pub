@@ -1,9 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export function dataDirectory(): string {
-  if (process.env.GEO_PUBLISHER_USER_DATA_DIR) return process.env.GEO_PUBLISHER_USER_DATA_DIR;
   if (process.platform === 'win32') {
     return join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'GEO Publisher Desktop');
   }
@@ -17,8 +16,12 @@ export function authFilePath(): string {
   return join(dataDirectory(), 'control-token.json');
 }
 
-export function evidenceDirectory(projectId?: string): string {
-  return projectId ? join(dataDirectory(), 'projects', projectId, 'evidence') : join(dataDirectory(), 'evidence');
+export function evidenceDirectory(): string {
+  return join(dataDirectory(), 'evidence');
+}
+
+export function diagnosticsDirectory(): string {
+  return join(dataDirectory(), 'diagnostics');
 }
 
 export function discoveryFilePath(): string {
@@ -29,9 +32,17 @@ export function cliDirectory(): string {
   return join(dataDirectory(), 'bin');
 }
 
-export function cliExecutablePath(version?: string): string {
-  if (process.platform === 'win32' && version) return join(cliDirectory(), 'versions', version, 'geo-publisher.exe');
+export function cliLauncherPath(): string {
   return join(cliDirectory(), process.platform === 'win32' ? 'geo-publisher.exe' : 'geo-publisher');
+}
+
+export function coreCliPath(version: string): string {
+  return join(cliDirectory(), 'versions', version, process.platform === 'win32' ? 'geo-publisher-core.exe' : 'geo-publisher-core');
+}
+
+/** @deprecated Use cliLauncherPath() for external callers or coreCliPath() internally. */
+export function cliExecutablePath(version?: string): string {
+  return version ? coreCliPath(version) : cliLauncherPath();
 }
 
 export function integrationsDirectory(): string {
@@ -39,8 +50,14 @@ export function integrationsDirectory(): string {
 }
 
 export function controlEndpoint(): string {
-  if (process.env.GEO_PUBLISHER_CONTROL_ENDPOINT) return process.env.GEO_PUBLISHER_CONTROL_ENDPOINT;
   const userKey = createHash('sha256').update(homedir()).digest('hex').slice(0, 12);
   if (process.platform === 'win32') return `\\\\.\\pipe\\geo-publisher-${userKey}`;
   return `/tmp/geo-publisher-${userKey}.sock`;
+}
+
+export function workerEndpoint(): string {
+  const userKey = createHash('sha256').update(homedir()).digest('hex').slice(0, 12);
+  const instanceKey = randomUUID().replace(/-/g, '');
+  if (process.platform === 'win32') return `\\\\.\\pipe\\geo-publisher-worker-${userKey}-${instanceKey}`;
+  return `/tmp/geo-publisher-worker-${userKey}-${instanceKey}.sock`;
 }

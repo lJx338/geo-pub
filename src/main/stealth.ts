@@ -6,6 +6,7 @@
 import { session, WebContents } from 'electron';
 
 const configuredSessions = new WeakSet<Electron.Session>();
+const configuredWebContents = new WeakSet<WebContents>();
 
 /**
  * 获取伪装的User-Agent（去除Electron标识）
@@ -210,6 +211,8 @@ export function getStealthScript(): string {
  * 使用 webRequest 在最早时机注入
  */
 export function setupStealthInjection(webContents: WebContents): void {
+  if (configuredWebContents.has(webContents)) return;
+  configuredWebContents.add(webContents);
   // 方法1: 使用 executeJavaScript 在导航前注入
   webContents.on('did-start-navigation', (event, url) => {
     if (url.startsWith('http://') || url.startsWith('https://')) {

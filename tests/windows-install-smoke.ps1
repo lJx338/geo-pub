@@ -38,7 +38,7 @@ try {
     if (Test-Path $discoveryPath) {
       try {
         $candidate = Get-Content -Raw -Path $discoveryPath | ConvertFrom-Json
-        if ($candidate.ready -and $candidate.cliPath -and (Test-Path $candidate.cliPath)) {
+        if ($candidate.ready -and $candidate.launcherPath -and $candidate.coreCliPath -and (Test-Path $candidate.launcherPath) -and (Test-Path $candidate.coreCliPath)) {
           $discovery = $candidate
           break
         }
@@ -57,17 +57,23 @@ try {
   if ($discovery.appPath -ne $appPath) {
     throw "Discovery appPath does not match the installed executable"
   }
+  if ($discovery.schemaVersion -ne 3 -or $discovery.cliPath -ne $discovery.launcherPath) {
+    throw "Discovery does not expose the fixed CLI launcher"
+  }
+  if ($discovery.coreCliPath -notmatch '[\\/]versions[\\/]') {
+    throw "Discovery Core CLI is not versioned: $($discovery.coreCliPath)"
+  }
 
-  $version = & $discovery.cliPath version | ConvertFrom-Json
+  $version = & $discovery.launcherPath version | ConvertFrom-Json
   if (-not $version.ok -or $version.version -ne $discovery.appVersion) {
     throw "CLI version does not match the desktop discovery record"
   }
-  $doctor = & $discovery.cliPath doctor | ConvertFrom-Json
-  if (-not $doctor.ok -or -not $doctor.data.desktopConnected -or -not $doctor.data.versionMatch) {
+  $doctor = & $discovery.launcherPath doctor | ConvertFrom-Json
+  if (-not $doctor.ok -or -not $doctor.data.desktopConnected -or -not $doctor.data.compatible -or -not $doctor.data.protocolMatch) {
     throw "CLI doctor could not connect to the installed desktop"
   }
-  $instructions = & $discovery.cliPath instructions --json | ConvertFrom-Json
-  $schema = & $discovery.cliPath schema --json | ConvertFrom-Json
+  $instructions = & $discovery.launcherPath instructions --json | ConvertFrom-Json
+  $schema = & $discovery.launcherPath schema --json | ConvertFrom-Json
   if (-not $instructions.ok -or $instructions.data.platformOrder.Count -ne 6) {
     throw "CLI instructions are incomplete"
   }

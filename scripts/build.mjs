@@ -36,19 +36,17 @@ await Promise.all([
     sourcemap: true,
   }),
   build({
-    entryPoints: ['src/renderer/app.tsx'],
-    outfile: 'dist/renderer/renderer.js',
+    entryPoints: ['src/worker-tabs/preload.ts'],
+    outfile: 'dist/worker-tabs-preload.cjs',
     bundle: true,
-    platform: 'browser',
-    format: 'iife',
-    target: 'chrome110',
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    external: ['electron'],
     sourcemap: true,
   }),
 ]);
 
-await cp('src/renderer/index.html', 'dist/renderer/index.html');
-await cp('src/renderer/styles.css', 'dist/renderer/styles.css');
+await cp('src/renderer', 'dist/renderer', { recursive: true });
+await cp('src/worker-tabs', 'dist/worker-tabs', { recursive: true });
 await cp('build/icon.png', 'dist/renderer/logo.png');
-await cp('node_modules/@fontsource-variable/noto-sans-sc/index.css', 'dist/renderer/noto-sans-sc.css');
-await cp('node_modules/@fontsource-variable/noto-sans-sc/files', 'dist/renderer/files', { recursive: true });
-await cp('node_modules/@fontsource-variable/noto-sans-sc/LICENSE', 'dist/renderer/Noto-Sans-SC-LICENSE.txt');

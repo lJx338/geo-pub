@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OperationTimeoutError, PlatformSessions, pickEvictionCandidate, platformRuntimeState, projectPartitionName, withOperationDeadline } from './platform-sessions.js';
+import { captureEvidenceBestEffort, formatWarningsFromResult, pickEvictionCandidate, platformRuntimeState, shouldUseWindowsEditorForeground } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -19,60 +19,48 @@ describe('platform view eviction', () => {
 });
 
 describe('platform runtime status', () => {
-  it('isolates browser storage by customer project and platform', () => {
-    expect(projectPartitionName('11111111-1111-4111-8111-111111111111', 'toutiao'))
-      .not.toBe(projectPartitionName('22222222-2222-4222-8222-222222222222', 'toutiao'));
-    expect(projectPartitionName('11111111-1111-4111-8111-111111111111', 'toutiao'))
-      .not.toBe(projectPartitionName('11111111-1111-4111-8111-111111111111', 'zhihu'));
-  });
   it('does not confuse view residency with login state', () => {
     expect(platformRuntimeState(false, false)).toBe('not_loaded');
     expect(platformRuntimeState(true, false)).toBe('resident');
-    expect(platformRuntimeState(true, false, true)).toBe('background');
     expect(platformRuntimeState(true, true)).toBe('active');
-  });
-
-  it('keeps the active platform hidden while an app dialog is open', () => {
-    const visibility: boolean[] = [];
-    const bounds: unknown[] = [];
-    const managed = {
-      platform: 'baijia',
-      host: 'interactive',
-      view: {
-        setVisible: (visible: boolean) => visibility.push(visible),
-        setBounds: (value: unknown) => bounds.push(value),
-      },
-    };
-    const sessions = Object.create(PlatformSessions.prototype) as PlatformSessions;
-    const internals = sessions as unknown as {
-      activePlatform: 'baijia';
-      views: Map<string, typeof managed>;
-      window: { getContentSize(): [number, number] };
-      uiOverlayOpen: boolean;
-      restoreManagedView(value: typeof managed): void;
-    };
-    internals.window = { getContentSize: () => [1360, 900] };
-    internals.uiOverlayOpen = false;
-    internals.activePlatform = 'baijia';
-    internals.views = new Map([['baijia', managed]]);
-
-    sessions.setUiOverlayOpen(true);
-    internals.restoreManagedView(managed);
-    expect(visibility).toEqual([false, false]);
-
-    sessions.setUiOverlayOpen(false);
-    expect(visibility.at(-1)).toBe(true);
-    expect(bounds.at(-1)).toEqual({ x: 248, y: 78, width: 1112, height: 822 });
   });
 });
 
-describe('operation deadline', () => {
-  it('closes a stalled background page before returning a timeout', async () => {
-    let closed = false;
-    await expect(withOperationDeadline(new Promise<never>(() => undefined), 5, async () => { closed = true; return { screenshotPath: '/tmp/timeout.png' }; })).rejects.toMatchObject({
-      message: expect.stringContaining('PLATFORM_OPERATION_TIMEOUT'),
-      details: { screenshotPath: '/tmp/timeout.png' },
-    } satisfies Partial<OperationTimeoutError>);
-    expect(closed).toBe(true);
+describe('Windows editor foreground policy', () => {
+  it('raises Windows editors that need a native foreground surface for fill and publish', () => {
+    expect(shouldUseWindowsEditorForeground('zhihu', 'fill', 'win32')).toBe(true);
+    expect(shouldUseWindowsEditorForeground('sohu', 'fill', 'win32')).toBe(true);
+    expect(shouldUseWindowsEditorForeground('netease', 'publish', 'win32')).toBe(true);
+    expect(shouldUseWindowsEditorForeground('penguin', 'fill', 'win32')).toBe(true);
+    expect(shouldUseWindowsEditorForeground('toutiao', 'fill', 'win32')).toBe(false);
+    expect(shouldUseWindowsEditorForeground('zhihu', 'open', 'win32')).toBe(false);
+    expect(shouldUseWindowsEditorForeground('zhihu', 'fill', 'darwin')).toBe(false);
+  });
+});
+
+describe('evidence capture', () => {
+  it('returns the screenshot path when capture succeeds', async () => {
+    await expect(captureEvidenceBestEffort(async () => 'evidence.png', 'zhihu', 'fill')).resolves.toEqual({
+      screenshotPath: 'evidence.png',
+      screenshotWarning: null,
+    });
+  });
+
+  it('does not fail the operation when the display surface cannot be captured', async () => {
+    await expect(captureEvidenceBestEffort(
+      async () => { throw new Error('Current display surface not available for capture'); },
+      'zhihu',
+      'fill',
+    )).resolves.toEqual({
+      screenshotPath: null,
+      screenshotWarning: 'EVIDENCE_CAPTURE_FAILED: zhihu/fill: Current display surface not available for capture',
+    });
+  });
+});
+
+describe('optional editor formatting warnings', () => {
+  it('deduplicates additive warnings without changing success semantics', () => {
+    expect(formatWarningsFromResult({ status: 'success', formatWarnings: ['小标题', '列表', '小标题'] })).toEqual(['小标题', '列表']);
+    expect(formatWarningsFromResult({ status: 'success' })).toBeUndefined();
   });
 });

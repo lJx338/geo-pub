@@ -1,5 +1,6 @@
-import { access } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { extname, join, resolve } from 'node:path';
 import type { WebContents } from 'electron';
 import { baijiaSettingsSchema, defaultBaijiaSettings, type BaijiaSettings } from '../shared/platform-settings.js';
 
@@ -25,6 +26,58 @@ export interface BaijiaDraftFillResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+export function baijiaCoverUploadFormat(filePath: string): 'original' | 'convert-webp' | 'unsupported' {
+  const extension = extname(filePath).toLowerCase();
+  if (['.jpg', '.jpeg', '.png'].includes(extension)) return 'original';
+  if (extension === '.webp') return 'convert-webp';
+  return 'unsupported';
+}
+
+async function prepareBaijiaCoverUpload(
+  webContents: WebContents,
+  filePath: string,
+): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
+  const absolutePath = resolve(filePath);
+  await access(absolutePath);
+  const format = baijiaCoverUploadFormat(absolutePath);
+  if (format === 'original') return { filePath: absolutePath, cleanup: async () => undefined };
+  if (format === 'unsupported') {
+    throw new Error('BAIJIA_COVER_FORMAT_UNSUPPORTED: 百家号封面仅支持 JPG、JPEG、PNG 或 WebP');
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), 'geo-publisher-baijia-cover-'));
+  const convertedPath = join(directory, 'cover.png');
+  try {
+    const source = await readFile(absolutePath);
+    const pngBase64 = await webContents.executeJavaScript(`(async () => {
+      const encoded = ${JSON.stringify(source.toString('base64'))};
+      const binary = atob(encoded);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/webp' }));
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('canvas context unavailable');
+        context.drawImage(bitmap, 0, 0);
+        const dataUrl = canvas.toDataURL('image/png');
+        if (!dataUrl.startsWith('data:image/png;base64,')) throw new Error('PNG encoding failed');
+        return dataUrl.slice('data:image/png;base64,'.length);
+      } finally {
+        bitmap.close();
+      }
+    })()`);
+    const png = Buffer.from(String(pngBase64), 'base64');
+    if (png.length < 8 || png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error('invalid PNG');
+    await writeFile(convertedPath, png, { mode: 0o600 });
+    return { filePath: convertedPath, cleanup: async () => { await rm(directory, { recursive: true, force: true }); } };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw new Error(`BAIJIA_COVER_CONVERSION_FAILED: WebP 封面转换失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function setFileInput(webContents: WebContents, selector: string, filePath: string): Promise<void> {
@@ -238,7 +291,7 @@ async function applyBaijiaSettings(webContents: WebContents, settings: BaijiaSet
 }
 
 async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
-  const target = await webContents.executeJavaScript(`(() => {
+  return await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect();
@@ -265,15 +318,11 @@ async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
       }
       return false;
     });
-    if (!(button instanceof HTMLElement) || button.hasAttribute('disabled')) return null;
+    if (!(button instanceof HTMLElement) || button.hasAttribute('disabled')) return false;
     button.scrollIntoView({ block: 'center', inline: 'center' });
-    const rect = button.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    button.click();
+    return true;
   })()`);
-  if (!target) return false;
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  return true;
 }
 
 async function coverApplied(webContents: WebContents): Promise<boolean> {
@@ -336,21 +385,21 @@ async function coverSignature(webContents: WebContents): Promise<string> {
 }
 
 async function uploadCover(webContents: WebContents, coverPath: string): Promise<boolean> {
-  const absolutePath = resolve(coverPath);
-  await access(absolutePath);
-  const opened = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-    const visible = (element) => element instanceof HTMLElement && (() => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    })();
-    const candidates = [...document.querySelectorAll('button,[role="button"],div,span')]
-      .filter(visible)
-      .filter((element) => normalize(element.textContent) === '选择封面'
-        || element.getAttribute('aria-label') === '更换封面'
-        || (element.matches('button,[role="button"]') && normalize(element.textContent) === '更换'));
-    const target = candidates.sort((left, right) => {
+  const prepared = await prepareBaijiaCoverUpload(webContents, coverPath);
+  try {
+    const opened = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const visible = (element) => element instanceof HTMLElement && (() => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      })();
+      const candidates = [...document.querySelectorAll('button,[role="button"],div,span')]
+        .filter(visible)
+        .filter((element) => normalize(element.textContent) === '选择封面'
+          || element.getAttribute('aria-label') === '更换封面'
+          || (element.matches('button,[role="button"]') && normalize(element.textContent) === '更换'));
+      const target = candidates.sort((left, right) => {
         const priority = (element) => element.getAttribute('aria-label') === '更换封面' ? 2
           : normalize(element.textContent) === '选择封面' ? 1 : 0;
         const priorityDiff = priority(right) - priority(left);
@@ -359,38 +408,41 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
         const b = right.getBoundingClientRect();
         return a.width * a.height - b.width * b.height;
       })[0];
-    if (!(target instanceof HTMLElement)) return false;
-    target.scrollIntoView({ block: 'center', inline: 'center' });
-    target.click();
-    return true;
-  })()`);
-  if (!opened) return false;
-
-  let selector = '';
-  for (let attempt = 0; attempt < 40 && !selector; attempt += 1) {
-    selector = await webContents.executeJavaScript(`(() => {
-      const marker = 'data-geo-desktop-baijia-cover';
-      document.querySelectorAll('[' + marker + ']').forEach((element) => element.removeAttribute(marker));
-      const target = [...document.querySelectorAll('input[type="file"]')]
-        .find((input) => /image|jpg|jpeg|png/i.test(String(input.getAttribute('accept') || 'image')));
-      if (!(target instanceof HTMLInputElement)) return '';
-      target.setAttribute(marker, 'true');
-      return '[' + marker + '="true"]';
+      if (!(target instanceof HTMLElement)) return false;
+      target.scrollIntoView({ block: 'center', inline: 'center' });
+      target.click();
+      return true;
     })()`);
-    if (!selector) await delay(500);
-  }
-  if (!selector) return false;
-  await setFileInput(webContents, selector, absolutePath);
-  await delay(800);
+    if (!opened) return false;
 
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+    let selector = '';
+    for (let attempt = 0; attempt < 40 && !selector; attempt += 1) {
+      selector = await webContents.executeJavaScript(`(() => {
+        const marker = 'data-geo-desktop-baijia-cover';
+        document.querySelectorAll('[' + marker + ']').forEach((element) => element.removeAttribute(marker));
+        const target = [...document.querySelectorAll('input[type="file"]')]
+          .find((input) => /image|jpg|jpeg|png/i.test(String(input.getAttribute('accept') || 'image')));
+        if (!(target instanceof HTMLInputElement)) return '';
+        target.setAttribute(marker, 'true');
+        return '[' + marker + '="true"]';
+      })()`);
+      if (!selector) await delay(500);
+    }
+    if (!selector) return false;
+    await setFileInput(webContents, selector, prepared.filePath);
+    await delay(800);
+
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const currentSignature = await coverSignature(webContents);
+      if (await coverApplied(webContents) && currentSignature) return true;
+      const clicked = await confirmCoverDialog(webContents);
+      await delay(clicked ? 1_200 : 600);
+    }
     const currentSignature = await coverSignature(webContents);
-    if (await coverApplied(webContents) && currentSignature) return true;
-    const clicked = await confirmCoverDialog(webContents);
-    await delay(clicked ? 1_200 : 600);
+    return Boolean(await coverApplied(webContents) && currentSignature);
+  } finally {
+    await prepared.cleanup();
   }
-  const currentSignature = await coverSignature(webContents);
-  return Boolean(await coverApplied(webContents) && currentSignature);
 }
 
 export async function fillBaijiaDraft(

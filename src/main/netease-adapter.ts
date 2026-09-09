@@ -1,8 +1,40 @@
 import { access } from 'node:fs/promises';
-import { clipboard, type WebContents } from 'electron';
-import { contentMatchesExpected } from './content-verification.js';
+import type { WebContents } from 'electron';
+import { cdpClick } from './browser-automation-driver.js';
+import { classifyDraftBlockCount, contentMatchesExpected } from './content-verification.js';
 
 const PUBLISH_URL = 'https://mp.163.com/subscribe_v4/index.html#/article-publish';
+
+type NeteaseFormatCounts = { headings: number; lists: number; quotes: number; dividers: number; images: number };
+type NeteaseInputBlock =
+  | {type:'paragraph';text:string;bold:boolean}
+  | {type:'heading';text:string}
+  | {type:'list';items:string[];ordered:boolean}
+  | {type:'quote';text:string};
+
+export type NeteaseSourceBlockDescriptor = {
+  tag: string;
+  text: string;
+  listItemCount: number;
+};
+
+export function countNeteaseExpectedBlocks(blocks: NeteaseSourceBlockDescriptor[]): number {
+  return blocks.reduce((count, block) => {
+    if (block.tag === 'hr' || !block.text) return count;
+    if (block.tag === 'ul' || block.tag === 'ol') return count + block.listItemCount;
+    return count + 1;
+  }, 0);
+}
+
+export function neteaseEditorNeedsReset(state: { textLength: number; imageCount: number }): boolean {
+  return state.textLength > 0 || state.imageCount > 0;
+}
+
+export function normalizeNeteaseExpectedFormat(counts: NeteaseFormatCounts): NeteaseFormatCounts {
+  // NetEase Draft.js has no stable divider control. Source <hr> elements are
+  // represented by paragraph spacing and must not fail an otherwise valid draft.
+  return { ...counts, dividers: 0 };
+}
 
 export interface NeteaseDraftFillResult {
   titleFilled: boolean;
@@ -13,6 +45,9 @@ export interface NeteaseDraftFillResult {
     preserved: boolean;
     degradedBlocks: string[];
   };
+  formatWarnings?: string[];
+  expectedBlockCount?: number;
+  actualBlockCount?: number;
   bodyImageInserted: boolean;
   autoCoverSelected: boolean;
   aiDeclarationFound: boolean;
@@ -23,6 +58,77 @@ export interface NeteaseDraftFillResult {
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const normalize = (value: unknown) => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+
+async function readNeteaseEditorState(webContents: WebContents): Promise<{ textLength: number; imageCount: number }> {
+  return await webContents.executeJavaScript(`(() => {
+    const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+    if (!(editor instanceof HTMLElement)) return {textLength:-1,imageCount:-1};
+    const text=[...editor.querySelectorAll('[data-text="true"]')]
+      .map((node)=>String(node.textContent||''))
+      .join('')
+      .replace(/[\u200b-\u200d\ufeff]/g,'')
+      .trim();
+    return {textLength:text.length,imageCount:editor.querySelectorAll('.rich-editor-image-container img').length};
+  })()`);
+}
+
+async function waitForNeteaseEditorEmpty(webContents: WebContents, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let stableSamples = 0;
+  while (Date.now() < deadline) {
+    const state = await readNeteaseEditorState(webContents);
+    stableSamples = !neteaseEditorNeedsReset(state) ? stableSamples + 1 : 0;
+    if (stableSamples >= 6) return true;
+    await delay(200);
+  }
+  return false;
+}
+
+async function clearNeteaseEditor(webContents: WebContents): Promise<void> {
+  const initial = await readNeteaseEditorState(webContents);
+  if (initial.textLength < 0 || initial.imageCount < 0) {
+    throw new Error('NETEASE_EDITOR_NOT_READY: 找不到正文编辑器');
+  }
+  if (!neteaseEditorNeedsReset(initial)) return;
+
+  const debuggerApi = webContents.debugger;
+  const attachedHere = !debuggerApi.isAttached();
+  try {
+    if (attachedHere) debuggerApi.attach('1.3');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await webContents.focus();
+      const point = await webContents.executeJavaScript(`(() => {
+        const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+        if (!(editor instanceof HTMLElement)) return null;
+        editor.scrollIntoView({block:'center',inline:'nearest'});
+        const rect=editor.getBoundingClientRect();
+        return {x:rect.left+Math.min(rect.width/2,320),y:rect.top+Math.min(rect.height/2,120)};
+      })()`);
+      if (!point) throw new Error('NETEASE_EDITOR_NOT_READY: 找不到正文编辑器');
+      await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type:'mousePressed', x:point.x, y:point.y, button:'left', clickCount:1 });
+      await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type:'mouseReleased', x:point.x, y:point.y, button:'left', clickCount:1 });
+      const selectionReady = await webContents.executeJavaScript(`(() => {
+        const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+        if (!(editor instanceof HTMLElement)) return false;
+        editor.focus({preventScroll:true});
+        const range=document.createRange(); range.selectNodeContents(editor);
+        const selection=window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+        return document.activeElement===editor&&Boolean(selection?.rangeCount);
+      })()`);
+      if (!selectionReady) throw new Error('NETEASE_CLEAR_SELECTION_FAILED: 无法选中旧正文');
+      const modifiers = process.platform === 'darwin' ? 4 : 2;
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type:'rawKeyDown', key:'a', code:'KeyA', windowsVirtualKeyCode:65, modifiers, commands:['selectAll'] });
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type:'keyUp', key:'a', code:'KeyA', windowsVirtualKeyCode:65, modifiers });
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type:'rawKeyDown', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8, commands:['deleteBackward'] });
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type:'keyUp', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8 });
+      if (await waitForNeteaseEditorEmpty(webContents)) return;
+    }
+  } finally {
+    if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
+  }
+  const state = await readNeteaseEditorState(webContents);
+  throw new Error(`NETEASE_CLEAR_FAILED: 旧草稿未稳定清空 ${JSON.stringify(state)}`);
+}
 
 function isTransientPageError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -44,11 +150,76 @@ async function clickNeteaseEditorTool(webContents: WebContents, iconName: string
     return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
   })()`);
   if (!point) return false;
-  webContents.sendInputEvent({type:'mouseMove',x:Math.round(point.x),y:Math.round(point.y)});
-  webContents.sendInputEvent({type:'mouseDown',x:Math.round(point.x),y:Math.round(point.y),button:'left',clickCount:1});
-  webContents.sendInputEvent({type:'mouseUp',x:Math.round(point.x),y:Math.round(point.y),button:'left',clickCount:1});
+  await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
   await delay(220);
   return true;
+}
+
+async function focusNeteaseEditorEnd(webContents: WebContents): Promise<boolean> {
+  await webContents.focus();
+  return await webContents.executeJavaScript(`(() => {
+    const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+    if (!(editor instanceof HTMLElement)) return false;
+    editor.focus({preventScroll:true});
+    const target=editor.querySelector('[data-block="true"]:last-child [data-text="true"]')?.lastChild
+      ||editor.querySelector('[data-block="true"]:last-child')||editor;
+    const range=document.createRange(); range.selectNodeContents(target); range.collapse(false);
+    const selection=window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    return document.activeElement===editor&&Boolean(selection?.anchorNode&&editor.contains(selection.anchorNode));
+  })()`);
+}
+
+async function pressNeteaseEnterWindows(webContents: WebContents, debuggerApi: Electron.Debugger): Promise<void> {
+  const before = await webContents.executeJavaScript(`(() => document.querySelectorAll('.public-DraftEditor-content[contenteditable="true"] [data-block="true"]').length)()`);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!await focusNeteaseEditorEnd(webContents)) throw new Error('NETEASE_EDITOR_CARET_FAILED: Windows 换段前无法恢复正文光标');
+    await webContents.executeJavaScript(`window.__geoPublisherInputMethod='cdp.keyDown.windows'`);
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\n', unmodifiedText: '\n',
+    });
+    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+    const deadline = Date.now() + 1_500;
+    while (Date.now() < deadline) {
+      const current = await webContents.executeJavaScript(`(() => document.querySelectorAll('.public-DraftEditor-content[contenteditable="true"] [data-block="true"]').length)()`);
+      if (current === before + 1) { await focusNeteaseEditorEnd(webContents); return; }
+      if (current > before + 1) throw new Error(`NETEASE_PARAGRAPH_BREAK_UNCERTAIN: Windows 一次换段产生了 ${current - before} 个新段落`);
+      await delay(120);
+    }
+  }
+  throw new Error(`NETEASE_PARAGRAPH_BREAK_FAILED: Windows 换段后段落数未从 ${before} 变为 ${before + 1}`);
+}
+
+async function selectNeteaseBlockRange(webContents: WebContents, start: number, end: number): Promise<boolean> {
+  return await webContents.executeJavaScript(`(() => {
+    const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+    if (!(editor instanceof HTMLElement)) return false;
+    const blocks=[...editor.querySelectorAll('[data-block="true"]')];
+    const first=blocks[${start}], last=blocks[${end}];
+    if (!(first instanceof HTMLElement)||!(last instanceof HTMLElement)) return false;
+    editor.focus({preventScroll:true});
+    const range=document.createRange(); range.setStart(first,0); range.setEnd(last,last.childNodes.length);
+    const selection=window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    document.dispatchEvent(new Event('selectionchange',{bubbles:true}));
+    return Boolean(selection?.rangeCount);
+  })()`);
+}
+
+async function applyNeteaseWindowsFormatting(webContents: WebContents, blocks: NeteaseInputBlock[]): Promise<void> {
+  let offset = 0;
+  for (const block of blocks) {
+    const length = block.type === 'list' ? block.items.length : 1;
+    const start = offset;
+    const end = offset + length - 1;
+    offset += length;
+    const needsFormat = block.type !== 'paragraph' || block.bold;
+    if (!needsFormat || !await selectNeteaseBlockRange(webContents, start, end)) continue;
+    if (block.type === 'heading') await clickNeteaseEditorTool(webContents, 'h5');
+    else if (block.type === 'list') await clickNeteaseEditorTool(webContents, block.ordered ? 'ordered_list_item' : 'unordered_list_item');
+    else if (block.type === 'quote') await clickNeteaseEditorTool(webContents, 'blockquote');
+    else if (block.bold) await clickNeteaseEditorTool(webContents, 'bold');
+    await delay(300);
+  }
+  await focusNeteaseEditorEnd(webContents);
 }
 
 async function ensureEditor(webContents: WebContents): Promise<void> {
@@ -92,9 +263,14 @@ async function ensureEditor(webContents: WebContents): Promise<void> {
 async function fillText(webContents: WebContents, title: string, html: string): Promise<{
   titleFilled: boolean;
   bodyFilled: boolean;
+  expectedBlockCount?: number;
+  actualBlockCount?: number;
   formatVerification: NeteaseDraftFillResult['formatVerification'];
 }> {
   const bodyText = await webContents.executeJavaScript(`(() => { const parser=document.createElement('div'); parser.innerHTML=${JSON.stringify(html)}; return String(parser.innerText||parser.textContent||'').replace(/\\u00a0/g,' ').trim(); })()`);
+  // Reset the existing Draft.js content before changing the title so a failed
+  // clear cannot leave the draft partially mutated.
+  await clearNeteaseEditor(webContents);
   const setTitle = async (): Promise<boolean> => {
     return await webContents.executeJavaScript(`(async () => {
       const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
@@ -120,15 +296,17 @@ async function fillText(webContents: WebContents, title: string, html: string): 
       const currentText=editableText();
       const parser=document.createElement('div');
       parser.innerHTML=${JSON.stringify(html)};
-      const expectedStructure={lists:parser.querySelectorAll('ul,ol').length,quotes:parser.querySelectorAll('blockquote').length};
-      const actualStructure={lists:element.querySelectorAll('ul,ol').length,quotes:element.querySelectorAll('blockquote').length};
+      const expectedStructure={headings:parser.querySelectorAll('h2,h3').length,lists:parser.querySelectorAll('ul,ol').length,quotes:parser.querySelectorAll('blockquote').length};
+      const actualStructure={headings:element.querySelectorAll('h2,h3,h4,h5,h6').length,lists:element.querySelectorAll('ul,ol').length,quotes:element.querySelectorAll('blockquote').length};
       const imageCount=element.querySelectorAll('.rich-editor-image-container img').length;
-      const structureMatches=actualStructure.lists>=expectedStructure.lists&&actualStructure.quotes>=expectedStructure.quotes;
-      if (contentMatchesExpected(currentText, ${JSON.stringify(bodyText)})&&structureMatches) return {alreadyMatches:true,point:null};
+      const structureMatches=actualStructure.headings>=expectedStructure.headings&&actualStructure.lists>=expectedStructure.lists&&actualStructure.quotes>=expectedStructure.quotes;
+      const bodyMatches=contentMatchesExpected(currentText, ${JSON.stringify(bodyText)});
+      if (bodyMatches&&structureMatches) return {alreadyMatches:true,bodyMatches:true,headingTexts:[],point:null};
       const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
       const blocks=[...parser.children].flatMap((child)=>{
         const tag=child.tagName.toLowerCase();
         const text=normalize(child.textContent);
+        if (tag==='h2'||tag==='h3') return text?[{type:'heading',text}]:[];
         if (tag==='p') return text?[{type:'paragraph',text,bold:Boolean(child.querySelector('strong,b'))}]:[];
         if (tag==='ul'||tag==='ol') return [{type:'list',ordered:tag==='ol',items:[...child.querySelectorAll(':scope > li')].map((item)=>normalize(item.textContent)).filter(Boolean)}];
         if (tag==='blockquote') return text?[{type:'quote',text}]:[];
@@ -140,7 +318,9 @@ async function fillText(webContents: WebContents, title: string, html: string): 
       const rect=element.getBoundingClientRect();
       return {
         alreadyMatches:false,
+        bodyMatches,
         hasEditorContent:Boolean(currentText)||imageCount>0,
+        headingTexts:[...parser.querySelectorAll('h2,h3')].map((heading)=>normalize(heading.textContent)).filter(Boolean),
         blocks,
         plainText,
         point:{x:rect.left+Math.min(rect.width/2,320),y:rect.top+Math.min(rect.height/2,120)}
@@ -148,13 +328,41 @@ async function fillText(webContents: WebContents, title: string, html: string): 
     })()`);
     if (prepared?.alreadyMatches) return true;
     if (!prepared?.point || !prepared.plainText) return false;
+    const applyHeadings = async (): Promise<boolean> => {
+      for (const headingText of prepared.headingTexts as string[]) {
+        const state = await webContents.executeJavaScript(`(() => {
+          const normalize=(value)=>String(value||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+          const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+          if (!(editor instanceof HTMLElement)) return {found:false,formatted:false};
+          const block=[...editor.querySelectorAll('[data-block="true"]')].find((candidate)=>normalize(candidate.textContent)===normalize(${JSON.stringify(headingText)}));
+          if (!(block instanceof HTMLElement)) return {found:false,formatted:false};
+          if (block.matches('h2,h3,h4,h5,h6')||Boolean(block.querySelector('h2,h3,h4,h5,h6'))) return {found:true,formatted:true};
+          editor.focus({preventScroll:true});
+          const target=block.querySelector('[data-text="true"]')?.firstChild||block;
+          const range=document.createRange(); range.selectNodeContents(target); range.collapse(true);
+          const selection=window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+          return {found:true,formatted:false};
+        })()`);
+        if (!state.found) return false;
+        if (!state.formatted && !await clickNeteaseEditorTool(webContents,'h5')) return false;
+        await delay(350);
+      }
+      return await webContents.executeJavaScript(`(() => {
+        const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+        return editor instanceof HTMLElement&&editor.querySelectorAll('h2,h3,h4,h5,h6').length>=${prepared.headingTexts.length};
+      })()`);
+    };
+    if (prepared.bodyMatches) {
+      if (await applyHeadings()) return true;
+      if (process.platform === 'win32') return true;
+      throw new Error('NETEASE_HEADING_FORMAT_FAILED: 已填正文中的小标题无法转换');
+    }
     if (prepared.hasEditorContent) {
       throw new Error('NETEASE_EDITOR_NOT_EMPTY: 新建编辑会话仍包含旧草稿，已停止填充以避免重复内容');
     }
 
     // 网易和知乎都使用 Draft.js。只有 Chromium 的真实输入管线会同步
     // React ContentState；DOM Range、innerHTML 和合成 paste 都可能只改表象。
-    webContents.focus();
     const debuggerApi = webContents.debugger;
     const attachedHere = !debuggerApi.isAttached();
     try {
@@ -190,30 +398,7 @@ async function fillText(webContents: WebContents, title: string, html: string): 
         return {cleared:!text&&imageCount===0,textLength:text.length,imageCount};
       })()`);
       if (!clearedState.cleared) throw new Error(`NETEASE_CLEAR_FAILED: ${JSON.stringify(clearedState)}`);
-      const previousClipboard={text:clipboard.readText(),html:clipboard.readHTML()};
-      try {
-        clipboard.write({text:prepared.plainText,html});
-        webContents.paste();
-        await delay(1_800);
-        const pasted = await webContents.executeJavaScript(`(() => {
-          const contentMatchesExpected=${contentMatchesExpected.toString()};
-          const actual=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
-          if (!(actual instanceof HTMLElement)) return {body:false,structure:false};
-          const text=[...actual.querySelectorAll('[data-text="true"]')]
-            .map((node)=>String(node.textContent||'')).join('\\n');
-          const parser=document.createElement('div');parser.innerHTML=${JSON.stringify(html)};
-          const expected={lists:parser.querySelectorAll('ul,ol').length,quotes:parser.querySelectorAll('blockquote').length};
-          const observed={lists:actual.querySelectorAll('ul,ol').length,quotes:actual.querySelectorAll('blockquote').length};
-          return {
-            body:contentMatchesExpected(text,${JSON.stringify(bodyText)}),
-            structure:observed.lists>=expected.lists&&observed.quotes>=expected.quotes,
-          };
-        })()`);
-        if (pasted.body&&pasted.structure) return true;
-        if (pasted.body) return false;
-      } finally {
-        clipboard.write(previousClipboard);
-      }
+      // Draft.js must be written through CDP instead of the system clipboard.
       const inheritedHeading = await webContents.executeJavaScript(`(() => {
         const selection=window.getSelection();
         const node=selection?.anchorNode;
@@ -222,20 +407,26 @@ async function fillText(webContents: WebContents, title: string, html: string): 
       })()`);
       if (inheritedHeading) await clickNeteaseEditorTool(webContents,'h5');
       const enter = async () => {
+        if (process.platform === 'win32') return await pressNeteaseEnterWindows(webContents, debuggerApi);
         await debuggerApi.sendCommand('Input.dispatchKeyEvent',{type:'rawKeyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
         await debuggerApi.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
         await delay(100);
       };
       const insert = async (text: string) => {
+        if (process.platform === 'win32') await webContents.executeJavaScript(`window.__geoPublisherInputMethod='cdp.insertText'`);
         await debuggerApi.sendCommand('Input.insertText',{text});
         await delay(100);
       };
-      const blocks = prepared.blocks as Array<
-        | {type:'paragraph';text:string;bold:boolean}
-        | {type:'list';items:string[];ordered:boolean}
-        | {type:'quote';text:string}
-      >;
-      for (let index=0;index<blocks.length;index+=1) {
+      const blocks = prepared.blocks as NeteaseInputBlock[];
+      if (process.platform === 'win32') {
+        const plainBlocks = blocks.flatMap((block) => block.type === 'list' ? block.items : [block.text]);
+        for (let index = 0; index < plainBlocks.length; index += 1) {
+          await focusNeteaseEditorEnd(webContents);
+          await insert(plainBlocks[index] || ' ');
+          if (index < plainBlocks.length - 1) await enter();
+        }
+        await applyNeteaseWindowsFormatting(webContents, blocks);
+      } else for (let index=0;index<blocks.length;index+=1) {
         const block=blocks[index];
         if (!block) continue;
         if (block.type==='list') {
@@ -249,6 +440,11 @@ async function fillText(webContents: WebContents, title: string, html: string): 
           await insert(block.text);
           await enter();
           await clickNeteaseEditorTool(webContents,'blockquote');
+        } else if (block.type==='heading') {
+          if (!await clickNeteaseEditorTool(webContents,'h5')) throw new Error('NETEASE_HEADING_TOOL_MISSING: 未找到小标题工具');
+          await insert(block.text);
+          if (index<blocks.length-1) await enter();
+          await clickNeteaseEditorTool(webContents,'h5');
         } else {
           if (block.bold) await clickNeteaseEditorTool(webContents,'bold');
           await insert(block.text);
@@ -312,10 +508,12 @@ async function fillText(webContents: WebContents, title: string, html: string): 
     const contentMatchesExpected=${contentMatchesExpected.toString()};
     const count=(root,actual=false)=>({headings:root.querySelectorAll(actual?'h2,h3,h4,h5,h6':'h2,h3').length,lists:root.querySelectorAll('ul,ol').length,quotes:root.querySelectorAll('blockquote').length,dividers:root.querySelectorAll('hr').length,images:root.querySelectorAll('img').length});
     const source=document.createElement('div'); source.innerHTML=${JSON.stringify(html)};
-    const expectedStructure=count(source); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
+    const expectedStructure=(${normalizeNeteaseExpectedFormat.toString()})(count(source)); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
     const labels={headings:'小标题',lists:'列表',quotes:'引用',dividers:'分隔线',images:'正文图片'};
     const degradedBlocks=Object.keys(expectedStructure).filter(key=>actualStructure[key]<expectedStructure[key]).map(key=>labels[key]);
-    return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&contentMatchesExpected(actualBody,expected),formatVerification:{expected:expectedStructure,actual:actualStructure,preserved:degradedBlocks.length===0,degradedBlocks}};
+    const expectedBlockCount=(${countNeteaseExpectedBlocks.toString()})([...source.children].map((node)=>({tag:node.tagName.toLowerCase(),text:String(node.textContent||'').trim(),listItemCount:(node.tagName==='UL'||node.tagName==='OL')?node.querySelectorAll(':scope > li').length:0})));
+    const actualBlockCount=bodyEl instanceof HTMLElement?bodyEl.querySelectorAll('[data-block="true"]').length:0;
+    return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&contentMatchesExpected(actualBody,expected),expectedBlockCount,actualBlockCount,formatVerification:{expected:expectedStructure,actual:actualStructure,preserved:degradedBlocks.length===0,degradedBlocks}};
   })()`);
   for (let attempt = 0; (!verified.titleFilled || !verified.bodyFilled) && attempt < 2; attempt += 1) {
     if (!verified.bodyFilled) await setBody();
@@ -331,10 +529,12 @@ async function fillText(webContents: WebContents, title: string, html: string): 
       const contentMatchesExpected=${contentMatchesExpected.toString()};
       const count=(root,actual=false)=>({headings:root.querySelectorAll(actual?'h2,h3,h4,h5,h6':'h2,h3').length,lists:root.querySelectorAll('ul,ol').length,quotes:root.querySelectorAll('blockquote').length,dividers:root.querySelectorAll('hr').length,images:root.querySelectorAll('img').length});
       const source=document.createElement('div'); source.innerHTML=${JSON.stringify(html)};
-      const expectedStructure=count(source); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
+      const expectedStructure=(${normalizeNeteaseExpectedFormat.toString()})(count(source)); const actualStructure=bodyEl instanceof HTMLElement?count(bodyEl,true):{headings:0,lists:0,quotes:0,dividers:0,images:0};
       const labels={headings:'小标题',lists:'列表',quotes:'引用',dividers:'分隔线',images:'正文图片'};
       const degradedBlocks=Object.keys(expectedStructure).filter(key=>actualStructure[key]<expectedStructure[key]).map(key=>labels[key]);
-      return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&expected.length>0&&contentMatchesExpected(actualBody,expected),formatVerification:{expected:expectedStructure,actual:actualStructure,preserved:degradedBlocks.length===0,degradedBlocks}};
+      const expectedBlockCount=(${countNeteaseExpectedBlocks.toString()})([...source.children].map((node)=>({tag:node.tagName.toLowerCase(),text:String(node.textContent||'').trim(),listItemCount:(node.tagName==='UL'||node.tagName==='OL')?node.querySelectorAll(':scope > li').length:0})));
+      const actualBlockCount=bodyEl instanceof HTMLElement?bodyEl.querySelectorAll('[data-block="true"]').length:0;
+      return {titleFilled:actualTitle===normalize(${JSON.stringify(title)}),bodyFilled:Boolean(bodyEl)&&expected.length>0&&contentMatchesExpected(actualBody,expected),expectedBlockCount,actualBlockCount,formatVerification:{expected:expectedStructure,actual:actualStructure,preserved:degradedBlocks.length===0,degradedBlocks}};
     })()`);
   }
   return verified;
@@ -359,6 +559,27 @@ async function bodyImageCount(webContents: WebContents): Promise<number> {
   return await webContents.executeJavaScript(`document.querySelectorAll('.public-DraftEditor-content .rich-editor-image-container img').length`);
 }
 
+function editorEndSelectionScript(): string {
+  return `(() => {
+    const editor=document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
+    if (!(editor instanceof HTMLElement)) return false;
+    const textNodes=[...editor.querySelectorAll('[data-text="true"]')]
+      .map((element)=>element.firstChild||element)
+      .filter((node)=>String(node.textContent||'').trim());
+    const target=textNodes.at(-1)||editor.querySelector('[data-block="true"]:last-child')||editor;
+    editor.scrollIntoView({block:'center',inline:'nearest'});
+    editor.focus({preventScroll:true});
+    const range=document.createRange(); range.selectNodeContents(target); range.collapse(false);
+    const selection=window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    document.dispatchEvent(new Event('selectionchange',{bubbles:true}));
+    return document.activeElement===editor&&selection?.rangeCount===1&&selection.getRangeAt(0).collapsed;
+  })()`;
+}
+
+export function buildNeteaseEditorEndSelectionScriptForTest(): string {
+  return editorEndSelectionScript();
+}
+
 async function clickDomSelector(webContents: WebContents, selector: string): Promise<boolean> {
   const scrolled = await webContents.executeJavaScript(`(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
@@ -379,10 +600,8 @@ async function clickDomSelector(webContents: WebContents, selector: string): Pro
   if (!point) return false;
   const x = Math.round(point.x);
   const y = Math.round(point.y);
-  webContents.sendInputEvent({ type: 'mouseMove', x, y });
   await delay(120);
-  webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  await cdpClick(webContents, { x, y });
   return true;
 }
 
@@ -409,10 +628,8 @@ async function clickVisibleText(webContents: WebContents, selectors: string, tex
   if (!point) return false;
   const x = Math.round(point.x);
   const y = Math.round(point.y);
-  webContents.sendInputEvent({ type: 'mouseMove', x, y });
   await delay(120);
-  webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  await cdpClick(webContents, { x, y });
   return true;
 }
 
@@ -421,10 +638,12 @@ async function insertBodyImage(webContents: WebContents, filePath: string): Prom
   const step = async <T>(code: string, action: () => Promise<T>): Promise<T> => {
     try { return await action(); } catch (error) { throw new Error(`${code}: ${error instanceof Error ? error.message : String(error)}`); }
   };
+  const caretPlaced = await step('NETEASE_IMAGE_CARET_FAILED', () => webContents.executeJavaScript(editorEndSelectionScript()));
+  if (!caretPlaced) throw new Error('NETEASE_IMAGE_CARET_FAILED: 无法把图片插入点定位到正文末尾');
+  await delay(250);
   const point = await step('NETEASE_IMAGE_TOOL_LOOKUP_FAILED', () => webContents.executeJavaScript(`(() => { const visible=${visibleScript()}; const e=[...document.querySelectorAll('button.rich-editor-panel-item')].find(e=>visible(e)&&e.querySelector('img[src*="icon_image"]')); if(!e)return null; e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`));
   if (!point) return false;
-  webContents.sendInputEvent({ type:'mouseDown', x:Math.round(point.x), y:Math.round(point.y), button:'left', clickCount:1 });
-  webContents.sendInputEvent({ type:'mouseUp', x:Math.round(point.x), y:Math.round(point.y), button:'left', clickCount:1 });
+  await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
   await delay(900);
   const applied = await step('NETEASE_IMAGE_FILE_SET_FAILED', () => setFileInput(webContents, filePath));
   if (!applied) return false;
@@ -444,8 +663,7 @@ async function insertBodyImage(webContents: WebContents, filePath: string): Prom
   for (let i=0;i<30;i+=1) {
     await delay(700);
     try {
-      const count = await bodyImageCount(webContents);
-      if (count >= 1) return true;
+      if (await bodyImageCount(webContents) >= 1) return true;
     } catch (error) {
       // Windows may replace the renderer context while the uploaded image is
       // committed. Re-read the live editor instead of reporting permission loss.
@@ -493,11 +711,12 @@ export async function fillNeteaseDraft(webContents: WebContents, title: string, 
   await runStage('NETEASE_EDITOR_FAILED', () => ensureEditor(webContents));
   const content = await runStage('NETEASE_TEXT_FILL_FAILED', () => fillText(webContents, title, html));
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`NETEASE_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
-  if (!content.formatVerification.preserved) throw new Error(`NETEASE_FORMAT_DEGRADED: 网易号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
+  if (process.platform === 'win32' && classifyDraftBlockCount(content.expectedBlockCount || 0, content.actualBlockCount || 0) !== 'match') throw new Error(`NETEASE_PARAGRAPH_STRUCTURE_FAILED: 正文段落结构不一致，expected=${content.expectedBlockCount}, actual=${content.actualBlockCount}`);
+  const formatWarnings = content.formatVerification.preserved ? [] : [...content.formatVerification.degradedBlocks];
   const bodyImageInserted = await runStage('NETEASE_IMAGE_FLOW_FAILED', () => insertBodyImage(webContents, coverPath));
   if (!bodyImageInserted) throw new Error('NETEASE_BODY_IMAGE_FAILED: 正文图片上传或确认未完成');
   const options = await runStage('NETEASE_OPTIONS_FAILED', () => applyOptions(webContents));
   const publishButtonDetected = await runStage('NETEASE_PUBLISH_BUTTON_CHECK_FAILED', () => webContents.executeJavaScript(`(() => { const button=document.querySelector('button.primary_button'); return button instanceof HTMLButtonElement&&!button.disabled&&!button.hasAttribute('disabled'); })()`));
   await delay(500);
-  return { ...content, bodyImageInserted, ...options, publishButtonDetected, url: webContents.getURL() };
+  return { ...content, ...(formatWarnings.length ? { formatWarnings } : {}), bodyImageInserted, ...options, publishButtonDetected, url: webContents.getURL() };
 }

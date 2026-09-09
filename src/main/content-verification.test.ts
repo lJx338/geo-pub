@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contentMatchesExpected } from './content-verification.js';
+import { classifyDraftBlockCount, contentMatchesExpected } from './content-verification.js';
 
 const expected = '开头内容用于确认正文。中间部分说明发布前需要核对事实和结构。结尾内容用于确认文章没有被截断。';
 
@@ -20,3 +20,10 @@ describe('contentMatchesExpected', () => {
   });
 });
 
+describe('Draft.js block structure', () => {
+  it('distinguishes a collapsed document from duplicate paragraph creation', () => {
+    expect(classifyDraftBlockCount(6, 6)).toBe('match');
+    expect(classifyDraftBlockCount(6, 1)).toBe('missing');
+    expect(classifyDraftBlockCount(6, 7)).toBe('duplicate');
+  });
+});

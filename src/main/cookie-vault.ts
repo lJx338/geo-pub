@@ -1,8 +1,9 @@
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { safeStorage, type Session } from 'electron';
 import type { Platform } from '../shared/protocol.js';
 import { dataDirectory } from './runtime-paths.js';
+import { replaceFile } from './replace-file.js';
 
 const PLATFORM_DOMAINS: Record<Platform, string[]> = {
   baijia: ['baidu.com'],
@@ -25,8 +26,8 @@ interface StoredCookie {
   sameSite?: 'unspecified' | 'no_restriction' | 'lax' | 'strict';
 }
 
-function vaultPath(projectId: string, platform: Platform): string {
-  return join(dataDirectory(), 'projects', projectId, 'session-vault', `${platform}.bin`);
+function vaultPath(platform: Platform): string {
+  return join(dataDirectory(), 'session-vault', `${platform}.bin`);
 }
 
 function belongsToPlatform(platform: Platform, domain: string): boolean {
@@ -34,7 +35,7 @@ function belongsToPlatform(platform: Platform, domain: string): boolean {
   return PLATFORM_DOMAINS[platform].some((suffix) => normalized === suffix || normalized.endsWith(`.${suffix}`));
 }
 
-export async function snapshotPlatformCookies(partition: Session, projectId: string, platform: Platform): Promise<void> {
+export async function snapshotPlatformCookies(partition: Session, platform: Platform): Promise<void> {
   if (!safeStorage.isEncryptionAvailable()) return;
   const cookies = (await partition.cookies.get({}))
     .filter((cookie) => Boolean(cookie.domain) && belongsToPlatform(platform, cookie.domain!))
@@ -43,19 +44,19 @@ export async function snapshotPlatformCookies(partition: Session, projectId: str
       session: Boolean(session), expirationDate, sameSite,
     } satisfies StoredCookie));
   if (!cookies.length) return;
-  const path = vaultPath(projectId, platform);
+  const path = vaultPath(platform);
   const temporary = `${path}.${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
   await mkdir(dirname(path), { recursive: true });
   await writeFile(temporary, safeStorage.encryptString(JSON.stringify(cookies)), { mode: 0o600 });
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
   await chmod(path, 0o600);
 }
 
-export async function restorePlatformCookies(partition: Session, projectId: string, platform: Platform): Promise<number> {
+export async function restorePlatformCookies(partition: Session, platform: Platform): Promise<number> {
   if (!safeStorage.isEncryptionAvailable()) return 0;
   let encrypted: Buffer;
   try {
-    encrypted = await readFile(vaultPath(projectId, platform));
+    encrypted = await readFile(vaultPath(platform));
   } catch {
     return 0;
   }

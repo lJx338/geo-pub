@@ -1,261 +1,102 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { promisify } from 'node:util';
+import { mkdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { _electron as electron } from 'playwright';
 
-const evidenceDirectory = join(process.cwd(), 'release', 'test-evidence');
-const userDataDirectory = join(process.cwd(), 'release', 'test-user-data');
-const controlEndpoint = join(userDataDirectory, 'control.sock');
-const fixtureUrl = pathToFileURL(join(process.cwd(), 'tests', 'fixtures', 'silent-platform.html')).toString();
 const execFileAsync = promisify(execFile);
-await rm(userDataDirectory, { recursive: true, force: true });
-await mkdir(evidenceDirectory, { recursive: true });
-await mkdir(userDataDirectory, { recursive: true });
 
-const app = await electron.launch({ args: ['.'], cwd: process.cwd(), env: { ...process.env, GEO_DISABLE_OPEN_WORKBUDDY: '1', GEO_PUBLISHER_USER_DATA_DIR: userDataDirectory, GEO_PUBLISHER_CONTROL_ENDPOINT: controlEndpoint, GEO_PUBLISHER_TEST_PLATFORM_URL: fixtureUrl } });
+const evidenceDirectory = join(process.cwd(), 'release', 'test-evidence');
+const workBuddySkillsDirectory = join(process.cwd(), 'release', 'test-workbuddy-skills');
+const userDataDirectory = process.platform === 'win32'
+  ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'GEO Publisher Desktop')
+  : process.platform === 'darwin'
+    ? join(homedir(), 'Library', 'Application Support', 'GEO Publisher Desktop')
+    : join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'geo-publisher');
+await mkdir(evidenceDirectory, { recursive: true });
+
+const app = await electron.launch({
+  args: ['.'],
+  cwd: process.cwd(),
+  env: { ...process.env, GEO_DISABLE_OPEN_WORKBUDDY: '1', WORKBUDDY_SKILLS_DIR: workBuddySkillsDirectory },
+});
+
 try {
   const window = await app.firstWindow();
   await window.waitForLoadState('domcontentloaded');
+  await window.locator('#platform-progress .progress-item').first().waitFor();
   if ((await window.title()) !== 'GEO Publisher') throw new Error('unexpected window title');
-  await window.evaluate(() => document.fonts.ready);
-  const initial = await window.evaluate(() => ({ width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, navigation: document.querySelectorAll('.nav-item').length, connect: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height), fontLoaded: document.fonts.check('16px "Noto Sans SC Variable"') }));
-  if (initial.navigation < 6 || !initial.connect || initial.scrollWidth > initial.width || !initial.fontLoaded) throw new Error(`new UI layout is incomplete: ${JSON.stringify(initial)}`);
+
+  const initial = await window.evaluate(() => ({
+    width: innerWidth,
+    height: innerHeight,
+    scrollWidth: document.documentElement.scrollWidth,
+    scrollHeight: document.documentElement.scrollHeight,
+    platformCards: document.querySelectorAll('#platform-progress .progress-item').length,
+    navigationButtons: document.querySelectorAll('.nav-button').length,
+    connectVisible: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height),
+    updateVisible: Boolean(document.querySelector('#check-update')?.getBoundingClientRect().height),
+    connectionState: document.querySelector('#connection')?.getAttribute('data-state'),
+    updateLabel: document.querySelector('#update-state')?.textContent,
+  }));
+  if (initial.platformCards !== 6 || initial.navigationButtons !== 2 || !initial.connectVisible || !initial.updateVisible) throw new Error(`initial controls missing: ${JSON.stringify(initial)}`);
+  if (initial.scrollWidth > initial.width || initial.scrollHeight > initial.height) throw new Error(`initial layout overflows: ${JSON.stringify(initial)}`);
+  if (initial.connectionState !== 'ready' || initial.updateLabel !== '不可用') throw new Error(`initial status is unclear: ${JSON.stringify(initial)}`);
+
+  await window.locator('#nav-tutorial').click();
+  if (!(await window.locator('#publishing-view').isHidden()) || !(await window.locator('#tutorial-view').isVisible())) {
+    throw new Error('tutorial navigation did not switch views');
+  }
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-tutorial.png') });
+  await window.locator('#nav-dashboard').click();
+  if (!(await window.locator('#publishing-view').isVisible()) || !(await window.locator('#tutorial-view').isHidden())) {
+    throw new Error('publishing-center navigation did not switch views');
+  }
+
+  const workerStatus = await window.evaluate(async () => await window.geoPublisher.status());
+  if (workerStatus.worker?.state !== 'ready' || !workerStatus.worker.pid) throw new Error(`browser worker is not ready: ${JSON.stringify(workerStatus.worker)}`);
+  const discovery = JSON.parse(await readFile(join(userDataDirectory, 'discovery.json'), 'utf8'));
+  if (discovery.schemaVersion !== 3 || discovery.cliPath !== discovery.launcherPath || !discovery.coreCliPath?.includes('versions')) {
+    throw new Error(`launcher discovery record is invalid: ${JSON.stringify(discovery)}`);
+  }
+  const { stdout: launcherOutput } = await execFileAsync(discovery.launcherPath, ['version', '--json']);
+  const launcherVersion = JSON.parse(launcherOutput);
+  if (!launcherVersion.ok || launcherVersion.version !== discovery.appVersion) {
+    throw new Error(`launcher did not dispatch to the active Core CLI: ${launcherOutput}`);
+  }
+
+  if (process.platform === 'win32') {
+    const menuVisible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMenuBarVisible());
+    if (menuVisible) throw new Error('Windows menu bar should be hidden');
+  }
+
   await window.locator('#connect-workbuddy').click();
-  await window.locator('#workbuddy-state', { hasText: '已连接' }).waitFor();
+  await window.locator('#workbuddy-state', { hasText: '指令已复制' }).waitFor();
   const prompt = await readFile(join(userDataDirectory, 'integrations', 'workbuddy', 'CONNECT-WORKBUDDY.txt'), 'utf8');
-  if (!prompt.includes('当前客户项目') || !prompt.includes('geo-topic-planner') || !prompt.includes('geo-article-writer') || !prompt.includes('geo-material-organizer') || !prompt.includes('GEO Publisher 安装位置') || !prompt.includes('系统与架构')) throw new Error('WorkBuddy prompt is incomplete');
+  if (!prompt.includes('GEO Publisher Skill') || !prompt.includes('CLI 位置')) throw new Error('WorkBuddy prompt is incomplete');
+  await readFile(join(workBuddySkillsDirectory, 'geo-publisher', 'SKILL.md'), 'utf8');
 
-  const cliPath = process.platform === 'win32' ? join(process.cwd(), '.dev-cli', 'geo-publisher-dev-windows-amd64.exe') : join(process.cwd(), '.dev-cli', 'geo-publisher-dev-darwin-arm64');
-  const cliEnv = { ...process.env, GEO_PUBLISHER_USER_DATA_DIR: userDataDirectory, GEO_PUBLISHER_CONTROL_ENDPOINT: controlEndpoint };
-  const runCli = async (args) => JSON.parse((await execFileAsync(cliPath, args, { env: cliEnv })).stdout);
-  const profilePath = join(userDataDirectory, 'project.json');
-  await writeFile(profilePath, JSON.stringify({ name: '冒烟测试客户', companyName: '冒烟测试公司', industry: '企业 AI 服务' }));
-  const created = await runCli(['project', 'create', '--input', profilePath]);
-  const projectId = created.data?.project?.id;
-  if (!projectId) throw new Error(`project creation failed: ${JSON.stringify(created)}`);
-  await window.locator('#current-project-title', { hasText: '冒烟测试客户' }).waitFor();
-  await window.getByText('客户项目', { exact: true }).first().click();
-  await window.getByRole('button', { name: '新建项目' }).click();
-  await window.locator('#project-input-name').fill('界面创建客户');
-  const longIndustryProfile = '体育场馆运营、培训与赛事服务。'.repeat(40);
-  await window.locator('#project-industry').fill(longIndustryProfile);
-  await window.locator('#project-save').click();
-  await window.locator('#project-dialog').waitFor({ state: 'detached' });
-  await window.locator('.project-row', { hasText: '界面创建客户' }).locator('.ui-badge', { hasText: '当前项目' }).waitFor();
-  const uiCreatedProject = await window.evaluate(() => window.geoPublisher.workspaceSnapshot());
-  if (uiCreatedProject.currentProject?.industry !== longIndustryProfile) throw new Error('desktop project form did not save the long-form profile');
-  await window.getByRole('button', { name: '新建项目' }).click();
-  await window.locator('#project-input-name').fill('超长资料校验');
-  await window.locator('#project-industry').evaluate((element, value) => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-    setter?.call(element, value);
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-  }, '行'.repeat(2001));
-  await window.locator('#project-save').click();
-  await window.locator('#project-submit-error', { hasText: '行业与核心业务内容过长' }).waitFor();
-  if (await window.locator('#project-industry').getAttribute('aria-invalid') !== 'true') throw new Error('invalid project field was not identified');
-  await window.getByRole('button', { name: '关闭客户资料' }).click();
-  await window.getByText('概览', { exact: true }).click();
-  await writeFile(profilePath, JSON.stringify({ name: '第二测试客户', companyName: '第二测试公司', industry: '工业服务' }));
-  const secondProject = await runCli(['project', 'create', '--input', profilePath]);
-  if (!secondProject.data?.project?.id) throw new Error(`second project creation failed: ${JSON.stringify(secondProject)}`);
-  await window.locator('#current-project-title', { hasText: '第二测试客户' }).waitFor();
-  await window.locator('#project-switch').click();
-  await window.locator('#project-selector').waitFor();
-  await window.mouse.click(2, 2);
-  await window.locator('#project-selector').waitFor({ state: 'detached' });
-  await window.locator('#project-switch').click();
-  await window.locator('#project-selector').waitFor();
-  await window.locator('.project-selector-row', { hasText: '冒烟测试客户' }).getByRole('button', { name: '切换' }).click();
-  await window.locator('#current-project-title', { hasText: '冒烟测试客户' }).waitFor();
-  await window.locator('#action-message', { hasText: '已切换到客户项目：冒烟测试客户' }).waitFor();
-  await window.locator('.nav-item', { hasText: '客户项目' }).click();
-  await window.locator('.item-row', { hasText: '冒烟测试客户' }).getByRole('button', { name: '编辑' }).click();
-  await window.locator('.project-sheet').waitFor();
-  const projectSheet = await window.evaluate(() => {
-    const sheet = document.querySelector('.project-sheet')?.getBoundingClientRect();
-    const body = document.querySelector('.project-sheet-body')?.getBoundingClientRect();
-    const footer = document.querySelector('.project-sheet-foot')?.getBoundingClientRect();
-    return { sheet, body, footer, fields: document.querySelectorAll('.project-sheet input,.project-sheet textarea').length, width: innerWidth, height: innerHeight };
-  });
-  if (!projectSheet.sheet || !projectSheet.body || !projectSheet.footer || projectSheet.fields < 12 || Math.abs(projectSheet.sheet.right - projectSheet.width) > 2 || projectSheet.footer.bottom > projectSheet.height + 2) throw new Error(`project sheet layout is incomplete: ${JSON.stringify(projectSheet)}`);
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-project-sheet.png') });
-  await window.getByRole('button', { name: '关闭客户资料' }).click();
-  window.once('dialog', async (dialog) => { await dialog.accept(); });
-  await window.locator('.project-row', { hasText: '第二测试客户' }).getByRole('button', { name: '删除' }).click();
-  await window.locator('.project-row', { hasText: '第二测试客户' }).waitFor({ state: 'detached' });
-  const deletedProjects = await window.evaluate(async () => await window.geoPublisher.projects());
-  if (deletedProjects.projects.some((item) => item.id === secondProject.data.project.id)) throw new Error('desktop project deletion did not remove the project record');
-  if (deletedProjects.currentProject?.id !== projectId) throw new Error('deleting an inactive project changed the current customer project');
-  const articlePath = join(userDataDirectory, 'article.json');
-  await writeFile(articlePath, JSON.stringify({ kind: 'article', title: '测试文章', status: 'ready', platform: 'baijia', payload: { document: { title: '测试文章', summary: '用于验证文章预览结构。', tags: ['预览验证'], blocks: [{ type: 'paragraph', text: '这是文章预览的第一段正文。' }, { type: 'heading', level: 2, text: '预览小标题' }, { type: 'list', ordered: true, items: ['第一项', '第二项'] }, { type: 'quote', text: '这是引用内容。' }] } } }));
-  const saved = await runCli(['content', 'save', projectId, '--input', articlePath]);
-  if (!saved.ok) throw new Error(`content save failed: ${JSON.stringify(saved)}`);
-  const listed = await runCli(['content', 'list', projectId, 'article']);
-  if (listed.data?.items?.[0]?.title !== '测试文章') throw new Error(`content list failed: ${JSON.stringify(listed)}`);
-  const topicPath = join(userDataDirectory, 'topic.json');
-  await writeFile(topicPath, JSON.stringify({ kind: 'topic', title: '客户如何判断解决方案是否适合自己？', status: 'approved', payload: { articleType: 'question', scenario: '客户正在对比方案' } }));
-  const topicSaved = await runCli(['content', 'save', projectId, '--input', topicPath]);
-  const topicId = topicSaved.data?.item?.id;
-  if (!topicId) throw new Error(`topic save failed: ${JSON.stringify(topicSaved)}`);
-  const selectable = await runCli(['content', 'list', projectId, 'topic', '--auto-selectable']);
-  if (selectable.data?.items?.[0]?.id !== topicId) throw new Error(`topic filtering failed: ${JSON.stringify(selectable)}`);
-  await runCli(['topic', 'reserve', projectId, '--topic', topicId, '--task', 'smoke-task']);
-  await runCli(['topic', 'use', projectId, '--topic', topicId, '--article', saved.data.item.id, '--task', 'smoke-task']);
-  const noLongerSelectable = await runCli(['content', 'list', projectId, 'topic', '--auto-selectable']);
-  if (noLongerSelectable.data?.items?.some((item) => item.id === topicId)) throw new Error('used topic remained in automatic selection');
-  const imagePath = join(userDataDirectory, '设备现场.png');
-  await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));
-  const importedMaterial = await runCli(['content', 'import-material', projectId, '--path', imagePath]);
-  const materialId = importedMaterial.data?.item?.id;
-  if (!materialId) throw new Error(`material import failed: ${JSON.stringify(importedMaterial)}`);
-  const pendingMaterials = await runCli(['material', 'pending', projectId]);
-  if (pendingMaterials.data?.items?.[0]?.id !== materialId) throw new Error(`material pending failed: ${JSON.stringify(pendingMaterials)}`);
-  await window.getByText('内容中心', { exact: true }).click();
-  await window.getByRole('button', { name: /素材 1/ }).click();
-  await window.locator('.material-card', { hasText: '设备现场.png' }).waitFor();
-  await window.locator('.material-thumbnail img').waitFor();
-  const organizeButton = window.getByRole('button', { name: /让 WorkBuddy 整理/ });
-  if (!(await organizeButton.isEnabled())) throw new Error('material organizer stayed disabled with a pending image');
-  await organizeButton.click();
-  await window.locator('#action-message', { hasText: '整理指令已复制' }).waitFor();
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-material-library.png') });
-  await window.getByRole('button', { name: /文章 1/ }).click();
-  await window.getByText('测试文章', { exact: true }).waitFor();
-  await window.getByRole('button', { name: '预览', exact: true }).click();
-  await window.locator('#article-preview-title', { hasText: '测试文章' }).waitFor();
-  await window.getByText('这是文章预览的第一段正文。', { exact: true }).waitFor();
-  await window.getByText('预览小标题', { exact: true }).waitFor();
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-article-preview.png') });
-  await window.getByRole('button', { name: '修改文章' }).click();
-  await window.locator('#article-editor').waitFor();
-  await window.locator('#article-editor-title-input').fill('测试文章（已修改）');
-  await window.locator('.article-block-row[data-block-type="paragraph"]').first().locator('textarea').fill('这是人工修改后的第一段正文。');
-  await window.getByLabel('添加正文块').selectOption('image');
-  await window.getByRole('region', { name: '选择正文图片' }).waitFor();
-  await window.getByRole('region', { name: '选择正文图片' }).getByText('设备现场.png', { exact: true }).click();
-  await window.locator('.article-block-row[data-block-type="image"] img').waitFor();
-  await window.getByRole('button', { name: '保存修改' }).click();
-  await window.locator('#article-editor').waitFor({ state: 'detached' });
-  await window.getByText('测试文章（已修改）', { exact: true }).waitFor();
-  const editedArticle = await window.evaluate(async (id) => (await window.geoPublisher.contentList(id, 'article')).items[0], projectId);
-  if (editedArticle?.payload?.document?.blocks?.[0]?.text !== '这是人工修改后的第一段正文。') throw new Error(`article edit was not persisted: ${JSON.stringify(editedArticle)}`);
-  if (!editedArticle?.payload?.document?.blocks?.some((block) => block.type === 'image' && block.materialId === materialId)) throw new Error(`article material image was not persisted: ${JSON.stringify(editedArticle)}`);
-  await window.getByRole('button', { name: /选题 1/ }).click();
-  await window.getByText('客户如何判断解决方案是否适合自己？', { exact: true }).waitFor();
-  await window.locator('.ui-badge', { hasText: '已使用' }).waitFor();
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-content-center.png') });
-  await window.getByText('使用指南', { exact: true }).click();
-  await window.getByText('搭配 WorkBuddy，从平台登录到自动发布', { exact: true }).waitFor();
-  if (await window.locator('.guide-steps').count()) throw new Error('duplicated first-use steps are still visible');
-  const promptCards = window.locator('.workbuddy-prompt');
-  if (await promptCards.count() !== 7) throw new Error('WorkBuddy tutorial does not contain all seven steps');
-  await promptCards.nth(1).getByRole('button', { name: '复制提示词' }).click();
-  const copiedPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
-  if (!copiedPrompt.includes('配置 GEO Publisher 当前客户项目的公司资料') || !copiedPrompt.includes('确认写入')) throw new Error('company profile prompt was not copied');
-  await promptCards.nth(2).getByRole('button', { name: '前往上传图片' }).click();
-  await window.locator('.content-tabs button.active', { hasText: /素材 1/ }).waitFor();
-  await window.getByRole('button', { name: '添加图片' }).waitFor();
-  await window.getByText('使用指南', { exact: true }).click();
-  await window.getByText('搭配 WorkBuddy，从平台登录到自动发布', { exact: true }).waitFor();
-  await window.locator('.workbuddy-prompt').nth(2).getByRole('button', { name: '复制整理提示词' }).click();
-  const materialPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
-  if (!materialPrompt.includes('所有待整理的图片素材') || !materialPrompt.includes('不要重新识别已经整理过的图片')) throw new Error('material organizer prompt was not copied');
-  await window.locator('#multi-customer-guide').waitFor();
-  await window.getByText('多客户发布管理', { exact: true }).waitFor();
-  await window.locator('#multi-customer-guide').getByRole('button', { name: '复制任务提示词' }).click();
-  const multiCustomerPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
-  if (!multiCustomerPrompt.includes('project list') || !multiCustomerPrompt.includes('project select') || !multiCustomerPrompt.includes(projectId) || !multiCustomerPrompt.includes('不要把多个客户合并到同一条任务中')) throw new Error('multi-customer prompt is incomplete');
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-workbuddy-guide.png'), fullPage: true });
-  await window.getByText('分发', { exact: true }).first().click();
-  await window.getByRole('button', { name: '配置分发' }).click();
-  await window.locator('#distribution-dialog-title', { hasText: '测试文章' }).waitFor();
-  if (await window.locator('#distribution-run').isEnabled()) throw new Error('distribution was enabled without the required Baijia cover');
-  await window.getByLabel('百家号').uncheck();
-  await window.getByLabel('知乎').check();
-  if (!(await window.locator('#distribution-run').isEnabled())) throw new Error('fill mode stayed disabled for a platform that does not require a cover');
-  await window.getByLabel(/真实发布/).check();
-  if (await window.locator('#distribution-run').isEnabled()) throw new Error('publish was enabled without explicit confirmation');
-  await window.getByLabel(/我确认执行真实发布/).check();
-  if (!(await window.locator('#distribution-run').isEnabled())) throw new Error('confirmed publish did not become available');
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-distribution-dialog.png') });
-  await window.getByRole('button', { name: '关闭分发配置' }).click();
-  await window.getByText('平台账号', { exact: true }).first().click();
-  if (await window.locator('[id^="baijia-default-"]').count() !== 0) throw new Error('Baijia defaults should be hidden until opened');
-  await window.getByRole('button', { name: '设置百家号发布默认值' }).click();
-  if (await window.locator('[id^="baijia-default-"]').count() !== 4) throw new Error('Baijia publishing defaults are missing from settings dialog');
-  await window.locator('#baijia-default-aiGenerated').uncheck();
-  await window.locator('#baijia-default-autoPodcast').check();
-  await window.locator('#baijia-default-source').check();
-  await window.locator('#baijia-default-source-date').fill('2026-08-20');
-  await window.locator('#baijia-default-source-location').fill('河北省 / 沧州市');
-  await window.getByRole('button', { name: '保存默认值' }).click();
-  await window.locator('#action-message', { hasText: '已保存百家号默认发布设置' }).waitFor();
-  const savedDefaults = await window.evaluate(async () => (await window.geoPublisher.projects()).currentProject?.publishingDefaults?.baijia);
-  if (!savedDefaults?.smartCreation?.includes('autoPodcast') || savedDefaults?.declarations?.includes('aiGenerated') || !savedDefaults?.declarations?.includes('source')) throw new Error(`Baijia defaults were not persisted: ${JSON.stringify(savedDefaults)}`);
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-platform-accounts.png'), fullPage: true });
-  await window.getByText('设置', { exact: true }).click();
-  await window.locator('#settings-connect-workbuddy').waitFor();
-  const settings = await window.evaluate(async () => {
-    const result = await window.geoPublisher.copyDiagnostics();
-    const serialized = JSON.stringify(result.diagnostic);
-    return {
-      cards: document.querySelectorAll('.settings-card').length,
-      hasLaunchSwitch: Boolean(document.querySelector('[role="switch"]')),
-      hasBetaControl: Boolean(document.querySelector('#beta-invite-code,.beta-panel')),
-      diagnosticsSanitized: !/token|cookie|cliPath|dataDirectory|companyName|title/i.test(serialized),
-    };
-  });
-  if (settings.cards !== 4 || !settings.hasLaunchSwitch || !settings.hasBetaControl || !settings.diagnosticsSanitized) throw new Error(`settings UI is incomplete: ${JSON.stringify(settings)}`);
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-settings.png') });
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())?.setSize(920, 640));
-  await window.waitForTimeout(150);
-  const compact = await window.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth, sidebarBottom: document.querySelector('.sidebar-bottom')?.getBoundingClientRect().bottom, height: innerHeight }));
-  if (compact.scrollWidth > compact.width || (compact.sidebarBottom || 0) > compact.height) throw new Error(`compact UI is clipped: ${JSON.stringify(compact)}`);
-  await window.getByText('使用指南', { exact: true }).click();
-  await window.locator('#multi-customer-guide').waitFor();
-  const compactGuide = await window.locator('#multi-customer-guide').evaluate((section) => {
-    const bounds = section.getBoundingClientRect();
-    const prompt = section.querySelector('pre')?.getBoundingClientRect();
-    const cards = Array.from(section.querySelectorAll('.multi-customer-rule')).map((card) => card.getBoundingClientRect());
-    return { bounds, prompt, cards, viewportWidth: innerWidth, scrollWidth: document.documentElement.scrollWidth };
-  });
-  if (compactGuide.scrollWidth > compactGuide.viewportWidth || !compactGuide.prompt || compactGuide.prompt.right > compactGuide.bounds.right + 2 || compactGuide.cards.some((card) => card.right > compactGuide.bounds.right + 2)) throw new Error(`compact multi-customer guide is clipped: ${JSON.stringify(compactGuide)}`);
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-workbuddy-guide-compact.png'), fullPage: true });
-  await window.locator('.nav-item', { hasText: '客户项目' }).click();
-  await window.locator('.item-row', { hasText: '冒烟测试客户' }).getByRole('button', { name: '编辑' }).click();
-  const compactSheet = await window.evaluate(() => {
-    const sheet = document.querySelector('.project-sheet')?.getBoundingClientRect();
-    const body = document.querySelector('.project-sheet-body')?.getBoundingClientRect();
-    const footer = document.querySelector('.project-sheet-foot')?.getBoundingClientRect();
-    return { sheet, body, footer, width: innerWidth, height: innerHeight };
-  });
-  if (!compactSheet.sheet || !compactSheet.body || !compactSheet.footer || compactSheet.sheet.left < 0 || compactSheet.sheet.right > compactSheet.width + 2 || compactSheet.footer.bottom > compactSheet.height + 2 || compactSheet.body.height < 260) throw new Error(`compact project sheet is clipped: ${JSON.stringify(compactSheet)}`);
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-project-sheet-compact.png') });
-  await window.getByRole('button', { name: '关闭客户资料' }).click();
+  await window.locator('#check-update').click();
+  await window.locator('#update-state', { hasText: '不可用' }).waitFor();
+  const updateDetail = await window.locator('#update-state').getAttribute('title');
+  if (updateDetail !== '开发模式不检查更新') throw new Error(`update detail is missing: ${updateDetail}`);
 
-  await window.getByText('平台账号', { exact: true }).first().click();
-  await window.locator('.account-grid section', { hasText: '百家号' }).getByRole('button', { name: '打开平台' }).click();
-  await window.locator('#platform-back').waitFor();
-  const platformToolbar = await window.evaluate(async () => {
-    const toolbar = document.querySelector('.platform-toolbar')?.getBoundingClientRect();
-    const back = document.querySelector('#platform-back')?.getBoundingClientRect();
-    const status = await window.geoPublisher.status();
-    return { toolbar, back, activePlatform: status.activePlatform, width: innerWidth };
-  });
-  if (!platformToolbar.toolbar || !platformToolbar.back || platformToolbar.activePlatform !== 'baijia' || platformToolbar.toolbar.height !== 78 || platformToolbar.back.right > platformToolbar.width) throw new Error(`platform toolbar is incomplete: ${JSON.stringify(platformToolbar)}`);
-  await window.screenshot({ path: join(evidenceDirectory, 'desktop-platform-toolbar.png') });
-  await window.locator('#platform-back').click();
-  await window.locator('#platform-back').waitFor({ state: 'detached' });
-  if ((await window.evaluate(() => window.geoPublisher.status())).activePlatform !== null) throw new Error('platform remained active after returning to workspace');
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(920, 640));
+  await window.waitForTimeout(300);
+  const compact = await window.evaluate(() => ({
+    width: innerWidth,
+    height: innerHeight,
+    scrollWidth: document.documentElement.scrollWidth,
+    scrollHeight: document.documentElement.scrollHeight,
+    connectBottom: document.querySelector('#connect-workbuddy')?.getBoundingClientRect().bottom,
+    updateBottom: document.querySelector('#check-update')?.getBoundingClientRect().bottom,
+  }));
+  if (compact.scrollWidth > compact.width || compact.scrollHeight > compact.height) throw new Error(`compact layout overflows: ${JSON.stringify(compact)}`);
+  if ((compact.updateBottom || Infinity) > compact.height) throw new Error(`compact controls clipped: ${JSON.stringify(compact)}`);
 
-  const inspect = await runCli(['inspect', 'baijia']);
-  if (!inspect.ok || inspect.data?.runtimeState !== 'background') throw new Error(`background inspect failed: ${JSON.stringify(inspect)}`);
-  const visibleBefore = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((candidate) => candidate.isVisible()).length);
-  await runCli(['inspect', 'toutiao']);
-  const visibleAfter = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((candidate) => candidate.isVisible()).length);
-  if (visibleBefore !== visibleAfter) throw new Error('background inspection changed visible window state');
-  process.stdout.write(`${JSON.stringify({ initial, compact, projectId, screenshot: join(evidenceDirectory, 'desktop-project-sheet.png') })}\n`);
-} finally { await app.close(); }
+  await window.screenshot({ path: join(evidenceDirectory, 'desktop-home.png') });
+  process.stdout.write(`${JSON.stringify({ initial, compact, launcherVersion: launcherVersion.version, screenshot: join(evidenceDirectory, 'desktop-home.png') }, null, 2)}\n`);
+} finally {
+  await app.close();
+}

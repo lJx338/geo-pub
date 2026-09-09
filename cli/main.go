@@ -21,42 +21,36 @@ import (
 )
 
 const (
-	defaultTimeout  = 15 * time.Second
-	platformTimeout = 150 * time.Second
-	publishTimeout  = 4 * time.Minute
-	maxResponseSize = 5 * 1024 * 1024
+	defaultTimeout         = 15 * time.Second
+	platformTimeout        = 150 * time.Second
+	publishTimeout         = 4 * time.Minute
+	maxResponseSize        = 5 * 1024 * 1024
+	controlProtocolVersion = 1
 )
 
-var version = "0.6.0-beta.8"
-var buildMode = "production"
+var version = "0.2.9"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
 	"penguin": true, "sohu": true, "netease": true,
 }
 
+var controlCapabilities = []string{
+	"status", "platform.open", "platform.inspect", "draft.fill", "draft.publish",
+}
+
 type controlRequest struct {
-	ID              string          `json:"id"`
-	Token           string          `json:"token"`
-	Action          string          `json:"action"`
-	Platform        string          `json:"platform,omitempty"`
-	ProjectID       string          `json:"projectId,omitempty"`
-	Project         json.RawMessage `json:"project,omitempty"`
-	Item            json.RawMessage `json:"item,omitempty"`
-	Kind            string          `json:"kind,omitempty"`
-	Filter          map[string]any  `json:"filter,omitempty"`
-	TopicID         string          `json:"topicId,omitempty"`
-	TaskID          string          `json:"taskId,omitempty"`
-	ArticleID       string          `json:"articleId,omitempty"`
-	MaterialID      string          `json:"materialId,omitempty"`
-	SourcePath      string          `json:"sourcePath,omitempty"`
-	Analysis        json.RawMessage `json:"analysis,omitempty"`
-	Limit           int             `json:"limit,omitempty"`
-	TTLMS           int             `json:"ttlMs,omitempty"`
-	Document        articleDocument `json:"document,omitempty"`
-	CoverPath       string          `json:"coverPath"`
-	ConfirmPublish  bool            `json:"confirmPublish,omitempty"`
-	PlatformOptions platformOptions `json:"platformOptions,omitempty"`
+	ID              string   `json:"id"`
+	Token           string   `json:"token"`
+	ProtocolVersion int      `json:"protocolVersion"`
+	ClientVersion   string   `json:"clientVersion"`
+	Action          string   `json:"action"`
+	Platform        string   `json:"platform,omitempty"`
+	Title           string   `json:"title,omitempty"`
+	HTML            string   `json:"html,omitempty"`
+	CoverPath       string   `json:"coverPath"`
+	Tags            []string `json:"tags"`
+	ConfirmPublish  bool     `json:"confirmPublish,omitempty"`
 }
 
 type controlResponse struct {
@@ -71,47 +65,18 @@ type controlResponse struct {
 }
 
 type fillInput struct {
-	ProjectID       string          `json:"projectId"`
-	Platform        string          `json:"platform"`
-	Document        articleDocument `json:"document"`
-	CoverPath       string          `json:"coverPath"`
-	ConfirmPublish  bool            `json:"confirmPublish,omitempty"`
-	PlatformOptions platformOptions `json:"platformOptions,omitempty"`
-}
-
-type platformOptions struct {
-	Baijia *baijiaOptions `json:"baijia,omitempty"`
-}
-
-type baijiaOptions struct {
-	SmartCreation  []string `json:"smartCreation,omitempty"`
-	Declarations   []string `json:"declarations,omitempty"`
-	SourceDate     string   `json:"sourceDate,omitempty"`
-	SourceLocation string   `json:"sourceLocation,omitempty"`
-}
-
-type articleDocument struct {
-	Title   string         `json:"title"`
-	Blocks  []articleBlock `json:"blocks"`
-	Summary string         `json:"summary,omitempty"`
-	Tags    []string       `json:"tags,omitempty"`
-}
-
-type articleBlock struct {
-	Type    string   `json:"type"`
-	Level   int      `json:"level,omitempty"`
-	Text    string   `json:"text,omitempty"`
-	Ordered bool     `json:"ordered,omitempty"`
-	Items   []string `json:"items,omitempty"`
-	Src     string   `json:"src,omitempty"`
-	Alt     string   `json:"alt,omitempty"`
+	Platform       string   `json:"platform"`
+	Title          string   `json:"title"`
+	HTML           string   `json:"html"`
+	CoverPath      string   `json:"coverPath"`
+	Tags           []string `json:"tags"`
+	ConfirmPublish bool     `json:"confirmPublish,omitempty"`
 }
 
 type cliOutput struct {
 	OK         bool            `json:"ok"`
 	Command    string          `json:"command,omitempty"`
 	Version    string          `json:"version,omitempty"`
-	Profile    string          `json:"profile,omitempty"`
 	Data       json.RawMessage `json:"data,omitempty"`
 	Code       string          `json:"code,omitempty"`
 	Message    string          `json:"message,omitempty"`
@@ -131,7 +96,7 @@ func (e *cliError) Error() string { return e.message }
 func main() {
 	command, response, err := run(os.Args[1:])
 	if err != nil {
-		failure := cliOutput{OK: false, Command: command, Version: version, Profile: cliProfile(), Code: "GEO_CLI_FAILED", Message: err.Error()}
+		failure := cliOutput{OK: false, Command: command, Version: version, Code: "GEO_CLI_FAILED", Message: err.Error()}
 		var typed *cliError
 		if errors.As(err, &typed) {
 			failure.Code = typed.code
@@ -141,7 +106,7 @@ func main() {
 		writeJSON(os.Stderr, failure)
 		os.Exit(1)
 	}
-	writeJSON(os.Stdout, cliOutput{OK: true, Command: command, Version: version, Profile: cliProfile(), Data: response})
+	writeJSON(os.Stdout, cliOutput{OK: true, Command: command, Version: version, Data: response})
 }
 
 func run(args []string) (string, json.RawMessage, error) {
@@ -149,13 +114,6 @@ func run(args []string) (string, json.RawMessage, error) {
 	if len(args) > 0 {
 		command = args[0]
 		args = args[1:]
-	}
-	if !isDevelopmentBuild() && !productionCommands[command] {
-		return command, nil, &cliError{
-			code:       "COMMAND_NOT_EXPOSED",
-			message:    "此命令仅在 GEO Publisher 开发工具中可用，不向 WorkBuddy 生产 CLI 暴露",
-			suggestion: "请使用 GEO Publisher 桌面端界面完成项目管理或开发诊断",
-		}
 	}
 
 	switch command {
@@ -177,10 +135,6 @@ func run(args []string) (string, json.RawMessage, error) {
 		return command, response, err
 	case "status":
 		return call(command, controlRequest{Action: "status"}, defaultTimeout)
-	case "projects":
-		return call(command, controlRequest{Action: "project.list"}, defaultTimeout)
-	case "project":
-		return runProject(args)
 	case "show":
 		return call(command, controlRequest{Action: "app.show"}, defaultTimeout)
 	case "open", "login", "inspect":
@@ -205,8 +159,8 @@ func run(args []string) (string, json.RawMessage, error) {
 		}
 		if command == "validate" {
 			return command, mustJSON(map[string]any{
-				"valid": true, "projectId": input.ProjectID, "platform": input.Platform, "title": input.Document.Title,
-				"titleLength": len([]rune(input.Document.Title)), "blockCount": len(input.Document.Blocks),
+				"valid": true, "platform": input.Platform, "title": input.Title,
+				"titleLength": len([]rune(input.Title)), "htmlLength": len(input.HTML),
 				"coverRequired": input.Platform == "baijia" || input.Platform == "toutiao" || input.Platform == "netease",
 			}), nil
 		}
@@ -218,308 +172,13 @@ func run(args []string) (string, json.RawMessage, error) {
 			action = "draft.publish"
 		}
 		return call(command, controlRequest{
-			Action: action, ProjectID: input.ProjectID, Platform: input.Platform, Document: input.Document,
-			CoverPath: input.CoverPath, ConfirmPublish: input.ConfirmPublish, PlatformOptions: input.PlatformOptions,
+			Action: action, Platform: input.Platform, Title: input.Title,
+			HTML: input.HTML, CoverPath: input.CoverPath, Tags: input.Tags, ConfirmPublish: input.ConfirmPublish,
 		}, publishTimeout)
 	case "doctor":
 		return command, doctor(), nil
-	case "content":
-		return runContent(args)
-	case "material":
-		return runMaterial(args)
-	case "topic":
-		return runTopic(args)
 	default:
-		if !isDevelopmentBuild() {
-			return command, nil, usageError("命令：doctor | project current|create|update | content list|save|import-material | material pending|get|analyze | topic reserve|release|use|variant | instructions --json | schema --json | start | status | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
-		}
-		return command, nil, usageError("命令：discover | doctor | projects | project current|select|create|update|archive | content list|save|import-material | topic reserve|release|use|variant | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
-	}
-}
-
-var productionCommands = map[string]bool{
-	"version": true, "--version": true, "-v": true,
-	"doctor": true, "instructions": true, "schema": true,
-	"start": true, "status": true, "project": true, "content": true, "material": true,
-	"topic": true,
-	"login": true, "inspect": true, "validate": true, "fill": true, "publish": true,
-}
-
-func runMaterial(args []string) (string, json.RawMessage, error) {
-	if len(args) < 2 {
-		return "material", nil, usageError("素材命令：material pending <projectId> [--limit 20] | material get <projectId> --material <materialId> | material analyze <projectId> --material <materialId> --input <analysis.json>")
-	}
-	subcommand, projectID := args[0], args[1]
-	flags := flag.NewFlagSet("material "+subcommand, flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	materialID := flags.String("material", "", "material id")
-	inputPath := flags.String("input", "", "analysis JSON")
-	limit := flags.Int("limit", 20, "pending image limit")
-	if err := flags.Parse(args[2:]); err != nil {
-		return "material." + subcommand, nil, usageError("素材参数格式错误")
-	}
-	switch subcommand {
-	case "pending":
-		if *limit < 1 || *limit > 50 {
-			return "material.pending", nil, usageError("--limit 必须在 1 到 50 之间")
-		}
-		return call("material.pending", controlRequest{Action: "material.pending", ProjectID: projectID, Limit: *limit}, defaultTimeout)
-	case "get":
-		if *materialID == "" {
-			return "material.get", nil, usageError("请使用 --material <materialId>")
-		}
-		return call("material.get", controlRequest{Action: "material.get", ProjectID: projectID, MaterialID: *materialID}, defaultTimeout)
-	case "analyze":
-		if *materialID == "" || *inputPath == "" {
-			return "material.analyze", nil, usageError("请使用 --material <materialId> --input <analysis.json>")
-		}
-		data, err := os.ReadFile(*inputPath)
-		if err != nil {
-			return "material.analyze", nil, &cliError{code: "INPUT_READ_FAILED", message: err.Error(), suggestion: "检查图片分析 JSON 文件路径"}
-		}
-		var analysis map[string]any
-		if err := json.Unmarshal(data, &analysis); err != nil {
-			return "material.analyze", nil, usageError("图片分析结果必须是有效 JSON 对象")
-		}
-		return call("material.analyze", controlRequest{Action: "material.analyze", ProjectID: projectID, MaterialID: *materialID, Analysis: data}, defaultTimeout)
-	default:
-		return "material", nil, usageError("素材命令：material pending|get|analyze <projectId> ...")
-	}
-}
-
-func isDevelopmentBuild() bool { return buildMode == "development" }
-
-func cliProfile() string {
-	if isDevelopmentBuild() {
-		return "development"
-	}
-	return "production"
-}
-
-func runContent(args []string) (string, json.RawMessage, error) {
-	if len(args) == 0 {
-		return "content", nil, usageError("内容命令：content list <projectId> [kind] [--status <status>] [--category <category>] [--query <text>] | content save <projectId> --input <file.json> | content import-material <projectId> --path <file>")
-	}
-	subcommand := args[0]
-	switch subcommand {
-	case "list":
-		if len(args) < 2 {
-			return "content.list", nil, usageError("请提供 projectId")
-		}
-		request := controlRequest{Action: "content.list", ProjectID: args[1]}
-		remaining := args[2:]
-		if len(remaining) > 0 && !strings.HasPrefix(remaining[0], "--") {
-			request.Kind = remaining[0]
-			remaining = remaining[1:]
-		}
-		flags := flag.NewFlagSet("content list", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		status := flags.String("status", "", "status")
-		category := flags.String("category", "", "category")
-		reusePolicy := flags.String("reuse-policy", "", "reuse policy")
-		query := flags.String("query", "", "query")
-		auto := flags.Bool("auto-selectable", false, "auto selectable")
-		if err := flags.Parse(remaining); err != nil {
-			return "content.list", nil, usageError("筛选参数格式错误")
-		}
-		request.Filter = map[string]any{}
-		if *status != "" {
-			request.Filter["status"] = *status
-		}
-		if *category != "" {
-			request.Filter["category"] = *category
-		}
-		if *reusePolicy != "" {
-			request.Filter["reusePolicy"] = *reusePolicy
-		}
-		if *query != "" {
-			request.Filter["query"] = *query
-		}
-		if *auto {
-			request.Filter["autoSelectable"] = true
-		}
-		return call("content.list", request, defaultTimeout)
-	case "save":
-		if len(args) < 3 {
-			return "content.save", nil, usageError("请使用 content save <projectId> --input <file.json>")
-		}
-		flags := flag.NewFlagSet("content save", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		inputPath := flags.String("input", "", "content JSON")
-		if err := flags.Parse(args[2:]); err != nil || *inputPath == "" {
-			return "content.save", nil, usageError("请使用 --input <内容.json>")
-		}
-		data, err := os.ReadFile(*inputPath)
-		if err != nil {
-			return "content.save", nil, &cliError{code: "INPUT_READ_FAILED", message: err.Error(), suggestion: "检查内容 JSON 文件路径"}
-		}
-		var item map[string]any
-		if err := json.Unmarshal(data, &item); err != nil {
-			return "content.save", nil, usageError("内容必须是有效 JSON 对象")
-		}
-		return call("content.save", controlRequest{Action: "content.save", ProjectID: args[1], Item: data}, defaultTimeout)
-	case "import-material":
-		if len(args) < 2 {
-			return "content.import-material", nil, usageError("请提供 projectId")
-		}
-		flags := flag.NewFlagSet("content import-material", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		path := flags.String("path", "", "source path")
-		title := flags.String("title", "", "title")
-		category := flags.String("category", "", "category")
-		if err := flags.Parse(args[2:]); err != nil || *path == "" {
-			return "content.import-material", nil, usageError("请使用 --path <素材文件>")
-		}
-		item := map[string]any{}
-		if *title != "" {
-			item["title"] = *title
-		}
-		if *category != "" {
-			item["category"] = *category
-		}
-		return call("content.import-material", controlRequest{Action: "content.import-material", ProjectID: args[1], SourcePath: *path, Item: mustJSON(item)}, defaultTimeout)
-	default:
-		return "content", nil, usageError("内容命令：content list <projectId> [kind] [--status <status>] | content save <projectId> --input <file.json> | content import-material <projectId> --path <file>")
-	}
-}
-
-func runTopic(args []string) (string, json.RawMessage, error) {
-	if len(args) < 2 {
-		return "topic", nil, usageError("选题命令：topic reserve|release|use|variant <projectId> ...")
-	}
-	subcommand, projectID := args[0], args[1]
-	flags := flag.NewFlagSet("topic "+subcommand, flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	topicID := flags.String("topic", "", "topic id")
-	taskID := flags.String("task", "", "task id")
-	articleID := flags.String("article", "", "article id")
-	inputPath := flags.String("input", "", "topic JSON")
-	if err := flags.Parse(args[2:]); err != nil || *topicID == "" {
-		return "topic." + subcommand, nil, usageError("请使用 --topic <topicId>")
-	}
-	switch subcommand {
-	case "reserve":
-		if *taskID == "" {
-			return "topic.reserve", nil, usageError("请使用 --task <taskId>")
-		}
-		return call("topic.reserve", controlRequest{Action: "topic.reserve", ProjectID: projectID, TopicID: *topicID, TaskID: *taskID}, defaultTimeout)
-	case "release":
-		return call("topic.release", controlRequest{Action: "topic.release", ProjectID: projectID, TopicID: *topicID, TaskID: *taskID}, defaultTimeout)
-	case "use":
-		if *articleID == "" {
-			return "topic.use", nil, usageError("请使用 --article <articleId>")
-		}
-		return call("topic.use", controlRequest{Action: "topic.use", ProjectID: projectID, TopicID: *topicID, ArticleID: *articleID, TaskID: *taskID}, defaultTimeout)
-	case "variant":
-		if *inputPath == "" {
-			return "topic.variant", nil, usageError("请使用 --input <topic.json>")
-		}
-		data, err := os.ReadFile(*inputPath)
-		if err != nil {
-			return "topic.variant", nil, &cliError{code: "INPUT_READ_FAILED", message: err.Error(), suggestion: "检查选题 JSON 文件路径"}
-		}
-		return call("topic.variant", controlRequest{Action: "topic.variant", ProjectID: projectID, TopicID: *topicID, Item: data}, defaultTimeout)
-	default:
-		return "topic", nil, usageError("选题命令：topic reserve|release|use|variant <projectId> --topic <topicId> ...")
-	}
-}
-
-func runProject(args []string) (string, json.RawMessage, error) {
-	if len(args) == 0 {
-		if !isDevelopmentBuild() {
-			return "project", nil, usageError("项目命令：project list | current | select <projectId> | create --input <file.json> | update <projectId> --input <file.json>")
-		}
-		return "project", nil, usageError("项目命令：project current | select <projectId> | create/import --input <file.json> | update <projectId> --input <file.json> | export <projectId> --output <file.json> | archive <projectId>")
-	}
-	subcommand := args[0]
-	if !isDevelopmentBuild() && subcommand != "list" && subcommand != "current" && subcommand != "select" && subcommand != "create" && subcommand != "update" {
-		return "project." + subcommand, nil, &cliError{
-			code:       "COMMAND_NOT_EXPOSED",
-			message:    "生产 CLI 只允许创建客户项目，或读取、更新当前客户项目",
-			suggestion: "请在 GEO Publisher 桌面端管理客户项目",
-		}
-	}
-	switch subcommand {
-	case "list":
-		_, data, err := call("project.list", controlRequest{Action: "project.list"}, defaultTimeout)
-		return "project.list", data, err
-	case "current":
-		_, data, err := call("project.current", controlRequest{Action: "project.current"}, defaultTimeout)
-		return "project.current", data, err
-	case "select", "archive":
-		if len(args) != 2 {
-			return "project." + subcommand, nil, usageError("请提供 projectId")
-		}
-		action := "project.select"
-		if subcommand == "archive" {
-			action = "project.archive"
-		}
-		_, data, err := call("project."+subcommand, controlRequest{Action: action, ProjectID: args[1]}, defaultTimeout)
-		return "project." + subcommand, data, err
-	case "export":
-		if len(args) != 4 || args[2] != "--output" {
-			return "project.export", nil, usageError("请使用 project export <projectId> --output <file.json>")
-		}
-		_, data, err := call("project.get", controlRequest{Action: "project.get", ProjectID: args[1]}, defaultTimeout)
-		if err != nil {
-			return "project.export", nil, err
-		}
-		var result struct {
-			Project json.RawMessage `json:"project"`
-		}
-		if json.Unmarshal(data, &result) != nil || len(result.Project) == 0 || string(result.Project) == "null" {
-			return "project.export", nil, &cliError{code: "PROJECT_NOT_FOUND", message: "找不到客户项目", suggestion: "运行 geo-publisher projects 查看可用项目"}
-		}
-		if err := os.WriteFile(args[3], append(result.Project, '\n'), 0o600); err != nil {
-			return "project.export", nil, &cliError{code: "PROJECT_EXPORT_FAILED", message: err.Error(), suggestion: "检查导出目录是否可写"}
-		}
-		return "project.export", mustJSON(map[string]any{"output": args[3]}), nil
-	case "create", "import", "update":
-		projectID, remaining := "", args[1:]
-		if subcommand == "update" {
-			if len(remaining) < 1 {
-				return "project.update", nil, usageError("请提供 projectId")
-			}
-			projectID, remaining = remaining[0], remaining[1:]
-		}
-		flags := flag.NewFlagSet("project "+subcommand, flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		inputPath := flags.String("input", "", "JSON project file")
-		if err := flags.Parse(remaining); err != nil || *inputPath == "" {
-			return "project." + subcommand, nil, usageError("请使用 --input <项目资料.json>")
-		}
-		data, err := os.ReadFile(*inputPath)
-		if err != nil {
-			return "project." + subcommand, nil, &cliError{code: "INPUT_READ_FAILED", message: err.Error(), suggestion: "检查项目资料 JSON 文件路径"}
-		}
-		var project map[string]any
-		if err := json.Unmarshal(data, &project); err != nil {
-			return "project." + subcommand, nil, usageError("项目资料必须是有效 JSON 对象")
-		}
-		if subcommand == "create" && !isDevelopmentBuild() {
-			confirmed, _ := project["confirmCreate"].(bool)
-			if !confirmed {
-				return "project.create", nil, &cliError{
-					code:       "PROJECT_CREATE_CONFIRMATION_REQUIRED",
-					message:    "创建客户项目需要用户明确确认",
-					suggestion: "先向用户展示项目名称和公司资料摘要；用户确认后，在输入 JSON 中设置 confirmCreate=true",
-				}
-			}
-			delete(project, "confirmCreate")
-			name, _ := project["name"].(string)
-			if strings.TrimSpace(name) == "" {
-				return "project.create", nil, usageError("创建客户项目必须提供非空 name")
-			}
-			data = mustJSON(project)
-		}
-		action := "project.create"
-		if subcommand == "update" {
-			action = "project.update"
-		}
-		_, result, err := call("project."+subcommand, controlRequest{Action: action, ProjectID: projectID, Project: data}, defaultTimeout)
-		return "project." + subcommand, result, err
-	default:
-		return "project", nil, usageError("项目命令：project current | select <projectId> | create/import --input <file.json> | update <projectId> --input <file.json> | export <projectId> --output <file.json> | archive <projectId>")
+		return command, nil, usageError("命令：discover | doctor | instructions --json | schema --json | platforms | start | status | show | open <platform> | login <platform> | inspect <platform> | validate/fill/publish [--input file.json] | version")
 	}
 }
 
@@ -531,7 +190,7 @@ func call(command string, request controlRequest, timeout time.Duration) (string
 			return command, nil, &cliError{
 				code:       typed.code,
 				message:    "桌面端 4 分钟内尚未返回结果，网络可能过慢，原任务也可能仍在执行",
-				suggestion: "先检查网络，不要立即重复发布；运行 geo-publisher status，待 busy=false 后再 inspect 对应平台",
+				suggestion: "先运行 geo-publisher status，待 busy=false 后再 inspect 对应平台；如仍需再次发布，请在确认可能产生重复内容后重新明确发起",
 			}
 		}
 		return command, nil, err
@@ -544,8 +203,13 @@ func send(request controlRequest, timeout time.Duration) (json.RawMessage, error
 	if err != nil {
 		return nil, err
 	}
+	if err := checkDiscoveryCompatibility(); err != nil {
+		return nil, err
+	}
 	request.ID = randomID()
 	request.Token = token
+	request.ProtocolVersion = controlProtocolVersion
+	request.ClientVersion = version
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -595,6 +259,31 @@ func send(request controlRequest, timeout time.Duration) (json.RawMessage, error
 	return response.Data, nil
 }
 
+// Reject a new CLI talking to an older desktop before opening the control
+// socket. This makes update races explicit and symmetric with the desktop's
+// check for an old CLI.
+func checkDiscoveryCompatibility() error {
+	data, err := os.ReadFile(discoveryPath())
+	if err != nil {
+		return nil
+	}
+	return validateDiscoveryCompatibility(data)
+}
+
+func validateDiscoveryCompatibility(data []byte) error {
+	var record struct {
+		AppVersion      string `json:"appVersion"`
+		ProtocolVersion int    `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil
+	}
+	if record.ProtocolVersion != 0 && record.ProtocolVersion != controlProtocolVersion {
+		return &cliError{code: "CONTROL_PROTOCOL_MISMATCH", message: fmt.Sprintf("当前 CLI 协议为 %d，但桌面端协议为 %d", controlProtocolVersion, record.ProtocolVersion), suggestion: "更新 GEO Publisher 和 CLI 后重新连接 WorkBuddy"}
+	}
+	return nil
+}
+
 func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	flags := flag.NewFlagSet("fill", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -622,122 +311,34 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 projectId、platform、document、coverPath（可选）、confirmPublish（publish 必须为 true）、platformOptions（仅明确覆盖单次发布时使用）"}
+		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 platform、title、html、coverPath、tags（可选）、confirmPublish（publish 必须为 true）"}
 	}
-	if input.Document.Tags == nil {
-		input.Document.Tags = []string{}
+	if input.Tags == nil {
+		input.Tags = []string{}
 	}
 	return input, nil
 }
 
 func validateFill(input fillInput) error {
-	if len(strings.TrimSpace(input.ProjectID)) != 36 {
-		return usageError("projectId 必须来自 geo-publisher project current")
-	}
 	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && input.Platform != "netease" {
 		return usageError("当前 alpha 版 fill 支持 platform=toutiao、baijia、zhihu、penguin、sohu 或 netease")
 	}
-	if input.PlatformOptions.Baijia != nil {
-		if input.Platform != "baijia" {
-			return usageError("platformOptions.baijia 只能用于百家号单次填充或发布")
-		}
-		options := input.PlatformOptions.Baijia
-		validateOptions := func(values []string, allowed map[string]bool, label string) error {
-			seen := map[string]bool{}
-			for _, value := range values {
-				if !allowed[value] || seen[value] {
-					return usageError(fmt.Sprintf("百家号%s包含无效或重复选项：%s", label, value))
-				}
-				seen[value] = true
-			}
-			return nil
-		}
-		if err := validateOptions(options.SmartCreation, map[string]bool{"autoPodcast": true, "convertToDynamic": true}, "智能创作"); err != nil {
-			return err
-		}
-		if err := validateOptions(options.Declarations, map[string]bool{"aiGenerated": true, "source": true}, "创作声明"); err != nil {
-			return err
-		}
-		hasSource := false
-		for _, value := range options.Declarations {
-			hasSource = hasSource || value == "source"
-		}
-		if hasSource {
-			if _, err := time.Parse("2006-01-02", options.SourceDate); err != nil || len(options.SourceDate) != 10 {
-				return usageError("选择百家号来源说明后，sourceDate 必须为 YYYY-MM-DD")
-			}
-			if strings.TrimSpace(options.SourceLocation) == "" {
-				return usageError("选择百家号来源说明后，必须填写 sourceLocation")
-			}
-		}
+	if len([]rune(strings.TrimSpace(input.Title))) < 2 || len([]rune(input.Title)) > 64 {
+		return usageError("title 必须为 2-64 个字符")
 	}
-	if err := validateDocument(input.Document); err != nil {
-		return err
+	if input.Platform == "toutiao" && len([]rune(input.Title)) > 30 {
+		return usageError("头条号 title 不能超过 30 个字符")
 	}
-	titleLength := len([]rune(strings.TrimSpace(input.Document.Title)))
-	if input.Platform == "toutiao" && titleLength > 30 {
-		return usageError("头条号 document.title 不能超过 30 个字符")
+	if strings.TrimSpace(input.HTML) == "" {
+		return usageError("html 必填")
 	}
-	if input.Platform == "baijia" && titleLength > 64 {
-		return usageError("百家号 document.title 不能超过 64 个字符")
-	}
-	if input.Platform == "sohu" && (titleLength < 5 || titleLength > 72) {
-		return usageError("搜狐号 document.title 必须为 5-72 个字符")
-	}
-	if input.Platform == "netease" && (titleLength < 5 || titleLength > 64) {
-		return usageError("网易号 document.title 必须为 5-64 个字符")
-	}
-	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && !filepath.IsAbs(input.CoverPath) {
+	if input.Platform != "zhihu" && input.Platform != "sohu" && !filepath.IsAbs(input.CoverPath) {
 		return usageError("coverPath 必须是绝对路径")
 	}
-	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" {
+	if input.Platform != "zhihu" && input.Platform != "sohu" {
 		info, err := os.Stat(input.CoverPath)
 		if err != nil || info.IsDir() {
 			return &cliError{code: "COVER_NOT_FOUND", message: "找不到封面文件：" + input.CoverPath, suggestion: "传入当前电脑上的封面绝对路径"}
-		}
-	}
-	return nil
-}
-
-func validateDocument(document articleDocument) error {
-	if len([]rune(strings.TrimSpace(document.Title))) < 2 || len([]rune(document.Title)) > 100 {
-		return usageError("document.title 必须为 2-100 个字符")
-	}
-	if len(document.Blocks) == 0 || len(document.Blocks) > 120 {
-		return usageError("document.blocks 必须包含 1-120 个正文块")
-	}
-	if len([]rune(document.Summary)) > 120 {
-		return usageError("document.summary 不能超过 120 个字符")
-	}
-	if len(document.Tags) > 9 {
-		return usageError("document.tags 最多 9 个")
-	}
-	for index, block := range document.Blocks {
-		switch block.Type {
-		case "paragraph", "quote":
-			if strings.TrimSpace(block.Text) == "" {
-				return usageError(fmt.Sprintf("document.blocks[%d].text 不能为空", index))
-			}
-		case "heading":
-			if strings.TrimSpace(block.Text) == "" || (block.Level != 2 && block.Level != 3) {
-				return usageError(fmt.Sprintf("document.blocks[%d] 只能使用 level=2 或 level=3 的小标题", index))
-			}
-		case "list":
-			if len(block.Items) == 0 || len(block.Items) > 30 {
-				return usageError(fmt.Sprintf("document.blocks[%d].items 必须包含 1-30 项", index))
-			}
-			for _, item := range block.Items {
-				if strings.TrimSpace(item) == "" {
-					return usageError(fmt.Sprintf("document.blocks[%d].items 不能包含空项", index))
-				}
-			}
-		case "divider":
-		case "image":
-			if !strings.HasPrefix(block.Src, "https://") && !strings.HasPrefix(block.Src, "http://") {
-				return usageError(fmt.Sprintf("document.blocks[%d].src 必须是 http(s) 图片地址", index))
-			}
-		default:
-			return usageError(fmt.Sprintf("document.blocks[%d].type 不支持：%s", index, block.Type))
 		}
 	}
 	return nil
@@ -761,13 +362,13 @@ func startDesktop() error {
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.Command("open", "-g", "-a", "GEO Publisher", "--args", "--background")
+		command = exec.Command("open", "-a", "GEO Publisher")
 	case "windows":
 		path := windowsDesktopExecutable()
 		if path == "" {
 			return &cliError{code: "DESKTOP_START_FAILED", message: "找不到 GEO Publisher.exe", suggestion: "请手动打开一次 GEO Publisher，随后 CLI 会从 discovery.json 记住实际安装位置"}
 		}
-		command = exec.Command(path, "--background")
+		command = exec.Command(path)
 	default:
 		command = exec.Command("geo-publisher-desktop")
 	}
@@ -822,43 +423,48 @@ func windowsDesktopExecutable() string {
 
 func doctor() json.RawMessage {
 	result := map[string]any{
-		"cliVersion": version,
-		"profile":    cliProfile(),
-		"exposure":   map[string]any{"purpose": "WorkBuddy production control", "developerCommandsIncluded": isDevelopmentBuild()},
-		"os":         runtime.GOOS,
-		"arch":       runtime.GOARCH,
-	}
-	if isDevelopmentBuild() {
-		result["dataDirectory"] = dataDirectory()
-		result["controlEndpoint"] = controlEndpoint()
-		result["tokenFile"] = tokenPath()
-		result["discoveryFile"] = discoveryPath()
+		"cliVersion":      version,
+		"os":              runtime.GOOS,
+		"arch":            runtime.GOARCH,
+		"dataDirectory":   dataDirectory(),
+		"controlEndpoint": controlEndpoint(),
+		"tokenFile":       tokenPath(),
+		"discoveryFile":   discoveryPath(),
 	}
 	var discovery map[string]any
 	if data, err := os.ReadFile(discoveryPath()); err == nil && json.Unmarshal(data, &discovery) == nil {
 		result["discoveryReadable"] = true
-		if isDevelopmentBuild() {
-			result["discovery"] = discovery
-		}
+		result["discovery"] = discovery
 		if appVersion, ok := discovery["appVersion"].(string); ok {
 			result["versionMatch"] = appVersion == version
+		}
+		if protocolVersion, ok := discovery["protocolVersion"].(float64); ok {
+			result["protocolMatch"] = int(protocolVersion) == controlProtocolVersion
+		}
+		if cliVersion, ok := discovery["cliVersion"].(string); ok {
+			result["cliVersionMatch"] = cliVersion == version
+		}
+		protocolMatch, protocolKnown := result["protocolMatch"].(bool)
+		compatible := !protocolKnown || protocolMatch
+		result["compatible"] = compatible
+		if !compatible {
+			if protocolKnown && !protocolMatch {
+				result["compatibilityCode"] = "CONTROL_PROTOCOL_MISMATCH"
+				result["compatibilityMessage"] = "当前 CLI 与桌面端控制协议不一致，请更新两端并重新加载 WorkBuddy Skill"
+			}
 		}
 	} else {
 		result["discoveryReadable"] = false
 	}
-	if isDevelopmentBuild() {
-		if _, err := os.Stat(tokenPath()); err == nil {
-			result["tokenFileReadable"] = true
-		} else {
-			result["tokenFileReadable"] = false
-			result["tokenFileError"] = err.Error()
-		}
+	if _, err := os.Stat(tokenPath()); err == nil {
+		result["tokenFileReadable"] = true
+	} else {
+		result["tokenFileReadable"] = false
+		result["tokenFileError"] = err.Error()
 	}
 	if response, err := send(controlRequest{Action: "status"}, 2*time.Second); err == nil {
 		result["desktopConnected"] = true
-		if isDevelopmentBuild() {
-			result["desktop"] = json.RawMessage(response)
-		}
+		result["desktop"] = json.RawMessage(response)
 	} else {
 		result["desktopConnected"] = false
 		result["desktopError"] = err.Error()
@@ -880,24 +486,16 @@ func readDiscovery() json.RawMessage {
 
 func instructions() json.RawMessage {
 	return mustJSON(map[string]any{
-		"version":  version,
-		"profile":  cliProfile(),
-		"audience": "WorkBuddy",
+		"version":         version,
+		"protocolVersion": controlProtocolVersion,
+		"capabilities":    controlCapabilities,
 		"workflow": []string{
 			"Run doctor and start the desktop when it is not connected",
-			"For a customer-specific task run project list, select the unique exact-name match with project select, then verify project current",
-			"If no current project exists and the user asks to create one, collect the customer profile, show a summary, obtain explicit confirmation, then run project create with confirmCreate=true",
-			"Run project current and use its exact project.id for every article request",
 			"Run validate with the exact article JSON",
 			"Use fill for preview or any request that says not to publish",
 			"Use publish only after explicit user authorization and confirmPublish=true",
 			"Process platforms serially and preserve every structured result",
-			"Never republish automatically when status=result_uncertain; reconcile first",
-			"Before generating an article, list topics with auto-selectable=true and reserve exactly one topic with a unique task id",
-			"After saving an article call topic use; if generation fails call topic release; used topics remain searchable but are not automatically selected unless evergreen",
-			"For a long-running subject create a topic variant instead of reusing the same title or body",
-			"Before using image materials, run material pending; analyze each returned local image once through material get and material analyze, then reuse the saved index",
-			"Search material summaries and facts through content list filters; do not scan the whole local content database",
+			"When status=result_uncertain, report the uncertainty and do not retry within the same action; a new explicit publish request is allowed but may create duplicate content",
 		},
 		"platformOrder": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
 		"platformNames": map[string]string{
@@ -908,50 +506,20 @@ func instructions() json.RawMessage {
 }
 
 func commandSchema() json.RawMessage {
-	commands := map[string]any{
-		"doctor":   map[string]any{"input": nil, "sideEffect": false},
-		"project":  map[string]any{"input": "project list/current/select, project create JSON with confirmCreate=true, or project update JSON", "sideEffect": "lists projects, selects one exact project, creates and selects after explicit confirmation, or updates only the current project"},
-		"content":  map[string]any{"input": "content item JSON, filters, or a material file path", "sideEffect": "reads, saves, or imports content for the current customer project"},
-		"material": map[string]any{"input": "pending limit, material id, or validated image analysis JSON", "sideEffect": "reads pending images and saves a one-time visual index for the current customer project"},
-		"topic":    map[string]any{"input": "topic id plus task/article id or a variant JSON", "sideEffect": "reserves, releases, records use of, or creates a topic variant"},
-		"validate": map[string]any{"input": "article", "sideEffect": false},
-		"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},
-		"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},
-	}
-	if isDevelopmentBuild() {
-		commands["projects"] = map[string]any{"input": nil, "sideEffect": false}
-		commands["project"] = map[string]any{"input": "project profile JSON for create, import, update, export, or archive", "sideEffect": "manages customer projects"}
-		commands["show"] = map[string]any{"input": nil, "sideEffect": "shows the desktop window"}
-	}
 	return mustJSON(map[string]any{
-		"profile":  cliProfile(),
-		"commands": commands,
+		"commands": map[string]any{
+			"doctor":   map[string]any{"input": nil, "sideEffect": false},
+			"validate": map[string]any{"input": "article", "sideEffect": false},
+			"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},
+			"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},
+		},
 		"article": map[string]any{
-			"projectId": "required UUID from geo-publisher project current; must match the project currently selected in GEO Publisher",
-			"platform":  []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
-			"document": map[string]any{
-				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64",
-				"blocks": []map[string]any{
-					{"type": "paragraph", "text": "string"},
-					{"type": "heading", "level": "2 or 3", "text": "string"},
-					{"type": "list", "ordered": "boolean", "items": "string[]"},
-					{"type": "quote", "text": "string"},
-					{"type": "divider"},
-					{"type": "image", "src": "https:// image URL", "alt": "optional string"},
-				},
-				"summary": "optional string, maximum 120 characters",
-				"tags":    "optional array, maximum 9",
-			},
-			"coverPath":      "absolute local path; required for baijia, toutiao, netease",
+			"platform":       []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
+			"title":          "string, 2-64 characters; Toutiao maximum 30",
+			"html":           "non-empty HTML string",
+			"coverPath":      "absolute local path; required for baijia, toutiao, penguin, netease",
+			"tags":           "optional array, maximum 20",
 			"confirmPublish": "must be true for publish",
-			"platformOptions": map[string]any{
-				"usage": "omit to use current project defaults; only send when the user explicitly requests a one-shot override",
-				"baijia": map[string]any{
-					"smartCreation": "optional array: autoPodcast, convertToDynamic; empty selects none",
-					"declarations":  "optional array: aiGenerated, source; empty selects none",
-					"sourceDate":    "YYYY-MM-DD; required with source", "sourceLocation": "required with source; use province / city / district",
-				},
-			},
 		},
 	})
 }
@@ -986,9 +554,6 @@ func readToken() (string, error) {
 }
 
 func dataDirectory() string {
-	if override := os.Getenv("GEO_PUBLISHER_USER_DATA_DIR"); override != "" {
-		return override
-	}
 	home, _ := os.UserHomeDir()
 	switch runtime.GOOS {
 	case "windows":
@@ -1012,9 +577,6 @@ func tokenPath() string     { return filepath.Join(dataDirectory(), "control-tok
 func discoveryPath() string { return filepath.Join(dataDirectory(), "discovery.json") }
 
 func controlEndpoint() string {
-	if override := os.Getenv("GEO_PUBLISHER_CONTROL_ENDPOINT"); override != "" {
-		return override
-	}
 	if endpoint := controlEndpointFromDiscovery(discoveryPath()); endpoint != "" {
 		return endpoint
 	}
@@ -1083,10 +645,10 @@ func usageError(message string) error {
 
 func suggestionFor(code string) string {
 	switch code {
-	case "LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "RISK_CONTROL_REQUIRED":
-		return "GEO Publisher 已打开对应页面；请完成登录、验证或风险提示处理后重新执行同一命令一次"
 	case "UNAUTHORIZED":
 		return "完全退出并重新启动桌面端，再重试命令"
+	case "CLI_VERSION_MISMATCH", "CONTROL_PROTOCOL_MISMATCH":
+		return "在桌面端点击“连接 WorkBuddy”，重新加载 Skill，并启动新的任务会话"
 	case "CONTROL_REQUEST_FAILED":
 		return "查看返回信息和桌面端错误提示；登录或验证码需在桌面端处理"
 	default:

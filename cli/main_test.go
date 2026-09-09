@@ -1,8 +1,7 @@
 package main
 
 import (
-	"errors"
-	"fmt"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,63 +23,19 @@ func TestPlatformTimeoutCoversSlowPublisherPages(t *testing.T) {
 }
 
 func TestReadFillInputFromStdin(t *testing.T) {
-	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"toutiao","document":{"title":"标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg"}`))
+	input, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","title":"标题","html":"<p>正文</p>","coverPath":"/tmp/cover.jpg"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if input.Platform != "toutiao" || input.Document.Title != "标题" || len(input.Document.Blocks) != 1 {
+	if input.Platform != "toutiao" || input.Title != "标题" || input.HTML != "<p>正文</p>" {
 		t.Fatalf("unexpected input: %#v", input)
-	}
-}
-
-func TestReadBaijiaOneShotPlatformOptions(t *testing.T) {
-	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg","platformOptions":{"baijia":{"smartCreation":["autoPodcast"],"declarations":["aiGenerated","source"],"sourceDate":"2026-08-20","sourceLocation":"河北省 / 沧州市"}}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if input.PlatformOptions.Baijia == nil || len(input.PlatformOptions.Baijia.SmartCreation) != 1 || len(input.PlatformOptions.Baijia.Declarations) != 2 {
-		t.Fatalf("unexpected platform options: %#v", input.PlatformOptions)
-	}
-}
-
-func TestRejectsInvalidBaijiaOneShotPlatformOption(t *testing.T) {
-	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg","platformOptions":{"baijia":{"declarations":["sometimes"]}}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := validateFill(input); err == nil {
-		t.Fatal("expected invalid platform option to be rejected")
-	}
-}
-
-func TestBaijiaPlatformOptionsAllowEmptyGroups(t *testing.T) {
-	coverPath := filepath.Join(t.TempDir(), "cover.jpg")
-	if err := os.WriteFile(coverPath, []byte("cover"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	input, err := readFillInput(nil, strings.NewReader(fmt.Sprintf(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":%q,"platformOptions":{"baijia":{"smartCreation":[],"declarations":[]}}}`, coverPath)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := validateFill(input); err != nil {
-		t.Fatalf("empty option groups should be valid: %v", err)
-	}
-}
-
-func TestBaijiaSourceDeclarationRequiresDetails(t *testing.T) {
-	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg","platformOptions":{"baijia":{"declarations":["source"]}}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := validateFill(input); err == nil {
-		t.Fatal("source declaration without date and location should be rejected")
 	}
 }
 
 func TestReadFillInputFromFile(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "request.json")
-	if err := os.WriteFile(path, []byte(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"toutiao","document":{"title":"标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"platform":"toutiao","title":"标题","html":"<p>正文</p>","coverPath":"/tmp/cover.jpg"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	input, err := readFillInput([]string{"--input", path}, strings.NewReader(""))
@@ -93,14 +48,14 @@ func TestReadFillInputFromFile(t *testing.T) {
 }
 
 func TestReadFillInputRejectsUnknownFields(t *testing.T) {
-	_, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","document":{"title":"标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/a.jpg","extra":true}`))
+	_, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","title":"标题","html":"x","coverPath":"/tmp/a.jpg","extra":true}`))
 	if err == nil {
 		t.Fatal("expected unknown field error")
 	}
 }
 
 func TestReadPublishConfirmation(t *testing.T) {
-	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"sohu","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"","confirmPublish":true}`))
+	input, err := readFillInput(nil, strings.NewReader(`{"platform":"sohu","title":"正常文章标题","html":"<p>正文</p>","coverPath":"","confirmPublish":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,9 +65,6 @@ func TestReadPublishConfirmation(t *testing.T) {
 }
 
 func TestInstructionsAndSchemaAreAvailableOffline(t *testing.T) {
-	previous := buildMode
-	buildMode = "development"
-	t.Cleanup(func() { buildMode = previous })
 	for _, command := range []string{"instructions", "schema", "discover"} {
 		name, output, err := run([]string{command, "--json"})
 		if err != nil {
@@ -124,88 +76,14 @@ func TestInstructionsAndSchemaAreAvailableOffline(t *testing.T) {
 	}
 }
 
-func TestProductionProfileDoesNotExposeDeveloperCommands(t *testing.T) {
-	previous := buildMode
-	buildMode = "production"
-	t.Cleanup(func() { buildMode = previous })
-	for _, args := range [][]string{{"discover"}, {"platforms"}, {"show"}, {"open", "toutiao"}, {"projects"}, {"project", "export", "id", "--output", "out.json"}} {
-		_, _, err := run(args)
-		if err == nil {
-			t.Fatalf("production CLI exposed developer command %v", args)
-		}
-		var typed *cliError
-		if !errors.As(err, &typed) || typed.code != "COMMAND_NOT_EXPOSED" {
-			t.Fatalf("unexpected error for %v: %v", args, err)
-		}
-	}
-}
-
-func TestProductionProfileAllowsProjectListAndSelect(t *testing.T) {
-	previous := buildMode
-	buildMode = "production"
-	t.Cleanup(func() { buildMode = previous })
-	t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", t.TempDir())
-	for _, args := range [][]string{{"project", "list"}, {"project", "select", "11111111-1111-4111-8111-111111111111"}} {
-		_, _, err := run(args)
-		var typed *cliError
-		if errors.As(err, &typed) && typed.code == "COMMAND_NOT_EXPOSED" {
-			t.Fatalf("production CLI rejected required multi-customer command %v", args)
-		}
-	}
-}
-
-func TestProductionProjectCreateRequiresExplicitConfirmation(t *testing.T) {
-	previous := buildMode
-	buildMode = "production"
-	t.Cleanup(func() { buildMode = previous })
-	directory := t.TempDir()
-	path := filepath.Join(directory, "project.json")
-	if err := os.WriteFile(path, []byte(`{"name":"客户 A","companyName":"公司 A"}`), 0o600); err != nil {
+func TestInstructionsExposeCurrentCapabilities(t *testing.T) {
+	var result map[string]any
+	if err := json.Unmarshal(instructions(), &result); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := run([]string{"project", "create", "--input", path})
-	var typed *cliError
-	if !errors.As(err, &typed) || typed.code != "PROJECT_CREATE_CONFIRMATION_REQUIRED" {
-		t.Fatalf("expected confirmation error, got %v", err)
-	}
-}
-
-func TestProductionSchemaDocumentsConfirmedProjectCreation(t *testing.T) {
-	previous := buildMode
-	buildMode = "production"
-	t.Cleanup(func() { buildMode = previous })
-	if got := string(commandSchema()); !strings.Contains(got, "confirmCreate=true") {
-		t.Fatalf("production schema omitted project confirmation: %s", got)
-	}
-}
-
-func TestProductionSchemaDocumentsMaterialOrganizer(t *testing.T) {
-	previous := buildMode
-	buildMode = "production"
-	t.Cleanup(func() { buildMode = previous })
-	if got := string(commandSchema()); !strings.Contains(got, `"material"`) {
-		t.Fatalf("production schema omitted material organizer: %s", got)
-	}
-}
-
-func TestMaterialAnalyzeRejectsInvalidInputBeforeDesktopCall(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, "analysis.json")
-	if err := os.WriteFile(path, []byte(`not-json`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, _, err := runMaterial([]string{"analyze", "11111111-1111-4111-8111-111111111111", "--material", "image-a", "--input", path})
-	if err == nil || !strings.Contains(err.Error(), "有效 JSON") {
-		t.Fatalf("expected local JSON validation error, got %v", err)
-	}
-}
-
-func TestDevelopmentProfileIsExplicit(t *testing.T) {
-	previous := buildMode
-	buildMode = "development"
-	t.Cleanup(func() { buildMode = previous })
-	if got := string(instructions()); !strings.Contains(got, `"profile":"development"`) {
-		t.Fatalf("development instructions did not identify profile: %s", got)
+	capabilities, ok := result["capabilities"].([]any)
+	if !ok || len(capabilities) != len(controlCapabilities) {
+		t.Fatalf("unexpected capabilities: %#v", result["capabilities"])
 	}
 }
 
@@ -227,10 +105,11 @@ func TestDesktopPathFromDiscovery(t *testing.T) {
 func TestValidateDoesNotContactDesktop(t *testing.T) {
 	directory := t.TempDir()
 	cover := filepath.Join(directory, "cover.jpg")
+	cover = filepath.ToSlash(cover)
 	if err := os.WriteFile(cover, []byte("image"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"toutiao","document":{"title":"正常标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"`+cover+`"}`))
+	input, err := readFillInput(nil, strings.NewReader(`{"platform":"toutiao","title":"正常标题","html":"<p>正文</p>","coverPath":"`+cover+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +119,7 @@ func TestValidateDoesNotContactDesktop(t *testing.T) {
 }
 
 func TestValidateZhihuDoesNotRequireCover(t *testing.T) {
-	err := validateFill(fillInput{ProjectID: "11111111-1111-4111-8111-111111111111", Platform: "zhihu", Document: articleDocument{Title: "知乎标题", Blocks: []articleBlock{{Type: "paragraph", Text: "正文"}}}})
+	err := validateFill(fillInput{Platform: "zhihu", Title: "知乎标题", HTML: "<p>正文</p>"})
 	if err != nil {
 		t.Fatalf("validateFill returned error: %v", err)
 	}
@@ -253,32 +132,55 @@ func TestControlEndpointMatchesDesktopConvention(t *testing.T) {
 	}
 }
 
-func TestControlEndpointUsesDesktopDiscoveryInsteadOfShellHome(t *testing.T) {
+func TestControlRequestCarriesCompatibilityMetadata(t *testing.T) {
+	request := controlRequest{Action: "status"}
+	request.ProtocolVersion = controlProtocolVersion
+	request.ClientVersion = version
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"protocolVersion":1`) || !strings.Contains(string(encoded), `"clientVersion":"`+version+`"`) {
+		t.Fatalf("request metadata missing: %s", encoded)
+	}
+}
+
+func TestDiscoveryCompatibilityAllowsDifferentAppVersionWhenProtocolMatches(t *testing.T) {
+	if err := validateDiscoveryCompatibility([]byte(`{"appVersion":"0.2.3","protocolVersion":1}`)); err != nil {
+		t.Fatalf("compatible protocol should be allowed: %v", err)
+	}
+}
+
+func TestDiscoveryCompatibilityRejectsDifferentProtocol(t *testing.T) {
+	err := validateDiscoveryCompatibility([]byte(`{"appVersion":"0.2.3","protocolVersion":2}`))
+	if typed, ok := err.(*cliError); !ok || typed.code != "CONTROL_PROTOCOL_MISMATCH" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestControlEndpointReadsDesktopDiscovery(t *testing.T) {
 	directory := t.TempDir()
-	t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", directory)
-	t.Setenv("GEO_PUBLISHER_CONTROL_ENDPOINT", "")
 	expected := "/tmp/geo-publisher-a1b2c3d4e5f6.sock"
 	if runtime.GOOS == "windows" {
 		expected = `\\.\pipe\geo-publisher-a1b2c3d4e5f6`
 	}
 	record := []byte(`{"controlEndpoint":"` + strings.ReplaceAll(expected, `\`, `\\`) + `"}`)
-	if err := os.WriteFile(filepath.Join(directory, "discovery.json"), record, 0o600); err != nil {
+	path := filepath.Join(directory, "discovery.json")
+	if err := os.WriteFile(path, record, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := controlEndpoint(); got != expected {
+	if got := controlEndpointFromDiscovery(path); got != expected {
 		t.Fatalf("CLI ignored desktop discovery endpoint: got %q, want %q", got, expected)
 	}
 }
 
 func TestControlEndpointRejectsInvalidDiscoveryValue(t *testing.T) {
-	directory := t.TempDir()
-	t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", directory)
-	t.Setenv("GEO_PUBLISHER_CONTROL_ENDPOINT", "")
-	if err := os.WriteFile(filepath.Join(directory, "discovery.json"), []byte(`{"controlEndpoint":"malicious-endpoint"}`), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "discovery.json")
+	if err := os.WriteFile(path, []byte(`{"controlEndpoint":"malicious-endpoint"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := controlEndpoint(); got == "malicious-endpoint" {
-		t.Fatal("CLI accepted an invalid discovery endpoint")
+	if got := controlEndpointFromDiscovery(path); got != "" {
+		t.Fatalf("CLI accepted invalid discovery endpoint: %q", got)
 	}
 }
 

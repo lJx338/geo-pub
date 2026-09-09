@@ -1,25 +1,36 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { BrowserWindow, session, WebContents, WebContentsView } from 'electron';
-import type { DesktopStatus, Platform, PlatformStatus } from '../shared/protocol.js';
+import { randomUUID } from 'node:crypto';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
+import { BrowserWindow, session, WebContentsView } from 'electron';
+import type { DesktopStatus, Platform, PlatformStatus, PublishTaskAction, PublishTaskPhase, PublishTaskSnapshot } from '../shared/protocol.js';
 import { PLATFORMS } from '../shared/protocol.js';
-import { BackgroundExecutionHost } from './background-execution-host.js';
-import { AttentionRequiredError, type AttentionCode, type AttentionRequired } from './attention-required.js';
 import { fillBaijiaDraft } from './baijia-adapter.js';
-import { diagnosticError } from './diagnostics.js';
-import { fillNeteaseDraft } from './netease-adapter.js';
 import { fillPenguinDraft } from './penguin-adapter.js';
-import { publishFilledDraft, type PublishResult } from './publish-adapter.js';
 import { fillSohuDraft } from './sohu-adapter.js';
 import { evidenceDirectory } from './runtime-paths.js';
+import { reportError } from './logging.js';
 import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
-import { normalizeArticleTags, renderArticleDocument, type ArticleDocument } from '../shared/article-document.js';
+import { fillNeteaseDraft } from './netease-adapter.js';
+import { publishFilledDraft } from './publish-adapter.js';
 import { restorePlatformCookies, snapshotPlatformCookies } from './cookie-vault.js';
-import type { PlatformOptions } from '../shared/platform-settings.js';
+import { BrowserAutomationDriver, runWithBrowserAutomationDriver } from './browser-automation-driver.js';
+import { automationViewportForView } from './worker-window-layout.js';
+import { PublishTaskJournalStore } from './publish-task-journal.js';
+import { captureSuccessfulEvidence, captureUncertainEvidence } from './evidence-policy.js';
+import { PublishTaskHistoryStore, taskStatusForResult } from './publish-task-history.js';
+import { concealWorkerWindow, revealWorkerWindow } from './worker-window-visibility.js';
+import {
+  appendDiagnosticConsoleEvent,
+  captureFailureDiagnostic,
+  exportDiagnosticBundle,
+  installEditorDiagnostics,
+  removeTaskDiagnostic,
+  type DiagnosticConsoleEvent,
+} from './diagnostic-bundle.js';
 
-const defaultPlatformUrls: Record<Platform, string> = {
+const PLATFORM_URLS: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
   toutiao: 'https://mp.toutiao.com/profile_v4/graphic/publish',
   zhihu: 'https://zhuanlan.zhihu.com/write',
@@ -28,23 +39,59 @@ const defaultPlatformUrls: Record<Platform, string> = {
   netease: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
 };
 
-const PLATFORM_URLS: Record<Platform, string> = process.env.GEO_PUBLISHER_TEST_PLATFORM_URL
-  ? Object.fromEntries(PLATFORMS.map((platform) => [platform, process.env.GEO_PUBLISHER_TEST_PLATFORM_URL])) as Record<Platform, string>
-  : defaultPlatformUrls;
-
-type ViewHost = 'interactive' | 'background';
-
 interface ManagedView {
   platform: Platform;
   view: WebContentsView;
   partition: Electron.Session;
-  host: ViewHost;
   loading: boolean;
   lastUsedAt: number;
+  recoveryTimer: NodeJS.Timeout | null;
+  consoleEvents: DiagnosticConsoleEvent[];
 }
 
-const MAX_RESIDENT_INTERACTIVE_VIEWS = 1;
-const OPERATION_TIMEOUT_MS = 4 * 60 * 1000;
+type TaskAction = 'open' | 'inspect' | 'fill' | 'publish';
+type TaskPhase = NonNullable<DesktopStatus['activeTask']>['phase'];
+
+interface ActiveTask {
+  taskId: string;
+  action: PublishTaskAction;
+  platform: Platform;
+  phase: PublishTaskPhase;
+  title?: string;
+  startedAt: number;
+  deadlineAt: number;
+  snapshot?: PublishTaskSnapshot;
+}
+
+interface CookieSubscription {
+  session: Electron.Session;
+  listener: () => void;
+  snapshotTimer: NodeJS.Timeout | null;
+}
+
+/** One live platform is enough for the serial publisher and avoids six renderers idling in memory. */
+const MAX_RESIDENT_PLATFORM_VIEWS = 1;
+const RECENT_TASK_LIMIT = 20;
+const IDLE_VIEW_DISPOSAL_MS = 3 * 60 * 1000;
+const TASK_TIMEOUT_MS: Record<TaskAction, number> = {
+  open: 135_000,
+  inspect: 135_000,
+  fill: 210_000,
+  publish: 270_000,
+};
+const NAVIGATION_READY_TIMEOUT_MS = 30_000;
+
+export function shouldUseWindowsEditorForeground(
+  platform: Platform,
+  action: TaskAction,
+  runtimePlatform = process.platform,
+): boolean {
+  return runtimePlatform === 'win32'
+    // Penguin opens a native file chooser for both body images and covers;
+    // Windows will not complete that chooser reliably from a hidden renderer.
+    && (platform === 'zhihu' || platform === 'sohu' || platform === 'netease' || platform === 'penguin')
+    && (action === 'fill' || action === 'publish');
+}
 
 export function pickEvictionCandidate(
   views: Array<{ platform: Platform; lastUsedAt: number }>,
@@ -60,320 +107,447 @@ export function pickEvictionCandidate(
     })[0]?.platform ?? null;
 }
 
-export function platformRuntimeState(
-  created: boolean,
-  attached: boolean,
-  executingInBackground = false,
-): PlatformStatus['runtimeState'] {
+export function platformRuntimeState(created: boolean, attached: boolean): PlatformStatus['runtimeState'] {
   if (attached) return 'active';
-  if (executingInBackground) return 'background';
   return created ? 'resident' : 'not_loaded';
 }
 
-export function projectPartitionName(projectId: string, platform: Platform): string {
-  return `persist:geo-publisher-${projectId}-${platform}`;
+export interface EvidenceCaptureResult {
+  screenshotPath: string | null;
+  screenshotWarning: string | null;
 }
 
-function originalErrorCode(error: unknown): string | null {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] ?? null;
+export interface PlatformSessionsOptions {
+  layout?: 'dashboard' | 'execution';
+  tabBarHeight?: number;
 }
 
-async function withEvidenceTimeout<T>(operation: Promise<T>, timeoutMs = 1_500): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
+export async function captureEvidenceBestEffort(
+  operation: () => Promise<string>,
+  platform: Platform,
+  stage: string,
+): Promise<EvidenceCaptureResult> {
   try {
-    return await Promise.race([
-      operation,
-      new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('EVIDENCE_CAPTURE_TIMEOUT')), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    return { screenshotPath: await operation(), screenshotWarning: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const warning = `EVIDENCE_CAPTURE_FAILED: ${platform}/${stage}: ${message}`;
+    reportError(warning);
+    return { screenshotPath: null, screenshotWarning: warning };
   }
 }
 
-export class OperationTimeoutError extends Error {
-  readonly details: unknown;
-
-  constructor(details: unknown) {
-    super('PLATFORM_OPERATION_TIMEOUT: 平台页面在 4 分钟内没有完成，请检查网络或重新登录后再试');
-    this.details = details;
+function evidencePathFrom(value: unknown, depth = 0): string | undefined {
+  if (!value || typeof value !== 'object' || depth > 3) return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ['screenshotPath', 'evidencePath', 'settingsScreenshotPath']) {
+    if (typeof record[key] === 'string' && record[key]) return record[key];
   }
+  for (const nested of Object.values(record)) {
+    const path = evidencePathFrom(nested, depth + 1);
+    if (path) return path;
+  }
+  return undefined;
 }
 
-export async function withOperationDeadline<T>(
-  task: Promise<T>,
-  timeoutMs: number,
-  onTimeout: () => Promise<unknown>,
-): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(() => {
-      void onTimeout().then(
-        (details) => reject(new OperationTimeoutError(details)),
-        () => reject(new OperationTimeoutError(null)),
-      );
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([task, deadline]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
+function messageFromResult(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.message === 'string' && record.message) return record.message;
+  if (typeof record.error === 'string' && record.error) return record.error;
+  return undefined;
 }
 
-function attentionFromError(platform: Platform, error: unknown, url: string): AttentionRequired | null {
-  const message = error instanceof Error ? error.message : String(error);
-  const original = originalErrorCode(error);
-  if (original?.endsWith('_LOGIN_REQUIRED')) {
-    return { platform, code: 'LOGIN_REQUIRED', message: `${original}: 请完成登录后重新执行任务`, url };
-  }
-  if (original?.endsWith('_VERIFICATION_REQUIRED') || /(?:验证码|滑块验证|人机验证|安全验证)/.test(message)) {
-    return { platform, code: 'VERIFICATION_REQUIRED', message: `${original || 'VERIFICATION_REQUIRED'}: 请完成验证后重新执行任务`, url };
-  }
-  if (/(?:风控|账号异常|异常操作|风险控制)/.test(message)) {
-    return { platform, code: 'RISK_CONTROL_REQUIRED', message: `${original || 'RISK_CONTROL_REQUIRED'}: 请处理平台风险提示后重新执行任务`, url };
-  }
-  return null;
-}
-
-async function detectVisibleAttention(webContents: WebContents, platform: Platform): Promise<AttentionRequired | null> {
-  const state = await webContents.executeJavaScript(`(() => {
-    const visible=(element)=>element instanceof HTMLElement&&(()=>{const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden';})();
-    const normalize=(value)=>String(value||'').replace(/\\s+/g,' ').trim();
-    const dialogs=[...document.querySelectorAll('[role="dialog"],[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="verify"],[class*="Verify"]')]
-      .filter(visible).map((element)=>normalize(element.textContent)).join(' ');
-    const hasPassword=[...document.querySelectorAll('input[type="password"]')].some(visible);
-    const visibleText=[...document.querySelectorAll('button,a,[role="button"],label')].filter(visible).map((element)=>normalize(element.textContent)).join(' ');
-    return { url: location.href, dialogs, hasPassword, visibleText };
-  })()`);
-  const text = `${state.dialogs} ${state.visibleText}`;
-  if (/(?:验证码|滑块验证|人机验证|安全验证|请完成验证)/.test(text)) {
-    return { platform, code: 'VERIFICATION_REQUIRED', message: 'VERIFICATION_REQUIRED: 页面出现可见验证，请完成后重新执行任务', url: state.url };
-  }
-  if (/(?:风控|账号异常|异常操作|风险控制|安全校验)/.test(text)) {
-    return { platform, code: 'RISK_CONTROL_REQUIRED', message: 'RISK_CONTROL_REQUIRED: 页面出现可见风险提示，请处理后重新执行任务', url: state.url };
-  }
-  if (state.hasPassword || /(?:登录|扫码登录|请先登录|重新登录)/.test(text) || /(?:login|passport)/i.test(state.url)) {
-    return { platform, code: 'LOGIN_REQUIRED', message: 'LOGIN_REQUIRED: 页面需要登录，请完成后重新执行任务', url: state.url };
-  }
-  return null;
+export function formatWarningsFromResult(value: unknown): string[] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const warnings = (value as Record<string, unknown>).formatWarnings;
+  if (!Array.isArray(warnings)) return undefined;
+  const normalized = warnings.filter((warning): warning is string => typeof warning === 'string' && Boolean(warning.trim()));
+  return normalized.length ? [...new Set(normalized)] : undefined;
 }
 
 export class PlatformSessions {
   private readonly views = new Map<Platform, ManagedView>();
-  private readonly executionHost: BackgroundExecutionHost;
-  private background: ManagedView | null = null;
   private activePlatform: Platform | null = null;
-  private executingPlatform: Platform | null = null;
-  private attentionRequired: AttentionRequired | null = null;
-  private operationTail: Promise<void> = Promise.resolve();
-  private pendingOperations = 0;
-  private uiOverlayOpen = false;
-  private projectId: string | null = null;
+  private activeTask: ActiveTask | null = null;
+  private readonly cookieSubscriptions = new Map<Platform, CookieSubscription>();
+  private readonly publishJournal = new PublishTaskJournalStore();
+  private readonly taskHistory = new PublishTaskHistoryStore();
+  private recentTasks: PublishTaskSnapshot[] = [];
+  private idleViewDisposalTimer: NodeJS.Timeout | null = null;
+  private automationRevealedWindow = false;
+  private maintenance: Pick<NonNullable<DesktopStatus['resourceDiagnostics']>, 'evidenceBytes' | 'cacheBytes' | 'lastMaintenanceAt'> = {};
 
   constructor(
     private readonly window: BrowserWindow,
     private readonly version: string,
-    private readonly onAttentionRequired: (attention: AttentionRequired) => void = () => undefined,
-    private readonly onBusyChanged: (busy: boolean) => void = () => undefined,
-  ) {
-    this.executionHost = new BackgroundExecutionHost();
+    private readonly options: PlatformSessionsOptions = {},
+  ) {}
+
+  async loadTaskHistory(): Promise<void> {
+    // A forced desktop exit cannot run runExclusive's finally block. Close
+    // those persisted running records before exposing status to the CLI.
+    await this.taskHistory.recoverInterrupted();
+    // Older builds recorded a successful task when the user merely opened a
+    // platform. Those records are not publishing history and must not appear
+    // in the user-facing list after upgrade.
+    await this.taskHistory.migrateLegacyActions();
+    await this.taskHistory.prune();
+    this.recentTasks = (await this.taskHistory.list(RECENT_TASK_LIMIT))
+      .filter((task) => task.action === 'fill' || task.action === 'publish');
   }
 
-  currentProjectId(): string | null { return this.projectId; }
-
-  async selectProject(projectId: string): Promise<void> {
-    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能切换客户项目');
-    if (this.projectId === projectId) return;
-    await this.closeBackground();
-    for (const managed of [...this.views.values()]) this.closeInteractiveView(managed);
-    this.projectId = projectId;
-    this.activePlatform = null;
-    this.attentionRequired = null;
+  async clearCompletedTaskHistory(): Promise<void> {
+    const records = await this.taskHistory.list(Number.MAX_SAFE_INTEGER);
+    const evidenceRoot = `${resolve(evidenceDirectory())}${sep}`;
+    await Promise.all(records
+      .filter((record) => record.status !== 'running' && record.evidencePath)
+      .map(async (record) => {
+        const path = record.evidencePath;
+        const resolvedPath = path ? resolve(path) : '';
+        if (!resolvedPath.startsWith(evidenceRoot)) return;
+        await rm(resolvedPath, { force: true }).catch(() => undefined);
+      }));
+    await Promise.all(records
+      .filter((record) => record.status !== 'running' && record.diagnosticPath)
+      .map(async (record) => await removeTaskDiagnostic(record.taskId)));
+    await this.taskHistory.clearCompleted();
+    await this.loadTaskHistory();
   }
 
-  async clearProject(): Promise<void> {
-    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能切换客户项目');
-    await this.closeBackground();
-    for (const managed of [...this.views.values()]) this.closeInteractiveView(managed);
-    this.projectId = null;
-    this.activePlatform = null;
-    this.attentionRequired = null;
+  async exportTaskDiagnostic(taskId: string): Promise<{ path: string; fileName: string }> {
+    const task = await this.taskHistory.get(taskId);
+    if (!task || task.status === 'running') throw new Error('DIAGNOSTIC_TASK_NOT_FOUND: 找不到这条失败记录');
+    return await exportDiagnosticBundle(task);
   }
 
-  async deleteProjectData(projectId: string): Promise<void> {
-    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 发布任务运行中，暂时不能删除客户项目');
-    if (this.projectId === projectId) await this.clearProject();
-    for (const platform of PLATFORMS) {
-      const partition = session.fromPartition(projectPartitionName(projectId, platform));
-      await partition.clearStorageData();
-      await partition.clearCache();
-      await partition.flushStorageData();
-    }
+  cancelIdleViewDisposal(): void {
+    if (this.idleViewDisposalTimer) clearTimeout(this.idleViewDisposalTimer);
+    this.idleViewDisposalTimer = null;
   }
 
-  ensureProject(projectId?: string): string {
-    if (!this.projectId) throw new Error('PROJECT_REQUIRED: 请先在 GEO Publisher 中新建并选择客户项目');
-    if (projectId && projectId !== this.projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新生成文章后再发布');
-    return this.projectId;
+  showWindow(): void {
+    this.automationRevealedWindow = false;
+    revealWorkerWindow(this.window, process.platform === 'win32');
+    this.cancelIdleViewDisposal();
   }
 
-  async open(platform: Platform): Promise<PlatformStatus> {
-    this.ensureProject();
-    if (this.isBusy()) {
-      if (this.executingPlatform === platform && this.background) {
-        this.showRunningPlatform(this.background);
-        return this.platformStatus(platform);
-      }
-      throw new Error('PUBLISHER_BUSY: 发布任务运行中，请等待任务完成后再打开平台页面');
-    }
-    if (this.background?.platform === platform) {
-      await this.promoteBackground(platform);
-      return this.platformStatus(platform);
-    }
+  scheduleIdleViewDisposal(): void {
+    this.cancelIdleViewDisposal();
+    if (this.activeTask || this.window.isVisible() || this.views.size === 0) return;
+    this.idleViewDisposalTimer = setTimeout(() => {
+      this.idleViewDisposalTimer = null;
+      if (this.activeTask || this.window.isVisible()) return;
+      void this.flushStorage()
+        .catch(() => undefined)
+        .finally(() => {
+          if (this.activeTask || this.window.isVisible()) return;
+          for (const managed of [...this.views.values()]) this.disposeManagedView(managed);
+        });
+    }, IDLE_VIEW_DISPOSAL_MS);
+  }
+
+  async open(platform: Platform, mode: 'interactive' | 'background' = 'interactive'): Promise<PlatformStatus> {
+    return await this.runExclusive('open', platform, async () => await this.openInternal(platform, mode));
+  }
+
+  private async openInternal(platform: Platform, mode: 'interactive' | 'background' = 'interactive'): Promise<PlatformStatus> {
+    this.cancelIdleViewDisposal();
     let managed = this.views.get(platform);
     if (!managed) {
-      this.evictIdleInteractiveView(platform);
-      managed = await this.createView(platform, 'interactive');
+      this.evictIdleView(platform);
+      const useMinimalBrowserEnvironment = platform === 'toutiao' || platform === 'netease';
+      const view = new WebContentsView({
+        webPreferences: {
+          partition: `persist:geo-publisher-${platform}`,
+          contextIsolation: false, // 必须设为 false，让 preload 可以直接修改页面环境
+          sandbox: false, // 必须设为 false，让 preload 有足够权限
+          nodeIntegration: false, // 仍然禁用 Node.js
+          backgroundThrottling: false,
+          // 反检测配置
+          webSecurity: true,
+          allowRunningInsecureContent: false,
+          enableWebSQL: false,
+          // 使用专门的反检测 preload 脚本
+          preload: useMinimalBrowserEnvironment ? undefined : join(__dirname, '..', 'stealth-preload.cjs'),
+        },
+      });
+
+      // 为该平台的session配置反检测
+      const platformSession = session.fromPartition(`persist:geo-publisher-${platform}`);
+      // 头条与网易的编辑器会被 JS 指纹改写干扰，只保留 UA 中移除 Electron 标识。
+      if (!useMinimalBrowserEnvironment) setupStealthSession(platformSession);
+      else setupStealthUserAgent(platformSession);
+      await restorePlatformCookies(platformSession, platform);
+
+      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now(), recoveryTimer: null, consoleEvents: [] };
       this.views.set(platform, managed);
-      this.attachInteractive(managed);
+      view.webContents.setWindowOpenHandler(({ url }) => {
+        if (managed && !managed.loading && url !== managed.view.webContents.getURL()) {
+          void this.loadUrl(managed, url);
+        }
+        return { action: 'deny' };
+      });
+      view.webContents.on('did-start-loading', () => { if (managed) managed.loading = true; });
+      view.webContents.on('console-message', (_event, level, message) => {
+        if (managed) appendDiagnosticConsoleEvent(managed.consoleEvents, level, message);
+        if (level >= 2) reportError(`[${platform}] renderer: ${message}`);
+      });
+      view.webContents.on('render-process-gone', (_event, details) => {
+        reportError(`[${platform}] renderer process gone: ${details.reason}`);
+        if (managed && this.activePlatform === platform && !managed.view.webContents.isDestroyed()) {
+          if (managed.recoveryTimer) clearTimeout(managed.recoveryTimer);
+          const expectedView = managed.view;
+          managed.recoveryTimer = setTimeout(() => {
+            const current = this.views.get(platform);
+            if (!current || current.view !== expectedView || expectedView.webContents.isDestroyed()) return;
+            void this.loadUrl(current, current.view.webContents.getURL() || PLATFORM_URLS[platform]);
+          }, 800);
+        }
+      });
+      view.webContents.on('dom-ready', () => this.restoreActiveView(platform));
+      view.webContents.on('did-stop-loading', () => {
+        if (managed) {
+          managed.loading = false;
+          this.restoreActiveView(platform);
+          void managed.partition.flushStorageData();
+          void snapshotPlatformCookies(managed.partition, managed.platform).catch(() => undefined);
+        }
+      });
+      this.ensureCookieSubscription(platformSession, platform);
+
+      // 设置反检测脚本注入（多时机注入确保生效）
+      if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
+
+      this.attach(platform);
+      this.setWindowMode(mode);
       await this.loadUrl(managed, PLATFORM_URLS[platform]);
-    } else if (this.activePlatform !== platform) {
-      this.attachInteractive(managed);
     }
-    if (this.window.isMinimized()) this.window.restore();
-    this.window.show();
-    this.window.focus();
-    this.attentionRequired = null;
+    if (this.activePlatform !== platform) this.attach(platform);
+    this.setWindowMode(mode);
     return this.platformStatus(platform);
+  }
+
+  attach(platform: Platform): void {
+    const managed = this.views.get(platform);
+    if (!managed) throw new Error(`平台尚未创建：${platform}`);
+    if (this.activePlatform) {
+      const active = this.views.get(this.activePlatform);
+      if (active) {
+        active.lastUsedAt = Date.now();
+        active.view.webContents.setBackgroundThrottling(false);
+        active.view.setVisible(false);
+        this.window.contentView.removeChildView(active.view);
+      }
+    }
+    this.window.contentView.addChildView(managed.view);
+    managed.lastUsedAt = Date.now();
+    managed.view.webContents.setBackgroundThrottling(false);
+    managed.view.setVisible(true);
+    managed.view.setBounds(this.viewBounds());
+    this.activePlatform = platform;
   }
 
   resize(): void {
     if (!this.activePlatform) return;
-    const managed = this.views.get(this.activePlatform);
-    if (managed) this.restoreManagedView(managed);
+    this.views.get(this.activePlatform)?.view.setBounds(this.viewBounds());
   }
 
-  hideActivePlatform(): DesktopStatus {
-    if (!this.activePlatform) return this.status();
-    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 平台任务正在执行，请先最小化窗口，任务完成后再返回工作台');
-    const managed = this.views.get(this.activePlatform);
-    if (managed) {
-      managed.lastUsedAt = Date.now();
-      managed.view.setVisible(false);
-      managed.view.webContents.setBackgroundThrottling(true);
-      this.window.contentView.removeChildView(managed.view);
+  async fillDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+    return await this.runExclusive('fill', platform, () => this.fillDraftInternal(platform, title, html, coverPath, tags), title);
+  }
+
+  private async fillDraftInternal(
+    platform: Platform,
+    title: string,
+    html: string,
+    coverPath: string,
+    tags: string[],
+    taskDriver?: BrowserAutomationDriver,
+  ): Promise<unknown> {
+    await this.openInternal(platform, 'background');
+    this.setTaskPhase('filling');
+    const managed = this.views.get(platform);
+    if (!managed) throw new Error(`${platform} 浏览器创建失败`);
+    if (process.platform === 'win32' && (platform === 'zhihu' || platform === 'netease' || platform === 'sohu')) {
+      await installEditorDiagnostics(managed.view.webContents).catch((error) => reportError('Editor diagnostics install failed:', error));
     }
-    this.activePlatform = null;
-    return this.status();
-  }
-
-  setUiOverlayOpen(open: boolean): void {
-    this.uiOverlayOpen = open;
-    if (!this.activePlatform) return;
-    const managed = this.views.get(this.activePlatform);
-    if (!managed) return;
-    managed.view.setVisible(!open);
-    if (!open) managed.view.setBounds(this.interactiveViewBounds());
-  }
-
-  async fillDraft(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
-    this.ensureProject();
-    return await this.runExclusive(() => this.fillDraftInternal(platform, document, coverPath, options));
-  }
-
-  private async fillDraftInternal(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
-    const keepVisible = this.window.isVisible() && !this.window.isMinimized();
-    // NetEase Draft.js crashes when an existing document containing atomic
-    // image blocks is replaced across blocks. A fresh WebContents keeps the
-    // project session/login but gives every job a clean editor instance.
-    if (platform === 'netease') await this.resetPlatformViewForFreshDraft(platform);
-    let managed = await this.openBackground(platform);
-    // If GEO Publisher is already open, show the platform that is running.
-    // Hidden or minimized jobs stay on the private execution host so they do
-    // not activate the customer's foreground application.
-    if (keepVisible) {
-      await this.promoteBackground(platform);
-      managed = this.views.get(platform) || managed;
-      this.executingPlatform = platform;
-      managed.view.webContents.focus();
-    }
-    const rendered = renderArticleDocument(document, platform);
-    try {
-      const result = platform === 'baijia'
-        ? await fillBaijiaDraft(managed.view.webContents, document.title, rendered.html, coverPath, options.baijia)
-        : platform === 'toutiao'
-          ? await fillToutiaoDraft(managed.view.webContents, document.title, rendered.html, coverPath)
-          : platform === 'zhihu'
-            ? await fillZhihuDraft(managed.view.webContents, document.title, rendered.html)
-            : platform === 'penguin'
-              ? await fillPenguinDraft(managed.view.webContents, document.title, rendered.html, normalizeArticleTags(document.tags))
-              : platform === 'sohu'
-                ? await fillSohuDraft(managed.view.webContents, document.title, rendered.html)
-                : await fillNeteaseDraft(managed.view.webContents, document.title, rendered.html, coverPath);
-      return await this.captureFillEvidence(managed, { ...result, structure: rendered.structuralExpectations });
-    } catch (error) {
-      const attention = await this.promoteForAttention(managed, error);
-      if (attention) throw new AttentionRequiredError(attention, originalErrorCode(error));
-      throw error;
-    }
-  }
-
-  async publishDraft(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
-    this.ensureProject();
-    return await this.runExclusive(async () => {
-      const fill = await this.fillDraftInternal(platform, document, coverPath, options);
-      const managed = this.background || this.views.get(platform);
-      if (!managed || managed.platform !== platform) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
-      try {
-        const result = await publishFilledDraft(managed.view.webContents, platform, document.title, renderArticleDocument(document, platform).html);
-        const screenshotPath = await this.captureEvidence(managed, `publish-${result.status}`);
-        if (result.status === 'action_required') await this.promoteForVisibleAttention(managed, result);
-        if (result.status === 'success' && this.background) await this.closeBackground();
-        return { fill, ...result, screenshotPath };
-      } catch (error) {
-        const attention = await this.promoteForAttention(managed, error);
-        if (attention) throw new AttentionRequiredError(attention, originalErrorCode(error));
-        throw error;
-      }
+    const driver = taskDriver ?? new BrowserAutomationDriver(managed.view.webContents, platform, {
+      viewport: automationViewportForView(this.viewBounds()),
     });
+    const fill = async () => await driver.action('draft.fill', async () => platform === 'baijia'
+      ? await fillBaijiaDraft(managed.view.webContents, title, html, coverPath)
+      : platform === 'toutiao'
+        ? await fillToutiaoDraft(managed.view.webContents, title, html, coverPath)
+        : platform === 'zhihu'
+          ? await fillZhihuDraft(managed.view.webContents, title, html)
+          : platform === 'penguin'
+            ? await fillPenguinDraft(managed.view.webContents, title, html, coverPath, tags)
+            : platform === 'sohu'
+              ? await fillSohuDraft(managed.view.webContents, title, html)
+              : await fillNeteaseDraft(managed.view.webContents, title, html, coverPath), { captureOnFailure: true });
+    const result = taskDriver ? await fill() : await runWithBrowserAutomationDriver(driver, fill);
+    if (platform === 'sohu' && captureSuccessfulEvidence()) {
+      const settingsEvidence = await this.captureEvidence(platform, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const evidence = await this.captureEvidence(platform, 'fill-content');
+      return {
+        ...result,
+        ...evidence,
+        settingsScreenshotPath: settingsEvidence.screenshotPath,
+        settingsScreenshotWarning: settingsEvidence.screenshotWarning,
+        automation: { actions: driver.results() },
+      };
+    }
+    if (platform === 'sohu') {
+      return { ...result, screenshotPath: null, screenshotWarning: null, automation: { actions: driver.results() } };
+    }
+    if (platform === 'toutiao' && captureSuccessfulEvidence()) {
+      const settingsEvidence = await this.captureEvidence(platform, 'fill-settings');
+      await managed.view.webContents.executeJavaScript(`(() => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+        const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')].filter(visible).find((element) => normalize(element.textContent) === '单图');
+        let root = single instanceof HTMLElement ? single.parentElement : null;
+        for (let depth = 0; root && depth < 12; depth += 1) { const text = normalize(root.textContent); if (text.includes('展示封面') && text.includes('无封面')) break; root = root.parentElement; }
+        if (!(root instanceof HTMLElement)) return false; root.scrollIntoView({ block: 'center', inline: 'nearest' }); return true;
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const evidence = await this.captureEvidence(platform, 'fill-cover');
+      return {
+        ...result,
+        ...evidence,
+        settingsScreenshotPath: settingsEvidence.screenshotPath,
+        settingsScreenshotWarning: settingsEvidence.screenshotWarning,
+        automation: { actions: driver.results() },
+      };
+    }
+    if (platform === 'toutiao') {
+      return { ...result, screenshotPath: null, screenshotWarning: null, automation: { actions: driver.results() } };
+    }
+    const evidence = captureSuccessfulEvidence()
+      ? await this.captureEvidence(platform, 'fill')
+      : { screenshotPath: null, screenshotWarning: null };
+    return { ...result, ...evidence, automation: { actions: driver.results() } };
   }
 
-  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storageEntryCount: number; attentionRequired: AttentionRequired | null }> {
-    this.ensureProject();
-    return await this.runExclusive(() => this.inspectInternal(platform));
+  async publishDraft(platform: Platform, title: string, html: string, coverPath: string, tags: string[]): Promise<unknown> {
+    return await this.runExclusive('publish', platform, async () => {
+      await this.openInternal(platform, 'background');
+      const managed = this.views.get(platform);
+      if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
+      let journal = await this.publishJournal.prepare({ platform, title, html, coverPath, tags });
+      const driver = new BrowserAutomationDriver(managed.view.webContents, platform, {
+        viewport: automationViewportForView(this.viewBounds()),
+      });
+      return await runWithBrowserAutomationDriver(driver, async () => {
+        let irreversibleDispatched = false;
+        const fill = await this.fillDraftInternal(platform, title, html, coverPath, tags, driver);
+        this.setTaskPhase('pre_publish');
+        const active = this.views.get(platform);
+        if (!active) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
+        const result = await driver.action('draft.publish', async () =>
+          await publishFilledDraft(active.view.webContents, platform, title, html, {
+          beforeIrreversibleClick: async () => {
+            this.setTaskPhase('dispatching');
+            journal = await this.publishJournal.update(journal, 'dispatching');
+          },
+          afterIrreversibleClick: async () => {
+            this.setTaskPhase('dispatched');
+            irreversibleDispatched = true;
+            journal = await this.publishJournal.update(journal, 'dispatched');
+          },
+          }), { captureOnFailure: true });
+        const state = result.status === 'success' ? 'success'
+          : result.status === 'result_uncertain' ? 'result_uncertain' : 'action_required';
+        this.setTaskPhase('reconciling');
+        journal = await this.publishJournal.update(journal, state, result);
+        const evidence = captureUncertainEvidence(result.status) || captureSuccessfulEvidence()
+          ? await this.captureEvidence(platform, `publish-${result.status}`)
+          : { screenshotPath: null, screenshotWarning: null };
+        return {
+          fill,
+          ...result,
+          ...evidence,
+          automation: { taskId: journal.taskId, irreversibleDispatched, actions: driver.results() },
+        };
+      });
+    }, title);
   }
 
-  private async inspectInternal(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storageEntryCount: number; attentionRequired: AttentionRequired | null }> {
-    const managed = await this.openBackground(platform);
+  async inspect(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
+    return await this.runExclusive('inspect', platform, async () => await this.inspectInternal(platform));
+  }
+
+  private async inspectInternal(platform: Platform): Promise<PlatformStatus & { textStart: string; controls: unknown[]; editables: unknown[]; buttons: unknown[]; dialogs: unknown[]; storage: unknown[] }> {
+    await this.openInternal(platform, 'background');
+    const managed = this.views.get(platform);
+    if (!managed) throw new Error(`PLATFORM_VIEW_MISSING: ${platform} 页面未能创建`);
     const details = await managed.view.webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
       const visible = (element) => element instanceof HTMLElement && (() => {
-        const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
       })();
-      const controls = [...document.querySelectorAll('label,[role="checkbox"],[role="radio"]')].filter(visible).filter((element) => element.matches('[role="checkbox"],[role="radio"]') || element.querySelector('input[type="checkbox"],input[type="radio"]')).slice(0, 80).map((element) => {
-        const input = element.matches('input') ? element : element.querySelector('input[type="checkbox"],input[type="radio"]');
-        return { type: input?.getAttribute('type') || element.getAttribute('role'), value: input?.getAttribute('value'), checked: input instanceof HTMLInputElement ? input.checked : element.getAttribute('aria-checked') === 'true', text: normalize(element.textContent).slice(0, 80), className: String(element.className || '').slice(0, 160), inputClassName: String(input?.className || '').slice(0, 160), inputId: input?.getAttribute('id') };
-      });
+      const controls = [...document.querySelectorAll('label,[role="checkbox"],[role="radio"]')]
+        .filter(visible)
+        .filter((element) => element.matches('[role="checkbox"],[role="radio"]')
+          || element.querySelector('input[type="checkbox"],input[type="radio"]'))
+        .slice(0, 80)
+        .map((element) => {
+          const input = element.matches('input') ? element : element.querySelector('input[type="checkbox"],input[type="radio"]');
+          return {
+            type: input?.getAttribute('type') || element.getAttribute('role'),
+            value: input?.getAttribute('value'),
+            checked: input instanceof HTMLInputElement ? input.checked : element.getAttribute('aria-checked') === 'true',
+            text: normalize(element.textContent).slice(0, 80),
+            className: String(element.className || '').slice(0, 160),
+            inputClassName: String(input?.className || '').slice(0, 160),
+            inputId: input?.getAttribute('id'),
+          };
+        });
       return {
-        textStart: normalize(document.body?.innerText).slice(0, 800), controls,
-        editables: [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"],iframe')].filter((element) => element instanceof HTMLIFrameElement || visible(element)).slice(0, 80).map((element) => {
-          const rect = element instanceof HTMLElement ? element.getBoundingClientRect() : { width: 0, height: 0 };
-          return { tag: element.tagName, type: element.getAttribute('type'), placeholder: element.getAttribute('placeholder') || element.getAttribute('data-placeholder') || element.getAttribute('aria-label'), className: String(element.className || '').slice(0, 180), contenteditable: element.getAttribute('contenteditable'), width: Math.round(rect.width), height: Math.round(rect.height), text: normalize(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : element.textContent).slice(0, 100), outerHTML: element.outerHTML.slice(0, 1000), parentOuterHTML: element.parentElement?.parentElement?.parentElement?.outerHTML?.slice(0, 3000) || '' };
-        }),
-        buttons: [...document.querySelectorAll('button,[role="button"]')].filter(visible).slice(0, 100).map((element) => ({ text: normalize(element.textContent).slice(0, 80), className: String(element.className || '').slice(0, 180), ariaLabel: element.getAttribute('aria-label'), title: element.getAttribute('title'), dataAttrs: [...element.attributes].filter((attribute) => attribute.name.startsWith('data-')).slice(0, 8).map((attribute) => [attribute.name, attribute.value]), outerHTML: element.outerHTML.slice(0, 1200), disabled: element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' })),
-        dialogs: [...document.querySelectorAll('[role="dialog"],[class*="message"],[class*="Message"],[class*="modal"],[class*="Modal"]')].filter(visible).slice(0, 20).map((element) => ({ text: normalize(element.textContent).slice(0, 300), className: String(element.className || '').slice(0, 200), outerHTML: element.outerHTML.slice(0, 2000) })),
-        // Diagnostics must never return cookie-like or session data to a CLI/agent log.
-        // Storage count preserves a basic page-health signal without exposing names or values.
-        storageEntryCount: Object.keys(localStorage).length,
+        textStart: normalize(document.body?.innerText).slice(0, 800),
+        controls,
+        editables: [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"],iframe')]
+          .filter((element) => element instanceof HTMLIFrameElement || element.matches('input[type="file"]') || visible(element))
+          .slice(0, 80)
+          .map((element) => {
+            const rect = element instanceof HTMLElement ? element.getBoundingClientRect() : { width: 0, height: 0 };
+            return {
+              tag: element.tagName,
+              type: element.getAttribute('type'),
+              placeholder: element.getAttribute('placeholder') || element.getAttribute('data-placeholder') || element.getAttribute('aria-label'),
+              className: String(element.className || '').slice(0, 180),
+              contenteditable: element.getAttribute('contenteditable'),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+              text: normalize(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+                ? element.value : element.textContent).slice(0, 100),
+              outerHTML: element.outerHTML.slice(0, 1000),
+              parentOuterHTML: element.parentElement?.parentElement?.parentElement?.outerHTML?.slice(0, 3000) || '',
+            };
+          }),
+        buttons: [...document.querySelectorAll('button,[role="button"]')]
+          .filter(visible)
+          .slice(0, 100)
+          .map((element) => ({
+            text: normalize(element.textContent).slice(0, 80),
+            className: String(element.className || '').slice(0, 180),
+            ariaLabel: element.getAttribute('aria-label'),
+            title: element.getAttribute('title'),
+            dataAttrs: [...element.attributes].filter((attribute) => attribute.name.startsWith('data-')).slice(0, 8).map((attribute) => [attribute.name, attribute.value]),
+            outerHTML: element.outerHTML.slice(0, 1200),
+            disabled: element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true',
+          })),
+        dialogs: [...document.querySelectorAll('[role="dialog"],[class*="message"],[class*="Message"],[class*="modal"],[class*="Modal"]')]
+          .filter(visible).slice(0, 20).map((element) => ({ text: normalize(element.textContent).slice(0, 300), className: String(element.className || '').slice(0, 200), outerHTML: element.outerHTML.slice(0, 2000) })),
+        storage: Object.keys(localStorage).slice(0, 100).map((key) => ({ key, length: String(localStorage.getItem(key) || '').length, valueStart: String(localStorage.getItem(key) || '').slice(0, 300) })),
       };
     })()`);
-    const attention = await detectVisibleAttention(managed.view.webContents, platform);
-    if (attention) this.recordAttention(attention);
-    return { ...this.platformStatus(platform), ...details, attentionRequired: attention };
+    return { ...this.platformStatus(platform), ...details };
   }
 
   status(): DesktopStatus {
@@ -382,438 +556,320 @@ export class PlatformSessions {
       pid: process.pid,
       ready: true,
       busy: this.isBusy(),
+      activeTask: this.activeTask ? {
+        taskId: this.activeTask.taskId,
+        action: this.activeTask.action,
+        platform: this.activeTask.platform,
+        phase: this.activeTask.phase,
+        ...(this.activeTask.title ? { title: this.activeTask.title } : {}),
+        startedAt: new Date(this.activeTask.startedAt).toISOString(),
+        deadlineAt: new Date(this.activeTask.deadlineAt).toISOString(),
+      } : null,
+      recentTasks: this.recentTasks,
       activePlatform: this.activePlatform,
-      executingPlatform: this.executingPlatform,
-      windowState: this.window.isMinimized() ? 'minimized' : this.window.isVisible() ? 'visible' : 'hidden',
-      currentProject: null,
-      attentionRequired: this.attentionRequired,
       platforms: PLATFORMS.map((platform) => this.platformStatus(platform)),
+      resourceDiagnostics: {
+        rssBytes: process.memoryUsage().rss,
+        heapUsedBytes: process.memoryUsage().heapUsed,
+        residentViews: this.views.size,
+        cookieSubscriptions: this.cookieSubscriptions.size,
+        ...this.maintenance,
+      },
     };
   }
 
   isBusy(): boolean {
-    return this.pendingOperations > 0;
+    return this.activeTask !== null;
   }
 
   async flushStorage(): Promise<void> {
-    const managed = [...this.views.values(), ...(this.background ? [this.background] : [])];
-    const projectId = this.projectId;
-    if (!projectId) return;
-    await Promise.all(managed.flatMap(({ platform, partition }) => [partition.flushStorageData(), snapshotPlatformCookies(partition, projectId, platform)]));
+    await Promise.all([...this.views.values()].flatMap(({ platform, partition }) => [
+      partition.flushStorageData(),
+      snapshotPlatformCookies(partition, platform),
+    ]));
   }
 
-  dispose(): void {
-    this.executionHost.destroy();
+  setResourceMaintenance(result: Pick<NonNullable<DesktopStatus['resourceDiagnostics']>, 'evidenceBytes' | 'cacheBytes' | 'lastMaintenanceAt'>): void {
+    this.maintenance = result;
   }
 
-  private async createView(platform: Platform, host: ViewHost): Promise<ManagedView> {
-    const projectId = this.ensureProject();
-    const useMinimalBrowserEnvironment = platform === 'toutiao' || platform === 'netease';
-    const view = new WebContentsView({
-      webPreferences: {
-        partition: projectPartitionName(projectId, platform),
-        contextIsolation: false,
-        sandbox: false,
-        nodeIntegration: false,
-        backgroundThrottling: false,
-        webSecurity: true,
-        allowRunningInsecureContent: false,
-        enableWebSQL: false,
-        preload: useMinimalBrowserEnvironment ? undefined : join(__dirname, '..', 'stealth-preload.cjs'),
-      },
-    });
-    const partition = session.fromPartition(projectPartitionName(projectId, platform));
-    if (useMinimalBrowserEnvironment) setupStealthUserAgent(partition);
-    else setupStealthSession(partition);
-    await restorePlatformCookies(partition, projectId, platform);
-    const managed: ManagedView = { platform, view, partition, host, loading: false, lastUsedAt: Date.now() };
-    view.webContents.setWindowOpenHandler(({ url }) => {
-      if (!managed.loading && url !== managed.view.webContents.getURL()) void this.loadUrl(managed, url);
-      return { action: 'deny' };
-    });
-    view.webContents.on('did-start-loading', () => { managed.loading = true; });
-    // Publisher pages routinely emit third-party console warnings. Forward
-    // them only during explicit adapter debugging; a desktop app must not
-    // depend on the terminal that happened to launch it remaining attached.
-    if (process.env.GEO_PUBLISHER_DEBUG_CONSOLE === '1') {
-      view.webContents.on('console-message', (_event, level, message) => { if (level >= 2) diagnosticError(`[${platform}] renderer: ${message}`); });
+  async dispose(): Promise<void> {
+    this.cancelIdleViewDisposal();
+    await this.flushStorage().catch(() => undefined);
+    for (const managed of [...this.views.values()]) this.disposeManagedView(managed);
+    for (const subscription of this.cookieSubscriptions.values()) {
+      subscription.session.cookies.removeListener('changed', subscription.listener);
+      if (subscription.snapshotTimer) clearTimeout(subscription.snapshotTimer);
     }
-    view.webContents.on('render-process-gone', (_event, details) => {
-      diagnosticError(`[${platform}] renderer process gone: ${details.reason}`);
-      const retained = this.background === managed || this.views.get(platform) === managed;
-      if (retained && !view.webContents.isDestroyed()) setTimeout(() => void this.loadUrl(managed, view.webContents.getURL() || PLATFORM_URLS[platform]), 800);
-    });
-    view.webContents.on('dom-ready', () => this.restoreManagedView(managed));
-    view.webContents.on('did-stop-loading', () => {
-      managed.loading = false;
-      this.restoreManagedView(managed);
-      void partition.flushStorageData();
-      void snapshotPlatformCookies(partition, projectId, platform).catch(() => undefined);
-    });
-    partition.cookies.on('changed', () => {
-      void partition.flushStorageData();
-      void snapshotPlatformCookies(partition, projectId, platform).catch(() => undefined);
-    });
-    if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
-    return managed;
-  }
-
-  private async openBackground(platform: Platform): Promise<ManagedView> {
-    if (this.background && this.background.platform !== platform) await this.closeBackground();
-    if (!this.background) {
-      const interactive = this.views.get(platform);
-      if (interactive) {
-        if (this.activePlatform === platform) {
-          this.window.contentView.removeChildView(interactive.view);
-          this.activePlatform = null;
-        }
-        this.views.delete(platform);
-        this.background = interactive;
-        this.attachBackground(interactive);
-      } else {
-        this.background = await this.createView(platform, 'background');
-        this.attachBackground(this.background);
-        await this.loadUrl(this.background, PLATFORM_URLS[platform]);
-      }
-      await this.executionHost.prepare(this.background.view.webContents);
-    } else {
-      this.attachBackground(this.background);
-      await this.executionHost.prepare(this.background.view.webContents);
-    }
-    this.executingPlatform = platform;
-    return this.background;
-  }
-
-  private attachInteractive(managed: ManagedView): void {
-    if (this.activePlatform) {
-      const active = this.views.get(this.activePlatform);
-      if (active && active !== managed) {
-        active.lastUsedAt = Date.now();
-        active.view.webContents.setBackgroundThrottling(true);
-        this.window.contentView.removeChildView(active.view);
-      }
-    }
-    this.window.contentView.addChildView(managed.view);
-    managed.host = 'interactive';
-    managed.lastUsedAt = Date.now();
-    managed.view.webContents.setBackgroundThrottling(false);
-    managed.view.setVisible(!this.uiOverlayOpen);
-    managed.view.setBounds(this.interactiveViewBounds());
-    this.activePlatform = managed.platform;
-  }
-
-  private showRunningPlatform(managed: ManagedView): void {
-    if (managed.host === 'interactive' && this.activePlatform === managed.platform) return;
-    this.executionHost.detach(managed.view);
-    this.window.contentView.addChildView(managed.view);
-    managed.host = 'interactive';
-    managed.view.webContents.setBackgroundThrottling(false);
-    managed.view.setVisible(!this.uiOverlayOpen);
-    managed.view.setBounds(this.interactiveViewBounds());
-    this.activePlatform = managed.platform;
-  }
-
-  private attachBackground(managed: ManagedView): void {
-    managed.host = 'background';
-    managed.lastUsedAt = Date.now();
-    this.executionHost.attach(managed.view);
-  }
-
-  private async promoteBackground(platform: Platform): Promise<void> {
-    const managed = this.background;
-    if (!managed || managed.platform !== platform) return;
-    const existing = this.views.get(platform);
-    if (existing) this.closeInteractiveView(existing);
-    this.evictIdleInteractiveView(platform);
-    this.executionHost.detach(managed.view);
-    this.background = null;
-    this.executingPlatform = null;
-    this.views.set(platform, managed);
-    this.attachInteractive(managed);
-  }
-
-  private async closeBackground(): Promise<void> {
-    const managed = this.background;
-    if (!managed) return;
-    this.executionHost.detach(managed.view);
-    if (managed.host === 'interactive' && this.activePlatform === managed.platform) {
-      this.window.contentView.removeChildView(managed.view);
-      this.activePlatform = null;
-    }
-    this.background = null;
-    this.executingPlatform = null;
-    await managed.partition.flushStorageData();
-    if (this.projectId) await snapshotPlatformCookies(managed.partition, this.projectId, managed.platform).catch(() => undefined);
-    if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close({ waitForBeforeUnload: false });
-  }
-
-  private async resetPlatformViewForFreshDraft(platform: Platform): Promise<void> {
-    if (this.background?.platform === platform) await this.closeBackground();
-    const interactive = this.views.get(platform);
-    if (!interactive) return;
-    await interactive.partition.flushStorageData();
-    if (this.projectId) {
-      await snapshotPlatformCookies(interactive.partition, this.projectId, platform).catch(() => undefined);
-    }
-    this.closeInteractiveView(interactive);
-  }
-
-  private async abortTimedOutBackgroundOperation(): Promise<{ platform: Platform | null; url: string | null; screenshotPath: string | null }> {
-    const managed = this.background;
-    const details = {
-      platform: managed?.platform ?? null,
-      url: managed?.view.webContents.getURL() ?? null,
-      screenshotPath: managed ? await this.captureTimedOutEvidence(managed) : null,
-    };
-    await this.closeBackground();
-    return details;
-  }
-
-  private async captureTimedOutEvidence(managed: ManagedView): Promise<string | null> {
-    let timeout: NodeJS.Timeout | undefined;
-    const evidence = this.captureEvidence(managed, 'operation-timeout').catch(() => null);
-    const fallback = new Promise<null>((resolve) => { timeout = setTimeout(() => resolve(null), 1_500); });
-    try {
-      return await Promise.race([evidence, fallback]);
-    } finally {
-      if (timeout) clearTimeout(timeout);
-    }
-  }
-
-  private closeInteractiveView(managed: ManagedView): void {
-    if (this.activePlatform === managed.platform) {
-      this.window.contentView.removeChildView(managed.view);
-      this.activePlatform = null;
-    }
-    this.views.delete(managed.platform);
-    if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close({ waitForBeforeUnload: false });
-  }
-
-  private evictIdleInteractiveView(requestedPlatform: Platform): void {
-    if (this.views.size < MAX_RESIDENT_INTERACTIVE_VIEWS) return;
-    const candidate = pickEvictionCandidate([...this.views.values()].map(({ platform, lastUsedAt }) => ({ platform, lastUsedAt })), this.activePlatform, requestedPlatform);
-    if (!candidate) return;
-    const managed = this.views.get(candidate);
-    if (managed) this.closeInteractiveView(managed);
-  }
-
-  private async promoteForAttention(managed: ManagedView, error: unknown): Promise<AttentionRequired | null> {
-    const attention = attentionFromError(managed.platform, error, managed.view.webContents.getURL()) || await detectVisibleAttention(managed.view.webContents, managed.platform);
-    if (attention) this.recordAttention(attention);
-    return attention;
-  }
-
-  private async promoteForVisibleAttention(managed: ManagedView, result: PublishResult): Promise<void> {
-    const attention = await detectVisibleAttention(managed.view.webContents, managed.platform);
-    if (attention) this.recordAttention(attention);
-    else if (/验证码|验证|登录失效|重新登录|账号异常|风控/.test(result.message)) {
-      this.recordAttention({ platform: managed.platform, code: 'RISK_CONTROL_REQUIRED', message: `RISK_CONTROL_REQUIRED: ${result.message}`, url: result.url });
-    }
-  }
-
-  private recordAttention(attention: AttentionRequired): void {
-    // Background jobs must never activate the app. WorkBuddy receives the
-    // structured error immediately; the user can later open the platform
-    // page from GEO Publisher to complete any required login or verification.
-    this.attentionRequired = attention;
-    this.onAttentionRequired(attention);
-  }
-
-  private async captureFillEvidence(managed: ManagedView, result: any): Promise<unknown> {
-    if (managed.platform === 'baijia') {
-      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
-      await managed.view.webContents.executeJavaScript(`(() => {
-        const title = document.querySelector('[data-testid="news-title-input"] [contenteditable="true"],.FeEditorApp-_9ddb7e475b559749-editor[contenteditable="true"]');
-        if (!(title instanceof HTMLElement)) return false;
-        title.scrollIntoView({ block: 'start', inline: 'nearest' });
-        window.scrollBy({ top: -100, behavior: 'instant' });
-        return true;
-      })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
-    }
-    if (managed.platform === 'sohu') {
-      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
-      await managed.view.webContents.executeJavaScript(`(() => { const editor = document.querySelector('.ql-editor[contenteditable="true"]'); if (!(editor instanceof HTMLElement)) return false; editor.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
-    }
-    if (managed.platform === 'toutiao') {
-      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
-      await managed.view.webContents.executeJavaScript(`(() => {
-        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-        const title = [...document.querySelectorAll('textarea[placeholder*="标题"],input[placeholder*="标题"]')].find(visible);
-        if (!(title instanceof HTMLElement)) return false;
-        title.scrollIntoView({ block: 'start', inline: 'nearest' });
-        window.scrollBy({ top: -100, behavior: 'instant' });
-        return true;
-      })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const contentScreenshotPath = await this.captureEvidence(managed, 'fill-content');
-      await managed.view.webContents.executeJavaScript(`(() => {
-        const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-        const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')].filter(visible).find((element) => normalize(element.textContent) === '单图');
-        let root = single instanceof HTMLElement ? single.parentElement : null;
-        for (let depth = 0; root && depth < 12; depth += 1) { const text = normalize(root.textContent); if (text.includes('展示封面') && text.includes('无封面')) break; root = root.parentElement; }
-        if (!(root instanceof HTMLElement)) return false; root.scrollIntoView({ block: 'center', inline: 'nearest' }); return true;
-      })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return { ...result, screenshotPath: contentScreenshotPath, coverScreenshotPath: await this.captureEvidence(managed, 'fill-cover'), settingsScreenshotPath };
-    }
-    if (managed.platform === 'zhihu') {
-      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
-      await managed.view.webContents.executeJavaScript(`(() => {
-        const title = document.querySelector('textarea[placeholder*="请输入标题"]');
-        const editor = document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
-        const target = title instanceof HTMLElement ? title : editor;
-        if (!(target instanceof HTMLElement)) return false;
-        target.scrollIntoView({ block: 'start', inline: 'nearest' });
-        window.scrollBy({ top: -120, behavior: 'instant' });
-        return true;
-      })()`);
-      // Close any toolbar popover left open by block formatting so the
-      // evidence image reflects the actual article instead of covering it.
-      managed.view.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
-      managed.view.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
-    }
-    if (managed.platform === 'penguin') {
-      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
-      await managed.view.webContents.executeJavaScript(`(() => {
-        const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-        const title = [...document.querySelectorAll('input,textarea,[contenteditable="true"]')]
-          .filter(visible).find((element) => String(element.getAttribute('placeholder') || element.getAttribute('data-placeholder') || '').includes('标题'));
-        if (!(title instanceof HTMLElement)) return false;
-        title.scrollIntoView({ block: 'start', inline: 'nearest' });
-        window.scrollBy({ top: -100, behavior: 'instant' });
-        return true;
-      })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
-    }
-    if (managed.platform === 'netease') {
-      const settingsScreenshotPath = await this.captureEvidence(managed, 'fill-settings');
-      await managed.view.webContents.executeJavaScript(`(() => {
-        const title = document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
-        if (!(title instanceof HTMLElement)) return false;
-        title.scrollIntoView({ block: 'start', inline: 'nearest' });
-        window.scrollBy({ top: -100, behavior: 'instant' });
-        return true;
-      })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill-content'), settingsScreenshotPath };
-    }
-    return { ...result, screenshotPath: await this.captureEvidence(managed, 'fill') };
+    this.cookieSubscriptions.clear();
+    this.activeTask = null;
   }
 
   private platformStatus(platform: Platform): PlatformStatus {
-    const interactive = this.views.get(platform);
-    const background = this.background?.platform === platform;
-    const created = Boolean(interactive || background);
+    const managed = this.views.get(platform);
+    const created = Boolean(managed);
     const attached = this.activePlatform === platform;
-    const managed = this.executingPlatform === platform && background
-      ? this.background
-      : interactive || (background ? this.background : undefined);
     return {
-      platform, created, attached, runtimeState: platformRuntimeState(created, attached, background), loginState: 'not_checked',
-      statusNote: 'active 表示显示在主窗口；background 表示后台任务页，二者都不能用于判断登录状态。',
-      loading: managed?.loading ?? false, url: managed?.view.webContents.getURL() ?? '', title: managed?.view.webContents.getTitle() ?? '',
+      platform,
+      created,
+      attached,
+      runtimeState: platformRuntimeState(created, attached),
+      loginState: 'not_checked',
+      statusNote: 'created/attached 仅表示页面是否驻留和显示，不能用于判断登录；登录状态必须通过 inspect 检查实际页面',
+      loading: managed?.loading ?? false,
+      url: managed?.view.webContents.getURL() ?? '',
+      title: managed?.view.webContents.getTitle() ?? '',
     };
+  }
+
+  private evictIdleView(requestedPlatform: Platform): void {
+    if (this.views.size < MAX_RESIDENT_PLATFORM_VIEWS) return;
+    const candidate = pickEvictionCandidate(
+      [...this.views.values()].map(({ platform, lastUsedAt }) => ({ platform, lastUsedAt })),
+      this.activePlatform,
+      requestedPlatform,
+    );
+    if (!candidate) return;
+    const managed = this.views.get(candidate);
+    if (!managed) return;
+    this.disposeManagedView(managed);
   }
 
   private async loadUrl(managed: ManagedView, url: string): Promise<void> {
     if (managed.loading) return;
     managed.loading = true;
     try {
-      await managed.view.webContents.loadURL(url);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/ERR_ABORTED \(-3\)/.test(message)) throw error;
+      const contents = managed.view.webContents;
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (operation: () => void): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          contents.removeListener('dom-ready', ready);
+          operation();
+        };
+        const ready = (): void => finish(resolve);
+        const timeout = setTimeout(ready, NAVIGATION_READY_TIMEOUT_MS);
+        contents.once('dom-ready', ready);
+        void contents.loadURL(url)
+          .then(() => finish(resolve))
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/ERR_ABORTED \(-3\)/.test(message)) finish(resolve);
+            else finish(() => reject(error));
+          });
+      });
     } finally {
       managed.loading = managed.view.webContents.isLoading();
-      this.restoreManagedView(managed);
+      this.restoreActiveView(managed.platform);
     }
   }
 
-  private restoreManagedView(managed: ManagedView): void {
-    if (managed.host === 'background' && this.background === managed) this.executionHost.restore(managed.view);
-    if (managed.host === 'interactive' && this.activePlatform === managed.platform) {
-      managed.view.setVisible(!this.uiOverlayOpen);
-      managed.view.setBounds(this.interactiveViewBounds());
-    }
+  private restoreActiveView(platform: Platform): void {
+    if (this.activePlatform !== platform) return;
+    const managed = this.views.get(platform);
+    if (!managed || managed.view.webContents.isDestroyed()) return;
+    managed.view.setVisible(true);
+    managed.view.setBounds(this.viewBounds());
   }
 
-  private interactiveViewBounds(): { x: number; y: number; width: number; height: number } {
+  private viewBounds(): { x: number; y: number; width: number; height: number } {
+    if (this.options.layout === 'execution') {
+      const [width = 1440, height = 1000] = this.window.getContentSize();
+      const tabBarHeight = Math.max(0, this.options.tabBarHeight ?? 0);
+      return { x: 0, y: tabBarHeight, width: Math.max(1, width), height: Math.max(1, height - tabBarHeight) };
+    }
     const [width = 920, height = 640] = this.window.getContentSize();
-    const sidebarWidth = width <= 1080 ? 218 : 248;
-    const toolbarHeight = 78;
-    return {
-      x: sidebarWidth,
-      y: toolbarHeight,
-      width: Math.max(320, width - sidebarWidth),
-      height: Math.max(240, height - toolbarHeight),
+    return { x: 220, y: 56, width: Math.max(320, width - 220), height: Math.max(240, height - 56) };
+  }
+
+  private setWindowMode(mode: 'interactive' | 'background'): void {
+    if (mode === 'interactive') {
+      this.showWindow();
+      return;
+    }
+    // Background work is described in the publishing center. The user can open
+    // the live page at any time, without a browser window appearing over work.
+  }
+
+  private async captureEvidence(platform: Platform, stage: string): Promise<EvidenceCaptureResult> {
+    return await captureEvidenceBestEffort(async () => {
+      const managed = this.views.get(platform);
+      if (!managed) throw new Error(`平台尚未创建：${platform}`);
+      const directory = join(evidenceDirectory(), new Date().toISOString().slice(0, 10));
+      await mkdir(directory, { recursive: true });
+      const path = join(directory, `${Date.now()}-${platform}-${stage}.png`);
+      const image = await managed.view.webContents.capturePage();
+      await writeFile(path, image.toPNG());
+      return path;
+    }, platform, stage);
+  }
+
+  private async runExclusive<T>(action: TaskAction, platform: Platform, operation: () => Promise<T>, title?: string): Promise<T> {
+    if (this.activeTask) {
+      const error = new Error(`TASK_BUSY: ${this.activeTask.action}/${this.activeTask.platform} 正在执行`) as Error & { details: unknown };
+      error.details = {
+        action: this.activeTask.action,
+        platform: this.activeTask.platform,
+        phase: this.activeTask.phase,
+        startedAt: new Date(this.activeTask.startedAt).toISOString(),
+        deadlineAt: new Date(this.activeTask.deadlineAt).toISOString(),
+      };
+      throw error;
+    }
+    const startedAt = Date.now();
+    const shouldRecordHistory = action === 'fill' || action === 'publish';
+    const snapshot = shouldRecordHistory
+      ? await this.taskHistory.start({
+          action,
+          platform,
+          phase: 'opening',
+          ...(title ? { title } : {}),
+          lastKnownUrl: this.platformStatus(platform).url || undefined,
+        })
+      : undefined;
+    if (snapshot) this.upsertRecentTask(snapshot);
+    this.activeTask = {
+      taskId: snapshot?.taskId || randomUUID(),
+      action,
+      platform,
+      phase: 'opening',
+      ...(title ? { title } : {}),
+      startedAt,
+      deadlineAt: startedAt + TASK_TIMEOUT_MS[action],
+      ...(snapshot ? { snapshot } : {}),
     };
-  }
-
-  private async captureEvidence(managed: ManagedView, stage: string): Promise<string | null> {
-    const directory = join(evidenceDirectory(this.projectId ?? undefined), new Date().toISOString().slice(0, 10));
-    await mkdir(directory, { recursive: true });
-    const path = join(directory, `${Date.now()}-${managed.platform}-${stage}.png`);
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const image = await withEvidenceTimeout(managed.view.webContents.capturePage());
-        await writeFile(path, image.toPNG());
-        return path;
-      } catch (error) {
-        lastError = error;
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
+    const revealForAutomation = shouldUseWindowsEditorForeground(platform, action);
+    const restoreHiddenWindow = revealForAutomation && !this.window.isVisible();
+    if (revealForAutomation) {
+      this.automationRevealedWindow = restoreHiddenWindow;
+      revealWorkerWindow(this.window, true);
     }
-
-    // Hidden BrowserWindow surfaces can reject capturePage. CDP captures the
-    // renderer without requiring a foreground display surface.
-    const debuggerApi = managed.view.webContents.debugger;
-    const attachedHere = !debuggerApi.isAttached();
     try {
-      if (attachedHere) debuggerApi.attach('1.3');
-      const response = await withEvidenceTimeout(debuggerApi.sendCommand('Page.captureScreenshot', {
-        format: 'png', fromSurface: true, captureBeyondViewport: true,
-      })) as { data?: string };
-      if (response.data) {
-        await writeFile(path, Buffer.from(response.data, 'base64'));
-        return path;
-      }
+      const result = await operation();
+      await this.finishActiveTask(taskStatusForResult(result), result);
+      return result;
     } catch (error) {
-      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const code = message.match(/^([A-Z][A-Z0-9_]+):/)?.[1];
+      const status = code === 'RESULT_UNCERTAIN' ? 'result_uncertain' : 'failed';
+      const managed = this.views.get(platform);
+      const evidence = this.activeTask?.snapshot
+        ? await this.captureEvidence(platform, 'failure')
+        : { screenshotPath: null, screenshotWarning: null };
+      let diagnosticPath: string | undefined;
+      if (this.activeTask?.snapshot) {
+        try {
+          diagnosticPath = await captureFailureDiagnostic({
+            task: { ...this.activeTask.snapshot, phase: this.activeTask.phase },
+            errorMessage: message,
+            ...(code ? { errorCode: code } : {}),
+            ...(managed ? { webContents: managed.view.webContents } : {}),
+            window: this.window,
+            version: this.version,
+            consoleEvents: managed?.consoleEvents || [],
+            automationActions: error && typeof error === 'object'
+              ? (error as { automationActions?: unknown }).automationActions
+              : undefined,
+            ...(evidence.screenshotPath ? { evidencePath: evidence.screenshotPath } : {}),
+          });
+        } catch (diagnosticError) {
+          reportError('Failure diagnostic capture failed:', diagnosticError);
+        }
+      }
+      await this.finishActiveTask(status, undefined, message, code, evidence.screenshotPath || undefined, diagnosticPath);
+      throw error;
     } finally {
-      if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
+      if (restoreHiddenWindow && this.automationRevealedWindow) {
+        concealWorkerWindow(this.window, true);
+        this.automationRevealedWindow = false;
+      }
+      this.activeTask = null;
+      this.scheduleIdleViewDisposal();
     }
-
-    // Evidence is diagnostic only; it must never prevent a valid publish.
-    void lastError;
-    return null;
   }
 
-  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    this.pendingOperations += 1;
-    this.onBusyChanged(true);
-    const previous = this.operationTail;
-    let release: () => void = () => {};
-    this.operationTail = new Promise<void>((resolve) => { release = resolve; });
-    await previous;
-    const task = operation();
-    try {
-      // Closing the hidden WebContents stops a stalled renderer from acting
-      // after the CLI caller has already received its timeout result.
-      return await withOperationDeadline(task, OPERATION_TIMEOUT_MS, () => this.abortTimedOutBackgroundOperation());
-    } finally {
-      this.pendingOperations -= 1;
-      this.executingPlatform = null;
-      this.onBusyChanged(this.pendingOperations > 0);
-      release();
+  private setTaskPhase(phase: TaskPhase): void {
+    if (!this.activeTask) return;
+    this.activeTask.phase = phase;
+    if (this.activeTask.snapshot) {
+      this.activeTask.snapshot = { ...this.activeTask.snapshot, phase };
+      this.upsertRecentTask(this.activeTask.snapshot);
     }
+  }
+
+  private async finishActiveTask(
+    status: PublishTaskSnapshot['status'],
+    result?: unknown,
+    errorMessage?: string,
+    errorCode?: string,
+    explicitEvidencePath?: string,
+    diagnosticPath?: string,
+  ): Promise<void> {
+    const task = this.activeTask;
+    if (!task?.snapshot) return;
+    const finishedAt = new Date().toISOString();
+    const evidencePath = explicitEvidencePath || evidencePathFrom(result);
+    const message = errorMessage || messageFromResult(result);
+    const formatWarnings = formatWarningsFromResult(result);
+    const next = await this.taskHistory.update(task.snapshot, {
+      status,
+      phase: task.phase,
+      finishedAt,
+      elapsedMs: Math.max(0, Date.now() - task.startedAt),
+      ...(message ? { message } : {}),
+      ...(errorCode ? { errorCode } : {}),
+      ...(evidencePath ? { evidencePath } : {}),
+      ...(diagnosticPath ? { diagnosticPath } : {}),
+      ...(formatWarnings ? { formatWarnings } : {}),
+      lastKnownUrl: this.platformStatus(task.platform).url || task.snapshot.lastKnownUrl,
+    });
+    task.snapshot = next;
+    this.upsertRecentTask(next);
+  }
+
+  private upsertRecentTask(task: PublishTaskSnapshot): void {
+    this.recentTasks = [task, ...this.recentTasks.filter((entry) => entry.taskId !== task.taskId)]
+      .sort((left, right) => Date.parse(right.finishedAt || right.startedAt) - Date.parse(left.finishedAt || left.startedAt))
+      .slice(0, RECENT_TASK_LIMIT);
+  }
+
+  private ensureCookieSubscription(platformSession: Electron.Session, platform: Platform): void {
+    if (this.cookieSubscriptions.has(platform)) return;
+    const subscription: CookieSubscription = {
+      session: platformSession,
+      snapshotTimer: null,
+      listener: () => {
+        if (subscription.snapshotTimer) clearTimeout(subscription.snapshotTimer);
+        subscription.snapshotTimer = setTimeout(() => {
+          subscription.snapshotTimer = null;
+          void platformSession.flushStorageData();
+          void snapshotPlatformCookies(platformSession, platform).catch(() => undefined);
+        }, 2_000);
+      },
+    };
+    platformSession.cookies.on('changed', subscription.listener);
+    this.cookieSubscriptions.set(platform, subscription);
+  }
+
+  private disposeManagedView(managed: ManagedView): void {
+    if (managed.recoveryTimer) clearTimeout(managed.recoveryTimer);
+    managed.recoveryTimer = null;
+    if (this.activePlatform === managed.platform) {
+      this.window.contentView.removeChildView(managed.view);
+      this.activePlatform = null;
+    }
+    const contents = managed.view.webContents;
+    if (!contents.isDestroyed()) {
+      try {
+        if (contents.debugger.isAttached()) contents.debugger.detach();
+      } catch {
+        // The renderer may already have disconnected its debugging target.
+      }
+      contents.removeAllListeners();
+      contents.close({ waitForBeforeUnload: false });
+    }
+    this.views.delete(managed.platform);
   }
 }
