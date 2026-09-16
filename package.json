@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "0.2.12-beta.3",
+  "version": "0.2.12",
   "private": true,
   "description": "GEO Publisher desktop application with a built-in persistent browser",
   "author": "Lingxi",
