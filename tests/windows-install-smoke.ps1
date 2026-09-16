@@ -1,0 +1,98 @@
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$ReleaseDirectory
+)
+
+$ErrorActionPreference = 'Stop'
+
+$installer = Get-ChildItem -Path $ReleaseDirectory -Filter '*.exe' -File |
+  Where-Object { $_.Name -notmatch 'uninstall' } |
+  Select-Object -First 1
+if (-not $installer) {
+  throw "Windows installer was not found in $ReleaseDirectory"
+}
+
+$dataDirectory = Join-Path $env:LOCALAPPDATA 'GEO Publisher Desktop'
+$discoveryPath = Join-Path $dataDirectory 'discovery.json'
+$installDirectory = Join-Path $env:RUNNER_TEMP 'geo-publisher-custom-install'
+$appPath = Join-Path $installDirectory 'GEO Publisher.exe'
+
+try {
+  $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDirectory") -Wait -PassThru
+  if ($install.ExitCode -ne 0) {
+    throw "Installer exited with code $($install.ExitCode)"
+  }
+  if (-not (Test-Path $appPath)) {
+    throw "Installer did not honor the custom installation directory: $appPath"
+  }
+  $skillPath = Join-Path $installDirectory 'resources\integrations\workbuddy\geo-publisher\SKILL.md'
+  if (-not (Test-Path $skillPath)) {
+    throw "Bundled WorkBuddy Skill was not found at $skillPath"
+  }
+
+  $env:GEO_DISABLE_OPEN_WORKBUDDY = '1'
+  $appProcess = Start-Process -FilePath $appPath -ArgumentList '--disable-gpu' -PassThru
+
+  $discovery = $null
+  for ($attempt = 0; $attempt -lt 90; $attempt += 1) {
+    if (Test-Path $discoveryPath) {
+      try {
+        $candidate = Get-Content -Raw -Path $discoveryPath | ConvertFrom-Json
+        if ($candidate.ready -and $candidate.launcherPath -and $candidate.coreCliPath -and (Test-Path $candidate.launcherPath) -and (Test-Path $candidate.coreCliPath)) {
+          $discovery = $candidate
+          break
+        }
+      } catch {
+        # The app writes discovery atomically, but tolerate antivirus/file-system delays.
+      }
+    }
+    Start-Sleep -Seconds 1
+  }
+  if (-not $discovery) {
+    throw "Desktop did not create a ready discovery record at $discoveryPath"
+  }
+  if ($discovery.platform -ne 'win32' -or $discovery.arch -ne 'x64') {
+    throw "Unexpected discovery platform: $($discovery.platform)/$($discovery.arch)"
+  }
+  if ($discovery.appPath -ne $appPath) {
+    throw "Discovery appPath does not match the installed executable"
+  }
+  if ($discovery.schemaVersion -ne 3 -or $discovery.cliPath -ne $discovery.launcherPath) {
+    throw "Discovery does not expose the fixed CLI launcher"
+  }
+  if ($discovery.coreCliPath -notmatch '[\\/]versions[\\/]') {
+    throw "Discovery Core CLI is not versioned: $($discovery.coreCliPath)"
+  }
+
+  $version = & $discovery.launcherPath version | ConvertFrom-Json
+  if (-not $version.ok -or $version.version -ne $discovery.appVersion) {
+    throw "CLI version does not match the desktop discovery record"
+  }
+  $doctor = & $discovery.launcherPath doctor | ConvertFrom-Json
+  if (-not $doctor.ok -or -not $doctor.data.desktopConnected -or -not $doctor.data.compatible -or -not $doctor.data.protocolMatch) {
+    throw "CLI doctor could not connect to the installed desktop"
+  }
+  $instructions = & $discovery.launcherPath instructions --json | ConvertFrom-Json
+  $schema = & $discovery.launcherPath schema --json | ConvertFrom-Json
+  if (-not $instructions.ok -or $instructions.data.platformOrder.Count -ne 6) {
+    throw "CLI instructions are incomplete"
+  }
+  if (-not $schema.ok -or $schema.data.article.platform.Count -ne 6) {
+    throw "CLI schema is incomplete"
+  }
+
+  Write-Host "Windows install smoke passed: app=$($discovery.appVersion), cli=$($version.version)"
+} finally {
+  if ($installDirectory) {
+    Get-Process | Where-Object {
+      try { $_.Path -and $_.Path.StartsWith($installDirectory, [System.StringComparison]::OrdinalIgnoreCase) } catch { $false }
+    } | Stop-Process -Force -ErrorAction SilentlyContinue
+  }
+
+  if ($installDirectory) {
+    $uninstaller = Join-Path $installDirectory 'Uninstall GEO Publisher.exe'
+    if (Test-Path $uninstaller) {
+      Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait | Out-Null
+    }
+  }
+}

@@ -1,0 +1,70 @@
+# GEO Publisher Desktop
+
+GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器保存六个平台的登录状态，通过本地 Go CLI 接收 WorkBuddy 或其他 Agent 的发布任务，不依赖 MCP、Chrome 扩展、Native Host 或固定端口。
+
+## 用户流程
+
+1. 安装并打开 GEO Publisher。
+2. 从左侧依次打开需要的平台并登录。
+3. 点击“连接 WorkBuddy”，在 WorkBuddy 中粘贴已复制的连接指令。
+4. 直接告诉 WorkBuddy 要填充或发布的文章和平台。
+
+桌面端会根据当前系统动态安装 CLI 并生成发现文件，不包含开发机用户名或固定用户路径。Windows 上 CLI 按应用版本并存安装，正在执行旧任务时也不会阻止桌面端升级。
+
+## 支持平台
+
+- 百家号 `baijia`
+- 头条号 `toutiao`
+- 知乎 `zhihu`
+- 企鹅号 `penguin`
+- 搜狐号 `sohu`
+- 网易号 `netease`
+
+## CLI
+
+正式安装后，WorkBuddy 通过桌面端生成的 `discovery.json` 获取当前 CLI 路径。CLI 所有输出均为结构化 JSON。
+
+```bash
+geo-publisher doctor
+geo-publisher instructions --json
+geo-publisher schema --json
+geo-publisher platforms
+geo-publisher validate --input article.json
+geo-publisher fill --input article.json
+geo-publisher publish --input article.json
+```
+
+真实发布必须在 JSON 中显式设置 `"confirmPublish": true`。当结果为 `result_uncertain` 时禁止自动重发，应先在管理页对账。
+
+## 开发
+
+```bash
+npm install
+npm run dev
+npm run verify
+```
+
+Windows x64 打包：
+
+```bash
+npm run package:win
+```
+
+macOS 仅支持 Apple Silicon（M1/M2/M3/M4），不提供 Intel Mac 版本：
+
+```bash
+npm run package:mac
+```
+
+## 自动更新
+
+客户端启动 30 秒后检查更新，之后每 4 小时检查一次。更新在后台下载，发布任务运行时不允许重启安装。GitHub Actions 构建安装包并上传腾讯云 COS，版本化安装包先上传，更新清单最后上传。
+
+发布新版本：
+
+1. 更新 `package.json`、Go CLI 和内置 Skill 的版本。
+2. 完成测试和 Windows 打包验证。
+3. 创建与版本完全一致的 Git 标签，例如 `v0.1.0-beta.1`。
+4. Release workflow 自动上传到 beta 或 stable 更新目录。
+
+腾讯云密钥只能保存在 GitHub Actions Secrets，禁止写入源码、日志或安装包。

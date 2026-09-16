@@ -1,0 +1,17 @@
+node_modules/
+dist/
+release/
+.dev-localappdata/
+.dev-test/
+.dev-test-publish/
+.electron-builder-cache/
+.packaging-cache/
+bug-evidence-*/
+fill-test/
+.claude/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+.DS_Store

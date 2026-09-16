@@ -1,0 +1,7 @@
+interface:
+  display_name: "GEO Publisher"
+  short_description: "通过桌面发布器安全填充和发布六大内容平台文章"
+  default_prompt: "Use $geo-publisher to publish this article to the requested content platform."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GEO Publisher Browser Worker</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <nav class="tabs" aria-label="发布平台">
+      <div class="brand">GEO Publisher</div>
+      <div id="tab-list" class="tab-list"></div>
+      <label class="new-tab">
+        <span>＋ 新建</span>
+        <select id="new-tab-select" aria-label="新建平台标签页">
+          <option value="">选择平台</option>
+        </select>
+      </label>
+      <div id="worker-state" class="worker-state">Worker 就绪</div>
+    </nav>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
