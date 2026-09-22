@@ -107,25 +107,36 @@ async function runDesktop(): Promise<void> {
   });
   ipcMain.handle('geo:diagnostic-export', async (_event, taskId: unknown) => {
     if (typeof taskId !== 'string') return { exported: false, message: '诊断任务编号无效' };
-    const bundle = await worker.exportDiagnostic(taskId);
-    const source = resolve(bundle.path);
-    const temporaryRoot = `${resolve(join(tmpdir(), 'geo-publisher-diagnostic-exports'))}${sep}`;
-    if (!source.startsWith(temporaryRoot) || !source.toLowerCase().endsWith('.zip')) {
-      return { exported: false, message: '诊断包路径无效' };
-    }
+
+    // Open the native save dialog before doing any worker-side packaging. The
+    // worker can take several seconds, and waiting for it first made the
+    // button appear to do nothing to the user.
+    window.show();
+    window.focus();
     const choice = await dialog.showSaveDialog(window, {
       title: '保存诊断包',
-      defaultPath: join(app.getPath('downloads'), bundle.fileName),
+      defaultPath: join(app.getPath('downloads'), `GEO-Publisher-diagnostic-${taskId.slice(0, 8)}.zip`),
       filters: [{ name: 'ZIP 诊断包', extensions: ['zip'] }],
+      properties: ['createDirectory', 'showOverwriteConfirmation'],
     });
     if (choice.canceled || !choice.filePath) {
-      await rm(source, { force: true }).catch(() => undefined);
       return { exported: false, message: '已取消保存' };
     }
-    await copyFile(source, choice.filePath);
-    await rm(source, { force: true }).catch(() => undefined);
-    shell.showItemInFolder(choice.filePath);
-    return { exported: true, path: choice.filePath };
+
+    let source: string | undefined;
+    try {
+      const bundle = await worker.exportDiagnostic(taskId);
+      source = resolve(bundle.path);
+      const temporaryRoot = `${resolve(join(tmpdir(), 'geo-publisher-diagnostic-exports'))}${sep}`;
+      if (!source.startsWith(temporaryRoot) || !source.toLowerCase().endsWith('.zip')) {
+        return { exported: false, message: '诊断包路径无效' };
+      }
+      await copyFile(source, choice.filePath);
+      shell.showItemInFolder(choice.filePath);
+      return { exported: true, path: choice.filePath };
+    } finally {
+      if (source) await rm(source, { force: true }).catch(() => undefined);
+    }
   });
   await window.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
   updateManager.start();

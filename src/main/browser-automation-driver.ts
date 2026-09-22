@@ -62,6 +62,13 @@ export async function cdpKey(
   await transient.run(async () => await transient.key(key, code, windowsVirtualKeyCode, modifiers));
 }
 
+export async function cdpInsertText(webContents: WebContents, text: string): Promise<void> {
+  const driver = activeBrowserAutomationDriver(webContents);
+  if (driver) return await driver.insertText(text);
+  const transient = new BrowserAutomationDriver(webContents, 'penguin');
+  await transient.run(async () => await transient.insertText(text));
+}
+
 export async function runWithBrowserAutomationDriver<T>(
   driver: BrowserAutomationDriver,
   operation: () => Promise<T>,

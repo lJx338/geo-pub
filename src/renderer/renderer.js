@@ -94,6 +94,7 @@ function diagnosticButton(task) {
   button.title = '导出已脱敏的失败现场，发给技术支持定位问题';
   button.addEventListener('click', async () => {
     button.disabled = true;
+    showMessage('正在打开“保存诊断包”窗口…');
     try {
       const result = await window.geoPublisher.exportDiagnostic(task.taskId);
       showMessage(result.exported ? '诊断包已保存，可直接发给技术支持' : (result.message || '诊断包保存失败'), !result.exported && result.message !== '已取消保存');

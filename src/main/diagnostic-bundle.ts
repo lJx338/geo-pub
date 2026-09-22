@@ -12,12 +12,23 @@ const MAX_CONSOLE_MESSAGE_LENGTH = 600;
 const MAX_DIAGNOSTIC_SESSIONS = 20;
 const DIAGNOSTIC_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
+export interface DiagnosticNetworkEvent {
+  timestamp: string;
+  phase: 'completed' | 'error';
+  url: string;
+  method?: string;
+  statusCode?: number;
+  error?: string;
+  resourceType?: string;
+}
+
 export function installEditorDiagnostics(webContents: WebContents): Promise<unknown> {
   if (webContents.isDestroyed()) return Promise.resolve(false);
   return webContents.executeJavaScript(`(() => {
     if (window.__geoPublisherInputDiagnosticsInstalled) return true;
     window.__geoPublisherInputDiagnosticsInstalled = true;
     window.__geoPublisherInputEvents = [];
+    window.__geoPublisherPublishDiagnostics = window.__geoPublisherPublishDiagnostics || { clicks: [], events: [], mutations: [] };
     const fingerprint = (value) => { const text = String(value || ''); let hash = 2166136261; for (let i = 0; i < text.length; i += 1) { hash ^= text.charCodeAt(i); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16).padStart(8, '0'); };
     const record = (event) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -43,6 +54,30 @@ export function installEditorDiagnostics(webContents: WebContents): Promise<unkn
       if (window.__geoPublisherInputEvents.length > 120) window.__geoPublisherInputEvents.splice(0, window.__geoPublisherInputEvents.length - 120);
     };
     ['keydown','keyup','beforeinput','input','mousedown','click'].forEach((type) => document.addEventListener(type, record, true));
+    const publish = window.__geoPublisherPublishDiagnostics;
+    const describe = (element) => {
+      if (!(element instanceof Element)) return null;
+      const rect = element.getBoundingClientRect();
+      const text = String(element.textContent || '').replace(/\s+/g, ' ').trim();
+      return { tag: element.tagName.toLowerCase(), id: String(element.id || '').slice(0, 80), className: String(element.className || '').slice(0, 180), textLength: text.length, textFingerprint: fingerprint(text), rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true', pointerEvents: getComputedStyle(element).pointerEvents };
+    };
+    const recordEvent = (event) => {
+      const target = event.target instanceof Element ? event.target.closest('button,[role="button"],input[type="submit"],input[type="button"]') || event.target : null;
+      if (!(target instanceof Element)) return;
+      const text = String(target.textContent || (target instanceof HTMLInputElement ? target.value : '') || '').replace(/\s+/g, ' ').trim();
+      if (!/发布|提交|发表|确认/.test(text)) return;
+      publish.events.push({ at: Date.now(), type: event.type, trusted: Boolean(event.isTrusted), target: describe(target) });
+      if (publish.events.length > 80) publish.events.splice(0, publish.events.length - 80);
+    };
+    ['mousedown','mouseup','click'].forEach((type) => document.addEventListener(type, recordEvent, true));
+    const observer = new MutationObserver((records) => {
+      const relevant = records.filter((record) => record.target instanceof Element || [...record.addedNodes].some((node) => node instanceof Element));
+      if (!relevant.length) return;
+      const texts = relevant.flatMap((record) => [record.target, ...record.addedNodes]).filter((node) => node instanceof Element).map((node) => String(node.textContent || '').replace(/\s+/g, ' ').trim()).filter((text) => text && text.length <= 300).slice(0, 8);
+      publish.mutations.push({ at: Date.now(), records: relevant.length, texts: texts.map((text) => ({ length: text.length, fingerprint: fingerprint(text) })) });
+      if (publish.mutations.length > 80) publish.mutations.splice(0, publish.mutations.length - 80);
+    });
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'disabled', 'aria-disabled', 'role'] });
     return true;
   })()`);
 }
@@ -161,6 +196,7 @@ function pageSnapshotScript(platform: Platform): string {
       technologies: { draftJs: Boolean(document.querySelector('.public-DraftEditor-content,[data-block="true"]')), quill: Boolean(document.querySelector('.ql-editor,.ql-container')),
         prosemirror: Boolean(document.querySelector('.ProseMirror')), iframeCount: document.querySelectorAll('iframe').length },
       adapterTrace: window.__geoPublisherLastWrite || null,
+      publishDiagnostics: window.__geoPublisherPublishDiagnostics || { clicks: [], events: [], mutations: [] },
       inputEvents, editorInputDiagnosis: classifyDraftInput(),
       editors: candidates,
       controls: [...document.querySelectorAll('button,[role="button"],input[type="button"],input[type="submit"],iframe')]
@@ -178,6 +214,7 @@ export interface FailureDiagnosticInput {
   window: BrowserWindow;
   version: string;
   consoleEvents: DiagnosticConsoleEvent[];
+  networkEvents?: DiagnosticNetworkEvent[];
   evidencePath?: string;
   automationActions?: unknown;
 }
@@ -190,7 +227,7 @@ export async function captureFailureDiagnostic(input: FailureDiagnosticInput): P
   }
   const display = screen.getDisplayMatching(input.window.getBounds());
   const diagnostic = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     capturedAt: new Date().toISOString(),
     app: { version: input.version, platform: process.platform, arch: process.arch, electron: process.versions.electron, chrome: process.versions.chrome },
     task: { taskId: input.task.taskId, platform: input.task.platform, action: input.task.action, phase: input.task.phase,
@@ -200,9 +237,10 @@ export async function captureFailureDiagnostic(input: FailureDiagnosticInput): P
       bounds: input.window.getBounds(), contentSize: input.window.getContentSize(), display: { scaleFactor: display.scaleFactor, bounds: display.bounds, workArea: display.workArea } },
     page,
     consoleEvents: input.consoleEvents.slice(-MAX_CONSOLE_EVENTS),
+    networkEvents: input.networkEvents?.slice(-MAX_CONSOLE_EVENTS) || [],
     automationActions: input.automationActions || [],
     evidenceFile: input.evidencePath ? basename(input.evidencePath) : null,
-    privacy: 'Structured JSON excludes cookies, tokens, localStorage values, article body text, title text, and cover files. An included evidence screenshot may show the visible editor page.',
+    privacy: 'Structured JSON excludes cookies, tokens, localStorage values, article body text, title text, and cover files. Network URLs are stored without query parameters. An included evidence screenshot may show the visible editor page.',
   };
   const directory = join(diagnosticsDirectory(), input.task.taskId);
   await mkdir(directory, { recursive: true });

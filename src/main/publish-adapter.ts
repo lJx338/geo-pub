@@ -188,12 +188,27 @@ async function clickVisible(
     if(!(element instanceof HTMLElement))return null;
     element.scrollIntoView({block:'center',inline:'nearest'});
     const rect=element.getBoundingClientRect();
-    return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+    const fingerprint = (value) => { const text = String(value || ''); let hash = 2166136261; for (let index = 0; index < text.length; index += 1) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16).padStart(8, '0'); };
+    const descriptor = { tag: element.tagName.toLowerCase(), className: String(element.className || '').slice(0, 180), textLength: normalize(element.textContent).length, textFingerprint: fingerprint(element.textContent), rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true', pointerEvents: getComputedStyle(element).pointerEvents };
+    return {x:rect.left+rect.width/2,y:rect.top+rect.height/2, descriptor};
   })()`);
   if (!point) return false;
+  await webContents.executeJavaScript(`(() => {
+    const trace = window.__geoPublisherPublishDiagnostics || (window.__geoPublisherPublishDiagnostics = { clicks: [], events: [], mutations: [] });
+    trace.clicks.push({ at: Date.now(), phase: 'before', target: ${JSON.stringify(point.descriptor)}, url: location.origin + location.pathname, eventCount: trace.events?.length || 0, mutationCount: trace.mutations?.length || 0 });
+    if (trace.clicks.length > 40) trace.clicks.splice(0, trace.clicks.length - 40);
+  })()`);
   await delay(350);
   await delay(120);
   await cdpClick(webContents, { x: Math.round(point.x), y: Math.round(point.y) });
+  await delay(250);
+  await webContents.executeJavaScript(`(() => {
+    const trace = window.__geoPublisherPublishDiagnostics || (window.__geoPublisherPublishDiagnostics = { clicks: [], events: [], mutations: [] });
+    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+    const buttons = [...document.querySelectorAll('button,[role="button"],input[type="submit"],input[type="button"]')].filter(visible).map((element) => ({ textLength: String(element.textContent || (element instanceof HTMLInputElement ? element.value : '') || '').replace(/\s+/g, ' ').trim().length, disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true', className: String(element.className || '').slice(0, 180) })).filter((button) => button.textLength > 0 && button.textLength <= 20);
+    trace.clicks.push({ at: Date.now(), phase: 'after', url: location.origin + location.pathname, eventCount: trace.events?.length || 0, mutationCount: trace.mutations?.length || 0, buttons });
+    if (trace.clicks.length > 40) trace.clicks.splice(0, trace.clicks.length - 40);
+  })()`);
   return true;
 }
 

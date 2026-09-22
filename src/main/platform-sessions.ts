@@ -28,6 +28,7 @@ import {
   installEditorDiagnostics,
   removeTaskDiagnostic,
   type DiagnosticConsoleEvent,
+  type DiagnosticNetworkEvent,
 } from './diagnostic-bundle.js';
 
 const PLATFORM_URLS: Record<Platform, string> = {
@@ -47,6 +48,7 @@ interface ManagedView {
   lastUsedAt: number;
   recoveryTimer: NodeJS.Timeout | null;
   consoleEvents: DiagnosticConsoleEvent[];
+  networkEvents: DiagnosticNetworkEvent[];
 }
 
 type TaskAction = 'open' | 'inspect' | 'fill' | 'publish';
@@ -204,6 +206,20 @@ function errorCodeFromResult(value: unknown): string | undefined {
   return typeof errorCode === 'string' && errorCode ? errorCode : undefined;
 }
 
+function diagnosticRequestUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return '[invalid-url]';
+  }
+}
+
+function appendDiagnosticNetworkEvent(events: DiagnosticNetworkEvent[], event: DiagnosticNetworkEvent): void {
+  events.push({ ...event, url: diagnosticRequestUrl(event.url) });
+  if (events.length > 80) events.splice(0, events.length - 80);
+}
+
 export function formatWarningsFromResult(value: unknown): string[] | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const warnings = (value as Record<string, unknown>).formatWarnings;
@@ -329,8 +345,22 @@ export class PlatformSessions {
       else setupStealthUserAgent(platformSession);
       await restorePlatformCookies(platformSession, platform);
 
-      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now(), recoveryTimer: null, consoleEvents: [] };
+      managed = { platform, view, partition: platformSession, loading: false, lastUsedAt: Date.now(), recoveryTimer: null, consoleEvents: [], networkEvents: [] };
       this.views.set(platform, managed);
+      platformSession.webRequest.onCompleted((details) => {
+        if (!managed || details.statusCode < 400) return;
+        appendDiagnosticNetworkEvent(managed.networkEvents, {
+          timestamp: new Date().toISOString(), phase: 'completed', url: details.url, method: details.method,
+          statusCode: details.statusCode, resourceType: details.resourceType,
+        });
+      });
+      platformSession.webRequest.onErrorOccurred((details) => {
+        if (!managed) return;
+        appendDiagnosticNetworkEvent(managed.networkEvents, {
+          timestamp: new Date().toISOString(), phase: 'error', url: details.url, method: details.method,
+          error: details.error, resourceType: details.resourceType,
+        });
+      });
       view.webContents.setWindowOpenHandler(({ url }) => {
         if (managed && !managed.loading && url !== managed.view.webContents.getURL()) {
           void this.loadUrl(managed, url);
@@ -503,6 +533,8 @@ export class PlatformSessions {
       await this.openInternal(platform, 'background');
       const managed = this.views.get(platform);
       if (!managed) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
+      managed.networkEvents.length = 0;
+      await installEditorDiagnostics(managed.view.webContents).catch((error) => reportError('Publish diagnostics install failed:', error));
       let journal = prepared.journal;
       const driver = new BrowserAutomationDriver(managed.view.webContents, platform, {
         viewport: automationViewportForView(this.viewBounds()),
@@ -542,7 +574,8 @@ export class PlatformSessions {
               webContents: active.view.webContents,
               window: this.window,
               version: this.version,
-              consoleEvents: managed.consoleEvents,
+            consoleEvents: managed.consoleEvents,
+              networkEvents: managed.networkEvents,
               automationActions: driver.results(),
               ...(evidence.screenshotPath ? { evidencePath: evidence.screenshotPath } : {}),
             });
@@ -924,7 +957,8 @@ export class PlatformSessions {
             ...(managed ? { webContents: managed.view.webContents } : {}),
             window: this.window,
             version: this.version,
-            consoleEvents: managed?.consoleEvents || [],
+              consoleEvents: managed?.consoleEvents || [],
+            networkEvents: managed?.networkEvents || [],
             automationActions: error && typeof error === 'object'
               ? (error as { automationActions?: unknown }).automationActions
               : undefined,

@@ -1,5 +1,5 @@
 import type { WebContents } from 'electron';
-import { cdpClick, cdpKey } from './browser-automation-driver.js';
+import { cdpClick, cdpInsertText, cdpKey } from './browser-automation-driver.js';
 import { contentMatchesExpected } from './content-verification.js';
 
 const PUBLISH_URL = 'https://om.qq.com/main/creation/article';
@@ -182,11 +182,59 @@ async function fillContent(webContents: WebContents, title: string, html: string
     }
   })()`);
   let result = await readContent(webContents, title, html);
+  if (result.titleFilled && !result.bodyFilled && await shouldRecoverProseMirror(webContents, html)) {
+    const recovered = await recoverProseMirrorWithTrustedInput(webContents, html);
+    if (recovered) result = await readContent(webContents, title, html);
+  }
   for (let attempt = 0; attempt < 8 && (!result.titleFilled || !result.bodyFilled || !result.formatVerification.preserved); attempt += 1) {
     await delay(500 + attempt * 150);
     result = await readContent(webContents, title, html);
   }
   return result;
+}
+
+async function shouldRecoverProseMirror(webContents: WebContents, html: string): Promise<boolean> {
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/[\\u200B-\\u200D\\uFEFF]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
+    const contentMatchesExpected = ${contentMatchesExpected.toString()};
+    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+    const editor = [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')].find(visible);
+    if (!(editor instanceof HTMLElement)) return false;
+    const holder = document.createElement('div'); holder.innerHTML = ${JSON.stringify(html)};
+    const expected = normalize(holder.innerText || holder.textContent || '');
+    const actual = normalize(editor.innerText || editor.textContent || '');
+    const blocked = /扫码登录|请先登录|登录后继续|验证码|安全验证|验证身份|风险验证|账号异常|登录失效/.test(normalize(document.body?.innerText));
+    return !blocked && contentMatchesExpected(actual, expected);
+  })()`);
+}
+
+async function recoverProseMirrorWithTrustedInput(webContents: WebContents, html: string): Promise<boolean> {
+  const prepared = await webContents.executeJavaScript(`(() => {
+    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
+    const editor = [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')].find(visible);
+    if (!(editor instanceof HTMLElement)) return { ready: false, blocks: [] };
+    const holder = document.createElement('div'); holder.innerHTML = ${JSON.stringify(html)};
+    const blocks = [...holder.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote')]
+      .filter((element) => !(element.matches('p') && element.closest('li,blockquote')))
+      .map((element) => String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    editor.focus();
+    const range = document.createRange(); range.selectNodeContents(editor);
+    const selection = editor.ownerDocument.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    return { ready: document.activeElement === editor, blocks };
+  })()`);
+  if (!prepared?.ready || !Array.isArray(prepared.blocks) || prepared.blocks.length === 0) return false;
+  await cdpKey(webContents, 'Backspace', 'Backspace', 8);
+  await delay(250);
+  for (let index = 0; index < prepared.blocks.length; index += 1) {
+    await cdpInsertText(webContents, String(prepared.blocks[index] || ''));
+    if (index < prepared.blocks.length - 1) {
+      await cdpKey(webContents, 'Enter', 'Enter', 13);
+      await delay(80);
+    }
+  }
+  await delay(1_000);
+  return true;
 }
 
 async function applyTags(webContents: WebContents, rawTags: string[]): Promise<{ requested: string[]; applied: string[]; recommended: boolean }> {
