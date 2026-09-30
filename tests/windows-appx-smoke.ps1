@@ -34,7 +34,7 @@ New-Item -ItemType Directory -Force -Path $smokeRoot | Out-Null
 Copy-Item -LiteralPath $package -Destination $signedPackage -Force
 
 try {
-  $signtool = Get-ChildItem -Path "$env:ProgramFiles(x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+  $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
   if (-not $signtool) {

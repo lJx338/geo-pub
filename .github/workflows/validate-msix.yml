@@ -87,7 +87,7 @@ jobs:
       - name: Run Windows App Certification Kit when available
         shell: pwsh
         run: |
-          $appcert = Get-ChildItem -Path "$env:ProgramFiles(x86)\Windows Kits\10\Assessment and Deployment Kit\Application Certification Kit\appcert.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $appcert = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Application Certification Kit\appcert.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $appcert) {
             Write-Warning 'Windows App Certification Kit is not installed on this runner; local WACK testing is still required before Store submission.'
             exit 0
