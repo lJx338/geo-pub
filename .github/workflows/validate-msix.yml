@@ -32,6 +32,11 @@ on:
         required: true
         default: '1.0.0'
         type: string
+      run_smoke:
+        description: '在 Windows runner 上尝试安装 MSIX（默认关闭；云端桌面环境可能不支持）'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -74,6 +79,7 @@ jobs:
         run: npm run validate:appx -- $env:STORE_PACKAGE_VERSION
 
       - name: Install and launch the package in a clean runner
+        if: ${{ inputs.run_smoke == true }}
         shell: pwsh
         timeout-minutes: 5
         run: |
