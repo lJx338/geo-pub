@@ -105,6 +105,21 @@ describe('desktop distribution service', () => {
     expect(result.records[0]!.payload.error).toMatchObject({ code: 'LOGIN_REQUIRED' });
   });
 
+  it('retains safe error details for per-platform diagnosis', async () => {
+    const { article, executor, content } = await setup();
+    executor.fillDraft = async () => {
+      const error = new Error('PLATFORM_OPERATION_TIMEOUT: page did not finish');
+      (error as Error & { details?: unknown }).details = { platform: 'baijia', url: 'https://example.test/edit', screenshotPath: 'C:/evidence.png', secret: 'must-not-copy' };
+      throw error;
+    };
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['baijia'], mode: 'fill', coverPath: 'C:/cover.png', confirmPublish: false });
+    expect(result.records[0]?.payload.error).toMatchObject({
+      code: 'PLATFORM_OPERATION_TIMEOUT',
+      details: { platform: 'baijia', url: 'https://example.test/edit', screenshotPath: 'C:/evidence.png' },
+    });
+    expect(JSON.stringify(result.records[0]?.payload.error)).not.toContain('must-not-copy');
+  });
+
   it('blocks a duplicate publish after success', async () => {
     const { article, executor, content } = await setup();
     const service = new DistributionService(content, executor);

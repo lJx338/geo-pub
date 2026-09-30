@@ -21,6 +21,10 @@ export function updatePlatformKey(platform = process.platform, arch = process.ar
   return null;
 }
 
+export function isStoreManagedRuntime(platform = process.platform, windowsStore = process.windowsStore): boolean {
+  return platform === 'win32' && windowsStore === true;
+}
+
 export function updateFeedUrl(
   channel = process.env.GEO_UPDATE_CHANNEL || 'stable',
   runtimePlatform = process.platform,
@@ -52,20 +56,25 @@ export class UpdateManager {
     private readonly onChange: (status: UpdateStatus) => void,
   ) {
     this.channel = this.readChannel(currentVersion);
+    const storeManaged = isStoreManagedRuntime();
     this.status = {
-      phase: app.isPackaged ? 'idle' : 'disabled',
+      phase: app.isPackaged && !storeManaged ? 'idle' : 'disabled',
       currentVersion,
       channel: this.channel,
       availableVersion: null,
       progress: null,
-      message: app.isPackaged ? '等待检查更新' : '开发模式不检查更新',
+      message: !app.isPackaged
+        ? '开发模式不检查更新'
+        : storeManaged
+          ? '微软商店版由 Microsoft Store 管理更新'
+          : '等待检查更新',
       checkedAt: null,
       canRestart: false,
     };
   }
 
   start(): void {
-    if (!app.isPackaged || !updateFeedUrl(this.channel)) return;
+    if (!app.isPackaged || isStoreManagedRuntime() || !updateFeedUrl(this.channel)) return;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = false;
     this.configureFeed();
@@ -90,6 +99,9 @@ export class UpdateManager {
   }
 
   async activateBeta(code: string): Promise<BetaActivationResult> {
+    if (isStoreManagedRuntime()) {
+      return { accepted: false, enabled: false, message: '微软商店版由 Microsoft Store 管理更新，不能切换 COS 灰度通道', update: this.getStatus() };
+    }
     const normalized = code.trim().toUpperCase();
     if (!/^BETA-[A-Z0-9]{6,32}$/.test(normalized)) {
       return { accepted: false, enabled: this.channel === 'beta', message: '邀请码格式不正确，请输入 BETA- 开头的邀请码', update: this.getStatus() };
@@ -109,6 +121,9 @@ export class UpdateManager {
   }
 
   deactivateBeta(): BetaActivationResult {
+    if (isStoreManagedRuntime()) {
+      return { accepted: false, enabled: false, message: '微软商店版由 Microsoft Store 管理更新，不能切换 COS 灰度通道', update: this.getStatus() };
+    }
     try {
       writeFileSync(this.channelPath, JSON.stringify({ channel: 'stable', deactivatedAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
       this.channel = 'stable';
@@ -130,7 +145,7 @@ export class UpdateManager {
   }
 
   async check(): Promise<UpdateStatus> {
-    if (!app.isPackaged) return this.getStatus();
+    if (!app.isPackaged || isStoreManagedRuntime()) return this.getStatus();
     try {
       await autoUpdater.checkForUpdates();
     } catch (error) {
@@ -140,6 +155,7 @@ export class UpdateManager {
   }
 
   install(): { accepted: boolean; message: string } {
+    if (isStoreManagedRuntime()) return { accepted: false, message: '微软商店版由 Microsoft Store 管理更新' };
     if (this.status.phase !== 'downloaded') return { accepted: false, message: '尚未下载可安装的更新' };
     if (this.isBusy()) return { accepted: false, message: '发布任务正在运行，任务完成后才能重启安装' };
     setImmediate(() => autoUpdater.quitAndInstall(true, true));
@@ -175,7 +191,7 @@ export class UpdateManager {
   private resetChannelStatus(channel: 'stable' | 'beta', message: string): void {
     this.patch({
       channel,
-      phase: app.isPackaged ? 'checking' : 'disabled',
+      phase: app.isPackaged && !isStoreManagedRuntime() ? 'checking' : 'disabled',
       availableVersion: null,
       progress: null,
       message,

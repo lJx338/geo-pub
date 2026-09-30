@@ -8,6 +8,9 @@ declare global {
       status(): Promise<DesktopStatus>;
       openPlatform(platform: Platform): Promise<PlatformStatus>;
       hidePlatform(): Promise<DesktopStatus>;
+      platformBack(): Promise<DesktopStatus>;
+      platformForward(): Promise<DesktopStatus>;
+      platformReload(): Promise<DesktopStatus>;
       chooseDistributionCover(): Promise<{ canceled: boolean; filePath: string }>;
       runDistribution(input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }>;
       projects(): Promise<{ projects: Project[]; currentProject: Project | null }>;
@@ -39,6 +42,7 @@ declare global {
       launchAtLoginStatus(): Promise<LaunchAtLoginStatus>;
       setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginStatus>;
       copyDiagnostics(): Promise<{ copied: true; diagnostic: DiagnosticSummary }>;
+      exportDiagnostic(projectId: string, recordId: string): Promise<{ exported: boolean; path?: string; message?: string }>;
       copyText(text: string): Promise<{ copied: true }>;
       openDataDirectory(): Promise<{ opened: boolean; error?: string }>;
       onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;

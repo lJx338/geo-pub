@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OperationTimeoutError, PlatformSessions, pickEvictionCandidate, platformRuntimeState, projectPartitionName, withOperationDeadline } from './platform-sessions.js';
+import { OperationTimeoutError, PlatformSessions, pickEvictionCandidate, platformPartitionName, platformRuntimeState, projectPartitionName, shouldForegroundPlatformAutomation, withOperationDeadline } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
@@ -19,11 +19,23 @@ describe('platform view eviction', () => {
 });
 
 describe('platform runtime status', () => {
+  it('foregrounds Windows editor automation but keeps non-Windows automation background-capable', () => {
+    expect(shouldForegroundPlatformAutomation('win32')).toBe(true);
+    expect(shouldForegroundPlatformAutomation('darwin')).toBe(false);
+    expect(shouldForegroundPlatformAutomation('linux')).toBe(false);
+  });
+
   it('isolates browser storage by customer project and platform', () => {
     expect(projectPartitionName('11111111-1111-4111-8111-111111111111', 'toutiao'))
       .not.toBe(projectPartitionName('22222222-2222-4222-8222-222222222222', 'toutiao'));
     expect(projectPartitionName('11111111-1111-4111-8111-111111111111', 'toutiao'))
       .not.toBe(projectPartitionName('11111111-1111-4111-8111-111111111111', 'zhihu'));
+  });
+  it('keeps the NetEase login profile isolated by customer project', () => {
+    expect(platformPartitionName('11111111-1111-4111-8111-111111111111', 'netease'))
+      .not.toBe(platformPartitionName('22222222-2222-4222-8222-222222222222', 'netease'));
+    expect(platformPartitionName('11111111-1111-4111-8111-111111111111', 'toutiao'))
+      .toBe(projectPartitionName('11111111-1111-4111-8111-111111111111', 'toutiao'));
   });
   it('does not confuse view residency with login state', () => {
     expect(platformRuntimeState(false, false)).toBe('not_loaded');

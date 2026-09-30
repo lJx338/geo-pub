@@ -21,7 +21,12 @@ export async function installBundledCli(version: string): Promise<string | null>
   const directory = join(destination, '..');
   const temporary = `${destination}.new`;
   await mkdir(directory, { recursive: true });
-  if (process.platform === 'win32') {
+  // Packaged Windows releases keep a versioned CLI beside the running app so
+  // an older CLI can finish while a new release is installed. In an unpackaged
+  // source run, however, the version stays the same while the developer
+  // rebuilds the CLI; reusing the existing file would make WorkBuddy continue
+  // calling the old `start` implementation.
+  if (process.platform === 'win32' && app.isPackaged) {
     try {
       await stat(destination);
       return destination;

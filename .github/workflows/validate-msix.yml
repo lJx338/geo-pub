@@ -1,0 +1,105 @@
+name: Validate MSIX for Microsoft Store
+
+on:
+  push:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - 'build/icon.png'
+      - 'build/appx/**'
+      - 'src/**'
+      - 'cli/**'
+      - 'integrations/**'
+      - 'tests/windows-appx-smoke.ps1'
+      - '.github/workflows/validate-msix.yml'
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/**'
+      - 'build/icon.png'
+      - 'build/appx/**'
+      - 'src/**'
+      - 'cli/**'
+      - 'integrations/**'
+      - 'tests/windows-appx-smoke.ps1'
+      - '.github/workflows/validate-msix.yml'
+  workflow_dispatch:
+    inputs:
+      store_version:
+        description: 'MSIX 商店包版本的前三段数字，例如 1.0.0；第四段由脚本固定为 0'
+        required: true
+        default: '1.0.0'
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  STORE_PACKAGE_VERSION: ${{ inputs.store_version || format('1.0.{0}', github.run_number) }}
+
+jobs:
+  build-validate-msix:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Go for the bundled CLI
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Install dependencies from lockfile
+        run: npm ci
+
+      - name: Run typecheck and tests
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Build the unsigned Store MSIX
+        run: npm run package:store
+
+      - name: Validate manifest and Store assets
+        run: npm run validate:appx -- release/store $env:STORE_PACKAGE_VERSION
+
+      - name: Install and launch the package in a clean runner
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem -Path release/store -File | Where-Object { $_.Extension -in '.appx', '.msix' } | Select-Object -First 1
+          if (-not $package) { throw 'MSIX/AppX package was not found' }
+          ./tests/windows-appx-smoke.ps1 `
+            -PackagePath $package.FullName `
+            -IdentityName '78707CBF.LingxiWorkspace' `
+            -Publisher 'CN=5C62BC82-3986-4D37-81C4-0EAF060A1A5D' `
+            -ExpectedVersion "$env:STORE_PACKAGE_VERSION.0" `
+            -ApplicationId 'LingxiWorkspace'
+
+      - name: Run Windows App Certification Kit when available
+        shell: pwsh
+        run: |
+          $appcert = Get-ChildItem -Path "$env:ProgramFiles(x86)\Windows Kits\10\Assessment and Deployment Kit\Application Certification Kit\appcert.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $appcert) {
+            Write-Warning 'Windows App Certification Kit is not installed on this runner; local WACK testing is still required before Store submission.'
+            exit 0
+          }
+          $package = Get-ChildItem -Path release/store -File | Where-Object { $_.Extension -in '.appx', '.msix' } | Select-Object -First 1
+          & $appcert.FullName test -appxpackagepath $package.FullName -reportoutputpath "$env:GITHUB_WORKSPACE\release\store\appcert-report"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload the unsigned MSIX as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lingxi-workspace-msix-${{ env.STORE_PACKAGE_VERSION }}
+          path: release/store/*.{appx,msix}
+          if-no-files-found: error
+          retention-days: 14

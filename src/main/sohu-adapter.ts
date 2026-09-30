@@ -76,6 +76,11 @@ function contentScript(title: string, html: string, write: boolean): string {
       for (const frame of current.querySelectorAll('iframe')) {
         try { if (frame.contentDocument) collect(frame.contentDocument, depth + 1); } catch {}
       }
+      // Some Sohu deployments mount the editor inside a shadow root. Walk
+      // open roots so the same title/body discovery works across deployments.
+      for (const host of current.querySelectorAll('*')) {
+        try { if (host.shadowRoot) collect(host.shadowRoot, depth + 1); } catch {}
+      }
     };
     collect(document);
     const isElement = (element) => Boolean(element && typeof element.getBoundingClientRect === 'function' && element.ownerDocument);
@@ -88,7 +93,7 @@ function contentScript(title: string, html: string, write: boolean): string {
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     })();
     const meta = (element) => normalize([element?.getAttribute?.('placeholder'), element?.getAttribute?.('data-placeholder'), element?.getAttribute?.('aria-label'), element?.getAttribute?.('title'), element?.className].join(' '));
-    const candidates = documents.flatMap((current) => [...current.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')]).filter(visible);
+    const candidates = documents.flatMap((current) => [...current.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"],.ql-editor,.ProseMirror,.article-editor,[data-editor]')]).filter(visible);
     for (const current of documents.slice(1)) if (isElement(current.body) && visible(current.body) && !candidates.includes(current.body)) candidates.push(current.body);
     const titleElement = candidates.map((element) => ({ element, score: (meta(element).includes('标题') ? 500 : 0) + (isInput(element) || isTextarea(element) ? 100 : 0) }))
       .sort((left, right) => right.score - left.score)[0]?.element || null;
@@ -168,23 +173,94 @@ export function buildSohuContentScriptForTest(title: string, html: string, write
 
 export async function ensureSohuEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
   if (!webContents.getURL().includes('/contentManagement/news/addarticle')) await webContents.loadURL(PUBLISH_URL);
-  await resumeVisibleDraft(webContents);
   const deadline = Date.now() + timeoutMs;
   let streak = 0;
+  let resumeAttempted = false;
+  let entryAttempts = 0;
+  let directNavigationAttempted = false;
+  let nextEntryAttemptAt = 0;
   while (Date.now() < deadline) {
-    const state = await webContents.executeJavaScript(`(() => {
+    let state: { ready: boolean; loginBlocked: boolean; unknownLoginError: boolean; accountNotApproved: boolean; blocking: boolean };
+    try {
+      state = await webContents.executeJavaScript(`(() => {
       const visible = (element) => Boolean(element && typeof element.getBoundingClientRect === 'function' && (() => { const rect = element.getBoundingClientRect(); const view = element.ownerDocument?.defaultView || window; const style = view.getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })());
       const text = String(document.body?.innerText || '');
       const blocking = [...document.querySelectorAll('[role="dialog"],.tcaptcha-transform,.verify-box')].filter(visible).some((element) => /验证码|安全验证|拖动下方滑块完成拼图|风险验证/.test(String(element.textContent || '')));
-      const documents = [document];
-      for (const frame of document.querySelectorAll('iframe')) { try { if (frame.contentDocument) documents.push(frame.contentDocument); } catch {} }
-      const editables = documents.flatMap((current) => [...current.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')]).filter(visible);
-      return { ready: editables.length >= 2 || (editables.length >= 1 && documents.length > 1), loginBlocked: /请登录后继续|登录后发布|扫码登录|重新登录/.test(text) || /login|passport/i.test(location.href), blocking };
-    })()`);
+      const unknownLoginError = /发生未知错误/.test(text) && /(?:mobilenum|手机号|手机验证码|登录\/注册)/i.test(text + ' ' + location.href);
+      const accountNotApproved = /(?:申请的搜狐号|搜狐号).{0,30}(?:未通过审核|审核未通过)|重新选择注册类型|修改注册信息/.test(text);
+      // The Sohu publish editor is in the main document. Avoid traversing its
+      // cross-origin captcha iframe here; some Chromium builds reject that
+      // access while the captcha is still initializing and abort the whole
+      // readiness script.
+       const editables = [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')].filter(visible);
+       const loginBlocked = /请登录后继续|登录后发布|扫码登录|重新登录|登录\/注册|账号登录|手机号登录|短信验证码/.test(text) || /login|passport/i.test(location.href);
+       return { ready: editables.length >= 2, loginBlocked, unknownLoginError, accountNotApproved, blocking };
+      })()`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Sohu sometimes aborts a readiness probe while its Vue editor is
+      // repainting. The content script performs the authoritative editor
+      // discovery and verification, so let it make the final decision on the
+      // already loaded publish URL.
+      if (webContents.getURL().includes('/contentManagement/news/addarticle')) {
+        state = { ready: true, loginBlocked: false, unknownLoginError: false, accountNotApproved: false, blocking: false };
+      } else {
+        throw new Error(`SOHU_EDITOR_STATE_SCRIPT_FAILED: ${message}`);
+      }
+    }
     if (state.loginBlocked) throw new Error('SOHU_LOGIN_REQUIRED: 请在桌面端完成搜狐号登录');
+    if (state.unknownLoginError) throw new Error('SOHU_LOGIN_UNKNOWN_ERROR: 搜狐登录接口返回“发生未知错误”，请重新完成图形验证码和短信验证码；若仍失败，请先在搜狐号处理账号审核状态');
     if (state.blocking) throw new Error('SOHU_VERIFICATION_REQUIRED: 搜狐号显示了可见验证码或安全验证');
+    if (state.accountNotApproved) throw new Error('SOHU_ACCOUNT_NOT_APPROVED: 当前搜狐号未通过审核，请在搜狐号修改注册信息或重新选择注册类型后再填充');
     streak = state.ready ? streak + 1 : 0;
+    if (streak >= 3 && !resumeAttempted) {
+      resumeAttempted = true;
+      let resumed: boolean;
+      try {
+        resumed = await resumeVisibleDraft(webContents);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`SOHU_DRAFT_RESUME_FAILED: ${message}`);
+      }
+      if (resumed) {
+        // 恢复已有草稿会替换搜狐的 Vue/Quill 编辑器实例，等待新实例稳定后再写入。
+        streak = 0;
+        await delay(1_500);
+        continue;
+      }
+    }
     if (streak >= 3) return;
+
+    const currentUrl = webContents.getURL();
+    if (!currentUrl.includes('/contentManagement/news/addarticle') && Date.now() >= nextEntryAttemptAt) {
+      const point = await webContents.executeJavaScript(`(() => {
+        const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+        const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && style.pointerEvents !== 'none'; })();
+        const target = [...document.querySelectorAll('button,a,[role="button"],li')].filter(visible).find((element) => normalize(element.textContent) === '发布内容');
+        if (!(target instanceof HTMLElement)) return null;
+        target.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const rect = target.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      })()`).catch(() => null);
+      if (point && entryAttempts < 3) {
+        await clickPoint(webContents, point);
+        entryAttempts += 1;
+        nextEntryAttemptAt = Date.now() + 3_000;
+        await delay(900);
+        continue;
+      }
+      if (!directNavigationAttempted) {
+        directNavigationAttempted = true;
+        try {
+          await webContents.loadURL(PUBLISH_URL);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!/ERR_ABORTED \(-3\)/.test(message)) throw error;
+        }
+        await delay(700);
+        continue;
+      }
+    }
     await delay(700);
   }
   throw new Error('SOHU_EDITOR_NOT_READY: 搜狐号编辑器 120 秒内未就绪');
@@ -198,7 +274,34 @@ async function fillContent(webContents: WebContents, title: string, html: string
     await delay(600 + Math.min(attempt, 6) * 150);
     result = await webContents.executeJavaScript(contentScript(title, html, false));
   }
+  // The Vue editor can replace its DOM after the first mount. Give it one
+  // bounded readiness pass before reporting both fields as missing.
+  if (!result.titleFilled && !result.bodyFilled) {
+    await delay(1_000);
+    await ensureSohuEditor(webContents, 20_000);
+    await webContents.executeJavaScript(contentScript(title, html, true));
+    await delay(900);
+    result = await webContents.executeJavaScript(contentScript(title, html, false));
+  }
   return result;
+}
+
+async function sohuFillDiagnostics(webContents: WebContents): Promise<Record<string, unknown>> {
+  try {
+    return await webContents.executeJavaScript(`(() => {
+      const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
+      const text = String(document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
+      const fields = [...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="textbox"]')].filter(visible);
+      const editors = [...document.querySelectorAll('.ql-editor,.ProseMirror,.article-editor,[data-editor],[contenteditable="true"]')].filter(visible);
+      return {
+        platform: 'sohu', url: location.href, pageTitle: document.title,
+        visibleFieldCount: fields.length, editorCandidateCount: editors.length,
+        loginVisible: /请登录后继续|登录后发布|扫码登录|重新登录|登录\\/注册|账号登录|手机号登录|短信验证码/.test(text),
+      };
+    })()`);
+  } catch {
+    return { platform: 'sohu', url: webContents.getURL() };
+  }
 }
 
 async function applyOptionalSettings(webContents: WebContents): Promise<{ summaryClicked: boolean; summaryGenerated: boolean; summaryUnavailable: boolean; aiContentFound: boolean; aiContentSelected: boolean }> {
@@ -215,9 +318,25 @@ async function applyOptionalSettings(webContents: WebContents): Promise<{ summar
 }
 
 export async function fillSohuDraft(webContents: WebContents, title: string, html: string): Promise<SohuDraftFillResult> {
-  await ensureSohuEditor(webContents);
-  const content = await fillContent(webContents, title, html);
-  if (!content.titleFilled || !content.bodyFilled) throw new Error(`SOHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
+  try {
+    await ensureSohuEditor(webContents);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/^[A-Z][A-Z0-9_]+:/.test(message)) throw error;
+    throw new Error(`SOHU_EDITOR_STAGE_FAILED: ${message}`);
+  }
+  let content: Awaited<ReturnType<typeof fillContent>>;
+  try {
+    content = await fillContent(webContents, title, html);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`SOHU_CONTENT_SCRIPT_FAILED: ${message}`);
+  }
+  if (!content.titleFilled || !content.bodyFilled) {
+    const error = new Error(`SOHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`) as Error & { details?: Record<string, unknown> };
+    error.details = await sohuFillDiagnostics(webContents);
+    throw error;
+  }
   if (!content.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   await delay(1_000);
   const beforeSettings = await webContents.executeJavaScript(contentScript(title, html, false));

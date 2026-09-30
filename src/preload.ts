@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   status: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:status'),
   openPlatform: (platform: Platform): Promise<PlatformStatus> => ipcRenderer.invoke('geo:open-platform', platform),
   hidePlatform: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:hide-platform'),
+  platformBack: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-back'),
+  platformForward: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-forward'),
+  platformReload: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-reload'),
   chooseDistributionCover: (): Promise<{ canceled: boolean; filePath: string }> => ipcRenderer.invoke('geo:distribution-cover-choose'),
   runDistribution: (input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> => ipcRenderer.invoke('geo:distribution-run', input),
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),
@@ -53,6 +56,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   launchAtLoginStatus: (): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:launch-at-login-status'),
   setLaunchAtLogin: (enabled: boolean): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:set-launch-at-login', enabled),
   copyDiagnostics: (): Promise<{ copied: true; diagnostic: DiagnosticSummary }> => ipcRenderer.invoke('geo:copy-diagnostics'),
+  exportDiagnostic: (projectId: string, recordId: string): Promise<{ exported: boolean; path?: string; message?: string }> => ipcRenderer.invoke('geo:diagnostic-export', projectId, recordId),
   copyText: (text: string): Promise<{ copied: true }> => ipcRenderer.invoke('geo:copy-text', text),
   openDataDirectory: (): Promise<{ opened: boolean; error?: string }> => ipcRenderer.invoke('geo:open-data-directory'),
   onUpdateStatus: (listener: (status: UpdateStatus) => void): (() => void) => {

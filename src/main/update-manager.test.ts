@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { updateChannelForVersion, updateFeedUrl, updatePlatformKey, updaterManifestChannel } from './update-manager.js';
+import { isStoreManagedRuntime, updateChannelForVersion, updateFeedUrl, updatePlatformKey, updaterManifestChannel } from './update-manager.js';
 
 describe('update feed platform selection', () => {
   it('supports Apple Silicon macOS and Windows x64 only', () => {
@@ -10,6 +10,12 @@ describe('update feed platform selection', () => {
 
   it('disables unsupported targets', () => {
     expect(updatePlatformKey('linux', 'x64')).toBeNull();
+  });
+
+  it('keeps Microsoft Store MSIX updates out of the COS updater', () => {
+    expect(isStoreManagedRuntime('win32', true)).toBe(true);
+    expect(isStoreManagedRuntime('win32', false)).toBe(false);
+    expect(isStoreManagedRuntime('darwin', true)).toBe(false);
   });
 
   it('keeps prerelease builds on beta and production builds on stable', () => {

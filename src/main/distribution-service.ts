@@ -3,6 +3,7 @@ import { articleDocumentSchema, type ArticleDocument } from '../shared/article-d
 import { desktopDistributionRequestSchema, type DesktopDistributionRequest, type Platform } from '../shared/protocol.js';
 import { ContentStore, type ContentItem } from './content-store.js';
 import { resolveBaijiaSettings, type PlatformOptions, type PublishingDefaults } from '../shared/platform-settings.js';
+import { writeDistributionDiagnostic } from './diagnostic-bundle.js';
 
 type DistributionExecutor = {
   ensureProject(projectId?: string): string;
@@ -35,6 +36,17 @@ function errorCode(error: unknown): string {
   return message.match(/^([A-Z][A-Z0-9_]+):/)?.[1] || 'DISTRIBUTION_FAILED';
 }
 
+function errorDetails(error: unknown): Record<string, unknown> | undefined {
+  if (!error || typeof error !== 'object' || !('details' in error)) return undefined;
+  const details = (error as { details?: unknown }).details;
+  if (!details || typeof details !== 'object') return undefined;
+  const value = details as Record<string, unknown>;
+  const selected = Object.fromEntries(['platform', 'url', 'screenshotPath', 'originalCode', 'pageTitle', 'visibleFieldCount', 'editorCandidateCount', 'loginVisible']
+    .filter((key) => value[key] !== undefined && value[key] !== null)
+    .map((key) => [key, value[key]]));
+  return Object.keys(selected).length > 0 ? selected : undefined;
+}
+
 function resultStatus(mode: 'fill' | 'publish', result: unknown): DistributionStatus {
   if (mode === 'fill') return 'filled';
   if (result && typeof result === 'object') {
@@ -47,7 +59,7 @@ function resultStatus(mode: 'fill' | 'publish', result: unknown): DistributionSt
 function resultEvidence(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== 'object') return {};
   const value = result as Record<string, unknown>;
-  return Object.fromEntries(['stage', 'message', 'url', 'screenshotPath', 'settingsScreenshotPath', 'primaryClicked', 'confirmationClicked']
+  return Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked']
     .filter((key) => value[key] !== undefined)
     .map((key) => [key, value[key]]));
 }
@@ -62,7 +74,25 @@ export class DistributionService {
     private readonly executor: DistributionExecutor,
     private readonly onRecordSaved: (record: ContentItem, source: 'desktop' | 'cli') => void = () => undefined,
     private readonly publishingDefaults: (projectId: string) => PublishingDefaults | null = () => null,
+    private readonly version = 'unknown',
   ) {}
+
+  private async attachDiagnostic(record: ContentItem): Promise<ContentItem> {
+    if (record.status === 'success' || record.status === 'filled' || record.status === 'running') return record;
+    try {
+      const diagnosticPath = await writeDistributionDiagnostic(record, this.version);
+      return await this.content.save(record.projectId, {
+        id: record.id,
+        kind: 'distribution',
+        status: record.status,
+        platform: record.platform,
+        payload: { ...record.payload, diagnosticPath },
+      });
+    } catch {
+      // A diagnostic must never turn a platform result into another failure.
+      return record;
+    }
+  }
 
   async run(rawInput: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> {
     const input = desktopDistributionRequestSchema.parse(rawInput);
@@ -125,12 +155,14 @@ export class DistributionService {
           id: record.id, kind: 'distribution', status, platform,
           payload: { ...record.payload, completedAt: new Date().toISOString(), evidence: resultEvidence(result) },
         });
+        record = await this.attachDiagnostic(record);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         record = await this.content.save(input.projectId, {
           id: record.id, kind: 'distribution', status: 'failed', platform,
-          payload: { ...record.payload, completedAt: new Date().toISOString(), error: { code: errorCode(error), message } },
+          payload: { ...record.payload, completedAt: new Date().toISOString(), error: { code: errorCode(error), message, ...(errorDetails(error) ? { details: errorDetails(error) } : {}) } },
         });
+        record = await this.attachDiagnostic(record);
       }
       this.onRecordSaved(record, 'desktop');
       records.push(record);
@@ -211,6 +243,7 @@ export class DistributionService {
         platform: rawInput.platform,
         payload: { ...record.payload, completedAt: new Date().toISOString(), evidence: resultEvidence(result) },
       });
+      record = await this.attachDiagnostic(record);
       this.onRecordSaved(record, 'cli');
       if (article && rawInput.mode === 'publish' && status === 'success') {
         await this.markArticlePublished(rawInput.projectId, article, taskId, [rawInput.platform], 'cli');
@@ -223,8 +256,9 @@ export class DistributionService {
         kind: 'distribution',
         status: 'failed',
         platform: rawInput.platform,
-        payload: { ...record.payload, completedAt: new Date().toISOString(), error: { code: errorCode(error), message } },
+        payload: { ...record.payload, completedAt: new Date().toISOString(), error: { code: errorCode(error), message, ...(errorDetails(error) ? { details: errorDetails(error) } : {}) } },
       });
+      record = await this.attachDiagnostic(record);
       this.onRecordSaved(record, 'cli');
       throw error;
     }

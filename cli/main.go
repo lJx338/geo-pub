@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.6.0-beta.8"
+var version = "0.6.0-beta.14"
 var buildMode = "production"
 
 var platforms = map[string]bool{
@@ -174,7 +174,15 @@ func run(args []string) (string, json.RawMessage, error) {
 			return command, nil, err
 		}
 		response, err := waitForDesktop(30 * time.Second)
-		return command, response, err
+		if err != nil {
+			return command, response, err
+		}
+		// `start` is the explicit "open GEO Publisher" command. The previous
+		// implementation launched with --background, which left a new desktop
+		// hidden and made an existing minimized instance ignore the
+		// second-instance event. Ask the already-ready desktop to show itself so
+		// both cases restore the window before WorkBuddy starts filling pages.
+		return call(command, controlRequest{Action: "app.show"}, defaultTimeout)
 	case "status":
 		return call(command, controlRequest{Action: "status"}, defaultTimeout)
 	case "projects":
@@ -761,13 +769,13 @@ func startDesktop() error {
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.Command("open", "-g", "-a", "GEO Publisher", "--args", "--background")
+		command = exec.Command("open", "-a", "GEO Publisher")
 	case "windows":
 		path := windowsDesktopExecutable()
 		if path == "" {
 			return &cliError{code: "DESKTOP_START_FAILED", message: "找不到 GEO Publisher.exe", suggestion: "请手动打开一次 GEO Publisher，随后 CLI 会从 discovery.json 记住实际安装位置"}
 		}
-		command = exec.Command(path, "--background")
+		command = exec.Command(path)
 	default:
 		command = exec.Command("geo-publisher-desktop")
 	}

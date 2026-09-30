@@ -21,6 +21,7 @@ export interface PenguinDraftFillResult {
   tagsApplied: string[];
   recommendedTagsDetected: boolean;
   aiDeclarationSelected: boolean;
+  declarationMode: 'ai_assisted' | 'none';
   publishButtonDetected: boolean;
   url: string;
 }
@@ -203,43 +204,105 @@ async function clickAt(webContents: WebContents, point: { x: number; y: number }
   webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(point.x), y: Math.round(point.y), button: 'left', clickCount: 1 });
 }
 
-async function ensureAiDeclaration(webContents: WebContents): Promise<boolean> {
+async function selectPenguinDeclaration(webContents: WebContents, declarationText: string): Promise<boolean> {
+  const declarationLiteral = JSON.stringify(declarationText);
+  const readAppliedState = async (): Promise<boolean> => await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const root = document.querySelector('#articlePublish-selfDeclaration');
+    if (root instanceof HTMLElement && normalize(root.textContent).includes(${declarationLiteral})) return true;
+    // The editor has changed the wrapper markup several times. Once the
+    // dialog is closed, accept a checked radio/custom radio whose label is
+    // the requested declaration even when the stable id is absent.
+    return [...document.querySelectorAll('input[type="radio"],[role="radio"],[aria-checked="true"]')]
+      .some((element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const owner = element.closest('label,li,div') || element;
+        return normalize(owner.textContent).includes(${declarationLiteral})
+          && (element instanceof HTMLInputElement ? element.checked : element.getAttribute('aria-checked') === 'true');
+      });
+  })()`);
+
   const finishOpenDialog = async (): Promise<boolean> => {
-    const clicked = await webContents.executeJavaScript(`(() => {
+    const optionClicked = await webContents.executeJavaScript(`(() => {
       const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
       const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0
-        && element.getBoundingClientRect().height > 0 && getComputedStyle(element).display !== 'none';
-      const dialog = [...document.querySelectorAll('[role="dialog"],.omui-dialog,.omui-dialog-wrapper')]
-        .filter(visible).find((element) => normalize(element.textContent).includes('发布内容自主声明')
-          && normalize(element.textContent).includes('该文章由AI辅助创作'));
+        && element.getBoundingClientRect().height > 0 && getComputedStyle(element).display !== 'none'
+        && getComputedStyle(element).visibility !== 'hidden';
+      const dialog = [...document.querySelectorAll('body *')]
+        .filter(visible)
+        .filter((element) => normalize(element.textContent).includes('发布内容自主声明')
+          && normalize(element.textContent).includes(${declarationLiteral}))
+        .filter((element) => [...element.querySelectorAll('button,[role="button"]')]
+          .some((button) => visible(button) && ['确认', '确定', '保存'].includes(normalize(button.textContent))))
+        .sort((left, right) => left.getBoundingClientRect().width * left.getBoundingClientRect().height
+          - right.getBoundingClientRect().width * right.getBoundingClientRect().height)[0];
       if (!(dialog instanceof HTMLElement)) return false;
-      const option = [...dialog.querySelectorAll('label.omui-radio,[role="radio"],.radio-item')]
-        .find((element) => normalize(element.textContent) === '该文章由AI辅助创作');
-      const input = option?.querySelector('input[type="radio"]');
+      const option = [...dialog.querySelectorAll('label,[role="radio"],input[type="radio"],button,span,div')]
+        .filter(visible)
+        .filter((element) => normalize(element.textContent) === ${declarationLiteral}
+          || (element instanceof HTMLInputElement && normalize(element.parentElement?.textContent) === ${declarationLiteral}))
+        .sort((left, right) => left.getBoundingClientRect().width * left.getBoundingClientRect().height
+          - right.getBoundingClientRect().width * right.getBoundingClientRect().height)[0];
+      if (!(option instanceof HTMLElement)) return false;
+      const input = option instanceof HTMLInputElement ? option : option.querySelector('input[type="radio"]')
+        || option.closest('label')?.querySelector('input[type="radio"]');
+      if (input instanceof HTMLInputElement) {
+        input.click();
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      } else option.click();
+      return true;
+    })()`);
+    if (!optionClicked) return false;
+    await delay(300);
+    const confirmed = await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0
+        && element.getBoundingClientRect().height > 0 && getComputedStyle(element).display !== 'none'
+        && getComputedStyle(element).visibility !== 'hidden';
+      const dialog = [...document.querySelectorAll('body *')]
+        .filter(visible)
+        .filter((element) => normalize(element.textContent).includes('发布内容自主声明')
+          && normalize(element.textContent).includes(${declarationLiteral}))
+        .filter((element) => [...element.querySelectorAll('button,[role="button"]')]
+          .some((button) => visible(button) && ['确认', '确定', '保存'].includes(normalize(button.textContent))))
+        .sort((left, right) => left.getBoundingClientRect().width * left.getBoundingClientRect().height
+          - right.getBoundingClientRect().width * right.getBoundingClientRect().height)[0];
+      if (!(dialog instanceof HTMLElement)) return false;
+      const option = [...dialog.querySelectorAll('label,[role="radio"],input[type="radio"],button,span,div')]
+        .filter(visible)
+        .filter((element) => normalize(element.textContent) === ${declarationLiteral}
+          || (element instanceof HTMLInputElement && normalize(element.parentElement?.textContent) === ${declarationLiteral}))
+        .sort((left, right) => left.getBoundingClientRect().width * left.getBoundingClientRect().height
+          - right.getBoundingClientRect().width * right.getBoundingClientRect().height)[0];
+      if (!(option instanceof HTMLElement)) return false;
+      const input = option instanceof HTMLInputElement ? option : option.querySelector('input[type="radio"]')
+        || option.closest('label')?.querySelector('input[type="radio"]');
+      const owner = input instanceof HTMLInputElement ? input.closest('label,li,div') : option;
       const selected = (input instanceof HTMLInputElement && input.checked)
-        || option?.getAttribute('aria-checked') === 'true'
-        || /checked|selected|active/.test(String(option?.className || ''));
+        || owner?.getAttribute('aria-checked') === 'true'
+        || /checked|selected|active/.test(String(owner?.className || ''));
       if (!selected) return false;
       const confirm = [...dialog.querySelectorAll('button,[role="button"]')]
-        .find((element) => visible(element) && normalize(element.textContent) === '确认');
+        .filter(visible).find((element) => ['确认', '确定', '保存'].includes(normalize(element.textContent)));
       if (!(confirm instanceof HTMLElement)) return false;
       confirm.click();
       return true;
     })()`);
-    if (!clicked) return false;
+    if (!confirmed) return false;
     await delay(900);
-    return await webContents.executeJavaScript(`(() => { const root = document.querySelector('#articlePublish-selfDeclaration'); return Boolean(root && String(root.textContent || '').replace(/\s+/g, '').includes('该文章由AI辅助创作')); })()`);
+    return await readAppliedState();
   };
 
+  if (await readAppliedState()) return true;
   if (await finishOpenDialog()) return true;
   const entry = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
     const root = document.querySelector('#articlePublish-selfDeclaration');
-    if (root && normalize(root.textContent).includes('该文章由AI辅助创作')) return { selected: true, point: null };
+    if (root && normalize(root.textContent).includes(${declarationLiteral})) return { selected: true, point: null };
     const target = [...document.querySelectorAll('button,[role="button"],label,span,div')].filter(visible)
-      .filter((element) => /添加内容自主声明|作者声明：无需标注/.test(normalize(element.textContent)))
+      .filter((element) => /添加内容自主声明|作者声明：无需标注|该文章由AI辅助创作/.test(normalize(element.textContent)))
       .sort((left, right) => left.getBoundingClientRect().width * left.getBoundingClientRect().height - right.getBoundingClientRect().width * right.getBoundingClientRect().height)[0];
     if (!(target instanceof HTMLElement)) return { selected: false, point: null };
     target.scrollIntoView({ block: 'center', inline: 'nearest' }); const rect = target.getBoundingClientRect();
@@ -248,17 +311,34 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<boolean> {
   if (entry.selected) return true;
   if (!entry.point) return false;
   await clickAt(webContents, entry.point); await delay(800);
-  const option = await webContents.executeJavaScript(`(() => {
+  await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
-    const target = [...document.querySelectorAll('label.omui-radio,[role="radio"],.radio-item')].filter(visible)
-      .find((element) => normalize(element.textContent) === '该文章由AI辅助创作');
-    if (!(target instanceof HTMLElement)) return null; const rect = target.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0
+      && element.getBoundingClientRect().height > 0 && getComputedStyle(element).display !== 'none';
+    const target = [...document.querySelectorAll('body *')].filter(visible)
+      .filter((element) => normalize(element.textContent) === ${declarationLiteral})
+      .sort((left, right) => left.getBoundingClientRect().width * left.getBoundingClientRect().height
+        - right.getBoundingClientRect().width * right.getBoundingClientRect().height)[0];
+    if (!(target instanceof HTMLElement)) return false;
+    const input = target.querySelector('input[type="radio"]') || target.closest('label')?.querySelector('input[type="radio"]');
+    if (input instanceof HTMLInputElement) {
+      input.click();
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } else target.click();
+    return true;
   })()`);
-  if (!option) return false;
-  await clickAt(webContents, option); await delay(500);
+  await delay(500);
   return await finishOpenDialog();
+}
+
+async function ensurePenguinDeclaration(webContents: WebContents): Promise<{ aiDeclarationSelected: boolean; declarationMode: 'ai_assisted' | 'none' }> {
+  if (await selectPenguinDeclaration(webContents, '该文章由AI辅助创作')) {
+    return { aiDeclarationSelected: true, declarationMode: 'ai_assisted' };
+  }
+  if (await selectPenguinDeclaration(webContents, '无需标注')) {
+    return { aiDeclarationSelected: false, declarationMode: 'none' };
+  }
+  throw new Error('PENGUIN_DECLARATION_NOT_APPLIED: AI辅助创作和无需标注均未能选择');
 }
 
 export async function fillPenguinDraft(webContents: WebContents, title: string, html: string, tags: string[]): Promise<PenguinDraftFillResult> {
@@ -267,7 +347,7 @@ export async function fillPenguinDraft(webContents: WebContents, title: string, 
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`PENGUIN_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
   if (!content.formatVerification.preserved) throw new Error(`PENGUIN_FORMAT_DEGRADED: 企鹅号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   const tagState = await applyTags(webContents, tags);
-  const aiDeclarationSelected = await ensureAiDeclaration(webContents);
+  const declaration = await ensurePenguinDeclaration(webContents);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
@@ -277,5 +357,5 @@ export async function fillPenguinDraft(webContents: WebContents, title: string, 
     return { publishButtonDetected, url: location.href };
   })()`);
   await delay(500);
-  return { ...content, tagsRequested: tagState.requested, tagsApplied: tagState.applied, recommendedTagsDetected: tagState.recommended, aiDeclarationSelected, ...finalState };
+  return { ...content, tagsRequested: tagState.requested, tagsApplied: tagState.applied, recommendedTagsDetected: tagState.recommended, ...declaration, ...finalState };
 }

@@ -1,5 +1,6 @@
-import { readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
 import { desktopDistributionRequestSchema, type ControlRequest, type DataChangeEvent, type Platform } from '../shared/protocol.js';
@@ -18,10 +19,19 @@ import { prepareWorkBuddyIntegration, prepareWorkBuddyMaterialOrganization, work
 import { DistributionService } from './distribution-service.js';
 import { runIdleMaintenance } from './maintenance.js';
 import { diagnosticError, guardProcessOutputStreams } from './diagnostics.js';
+import { exportDistributionDiagnosticBundle } from './diagnostic-bundle.js';
 
 guardProcessOutputStreams();
 app.setName('GEO Publisher');
 app.setPath('userData', dataDirectory());
+
+// Match the browser-worker runtime used by the last working release. Sohu's
+// captcha and SMS flow relies on timers and renderer activity while the page
+// is embedded in the desktop window; Chromium may otherwise throttle those
+// paths when the window is occluded or temporarily covered by the app UI.
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
 async function runDesktop(): Promise<void> {
   if (!app.requestSingleInstanceLock()) {
@@ -142,7 +152,7 @@ async function runDesktop(): Promise<void> {
   };
   const distribution = new DistributionService(content, sessions, (record, source) => {
     recordDataChange({ entity: 'content', action: 'saved', projectId: record.projectId, itemId: record.id, contentKind: record.kind, source });
-  }, (projectId) => projects.get(projectId)?.publishingDefaults ?? null);
+  }, (projectId) => projects.get(projectId)?.publishingDefaults ?? null, packageJson.version);
   const route = async (request: ControlRequest): Promise<unknown> => {
     if (request.action === 'status') return desktopStatus();
     if (request.action === 'project.list') return { projects: projects.list(), currentProject: projects.current() };
@@ -406,6 +416,21 @@ async function runDesktop(): Promise<void> {
     if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
     return status;
   });
+  ipcMain.handle('geo:platform-back', () => {
+    const status = sessions.goBack();
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
+    return status;
+  });
+  ipcMain.handle('geo:platform-forward', () => {
+    const status = sessions.goForward();
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
+    return status;
+  });
+  ipcMain.handle('geo:platform-reload', () => {
+    const status = sessions.reloadActivePlatform();
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
+    return status;
+  });
   ipcMain.handle('geo:distribution-cover-choose', async () => {
     ensureAppIdle('平台任务运行中，暂时不能选择封面');
     const result = await dialog.showOpenDialog(window, {
@@ -474,6 +499,33 @@ async function runDesktop(): Promise<void> {
     };
     clipboard.writeText(JSON.stringify(diagnostic, null, 2));
     return { copied: true as const, diagnostic };
+  });
+  ipcMain.handle('geo:diagnostic-export', async (_event, projectId: unknown, recordId: unknown) => {
+    if (typeof projectId !== 'string' || typeof recordId !== 'string') return { exported: false, message: '诊断记录编号无效' };
+    ensureCurrentContentProject(projectId);
+    const record = (await content.list(projectId, 'distribution')).find((item) => item.id === recordId);
+    if (!record) return { exported: false, message: '找不到这条分发诊断记录' };
+    window.show();
+    window.focus();
+    const choice = await dialog.showSaveDialog(window, {
+      title: '导出诊断包',
+      defaultPath: join(app.getPath('downloads'), `GEO-Publisher-${record.platform}-diagnostic.zip`),
+      filters: [{ name: 'ZIP 诊断包', extensions: ['zip'] }],
+      properties: ['createDirectory', 'showOverwriteConfirmation'],
+    });
+    if (choice.canceled || !choice.filePath) return { exported: false, message: '已取消保存' };
+    let source: string | undefined;
+    try {
+      const bundle = await exportDistributionDiagnosticBundle(record, packageJson.version);
+      source = resolve(bundle.path);
+      const temporaryRoot = `${resolve(join(tmpdir(), 'geo-publisher-diagnostic-exports'))}${sep}`;
+      if (!source.startsWith(temporaryRoot) || !source.toLowerCase().endsWith('.zip')) return { exported: false, message: '诊断包路径无效' };
+      await copyFile(source, choice.filePath);
+      shell.showItemInFolder(choice.filePath);
+      return { exported: true, path: choice.filePath };
+    } finally {
+      if (source) await rm(source, { force: true }).catch(() => undefined);
+    }
   });
   ipcMain.handle('geo:copy-text', (_event, value: string) => {
     const text = String(value || '').slice(0, 20_000);

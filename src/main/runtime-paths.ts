@@ -21,6 +21,10 @@ export function evidenceDirectory(projectId?: string): string {
   return projectId ? join(dataDirectory(), 'projects', projectId, 'evidence') : join(dataDirectory(), 'evidence');
 }
 
+export function diagnosticsDirectory(projectId?: string): string {
+  return projectId ? join(dataDirectory(), 'projects', projectId, 'diagnostics') : join(dataDirectory(), 'diagnostics');
+}
+
 export function discoveryFilePath(): string {
   return join(dataDirectory(), 'discovery.json');
 }

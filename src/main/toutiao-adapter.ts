@@ -247,40 +247,95 @@ async function setFileInput(webContents: WebContents, selector: string, filePath
     }) as { nodeId: number };
     if (!query.nodeId) throw new Error('TOUTIAO_COVER_FILE_INPUT_NOT_FOUND');
     await debuggerApi.sendCommand('DOM.setFileInputFiles', { files: [filePath], nodeId: query.nodeId });
+    // Electron's CDP command sets the FileList, but some Toutiao builds only
+    // start their upload request after the framework receives its normal DOM
+    // events. Dispatch both events on the exact input that received the file.
+    await webContents.executeJavaScript(`(() => {
+      const input = document.querySelector(${JSON.stringify(selector)});
+      // Toutiao can replace the input immediately after CDP selects the file.
+      // In that case its FileList is no longer readable even though the image
+      // has already entered the upload drawer.
+      if (!(input instanceof HTMLInputElement)) return false;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
   } finally {
     if (attachedHere && debuggerApi.isAttached()) debuggerApi.detach();
   }
 }
 
 async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
-  const target = await webContents.executeJavaScript(`(() => {
+  return await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     })();
+    // This is the actual confirmation control on Toutiao's image drawer.
+    // Its stable data-e2e attribute avoids confusing it with other dialogs.
+    const exact = document.querySelector('[data-e2e="imageUploadConfirm-btn"]');
+    if (visible(exact) && !exact.hasAttribute('disabled') && exact.getAttribute('aria-disabled') !== 'true') {
+      exact.click();
+      return true;
+    }
     const buttons = [...document.querySelectorAll('button,[role="button"]')]
       .filter(visible)
-      .filter((element) => ['确定', '完成', '使用'].includes(normalize(element.textContent)));
+      .filter((element) => ['确定', '完成', '使用'].includes(normalize(element.textContent)))
+      .filter((element) => !element.hasAttribute('disabled') && element.getAttribute('aria-disabled') !== 'true');
     const button = buttons.find((element) => {
       let parent = element.parentElement;
-      for (let depth = 0; parent && depth < 8; depth += 1, parent = parent.parentElement) {
+      for (let depth = 0; parent && parent !== document.body && depth < 18; depth += 1, parent = parent.parentElement) {
         const text = normalize(parent.textContent);
         if (text.includes('上传图片') && (text.includes('本地上传') || text.includes('已上传'))) return true;
       }
       return false;
-    }) || buttons[0];
-    if (!(button instanceof HTMLElement)) return null;
-    button.scrollIntoView({ block: 'center', inline: 'center' });
-    const rect = button.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    });
+    if (!(button instanceof HTMLElement)) return false;
+    button.click();
+    return true;
   })()`);
-  if (!target) return false;
-  webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(target.x), y: Math.round(target.y), button: 'left', clickCount: 1 });
-  await delay(700);
-  return true;
+}
+
+async function isToutiaoCoverUploadDialogOpen(webContents: WebContents): Promise<boolean> {
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    })();
+    const localUpload = [...document.querySelectorAll('button,[role="button"]')]
+      .filter(visible).some((element) => normalize(element.textContent) === '本地上传');
+    const fileInput = [...document.querySelectorAll('.upload-btn input[type="file"],input[type="file"]')]
+      .some((element) => element instanceof HTMLInputElement && visible(element.closest('button,.upload-btn,.btns-wrapper') || element));
+    return localUpload && fileInput;
+  })()`);
+}
+
+async function locateToutiaoCoverFileInput(webContents: WebContents): Promise<string> {
+  return await webContents.executeJavaScript(`(() => {
+    const marker = 'data-geo-desktop-cover-file';
+    document.querySelectorAll('[' + marker + ']').forEach((element) => element.removeAttribute(marker));
+    const candidates = [
+      ...document.querySelectorAll('.upload-btn input[type="file"]'),
+      ...document.querySelectorAll('input[type="file"]'),
+    ].filter((element, index, all) => all.indexOf(element) === index);
+    const target = candidates.find((input) => {
+      if (!(input instanceof HTMLInputElement)) return false;
+      const accept = String(input.getAttribute('accept') || '').toLowerCase();
+      return (!accept || accept.includes('image') || accept.includes('.jpg') || accept.includes('.png'))
+        && Boolean(input.closest('.upload-btn,.btn-upload-handle,.btns-wrapper'));
+    }) || candidates.find((input) => {
+      if (!(input instanceof HTMLInputElement)) return false;
+      const accept = String(input.getAttribute('accept') || '').toLowerCase();
+      return !accept || accept.includes('image') || accept.includes('.jpg') || accept.includes('.png');
+    });
+    if (!(target instanceof HTMLInputElement)) return '';
+    target.setAttribute(marker, 'true');
+    return '[' + marker + '="true"]';
+  })()`);
 }
 
 async function uploadCover(webContents: WebContents, coverPath: string): Promise<boolean> {
@@ -294,56 +349,48 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
   } catch (error) {
     throw new Error(`inspect_initial: ${error instanceof Error ? error.message : String(error)}`);
   }
-  try {
-    await collapseAssistant(webContents);
-  } catch (error) {
-    throw new Error(`collapse_assistant: ${error instanceof Error ? error.message : String(error)}`);
+  const uploadDialogOpen = await isToutiaoCoverUploadDialogOpen(webContents);
+  if (!uploadDialogOpen) {
+    try {
+      await collapseAssistant(webContents);
+    } catch (error) {
+      throw new Error(`collapse_assistant: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      await webContents.executeJavaScript(`(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')]
+        .find((element) => normalize(element.textContent) === '单图');
+      if (single instanceof HTMLElement) single.click();
+      return Boolean(single);
+    })()`);
+    } catch (error) {
+      throw new Error(`select_single: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await delay(700);
+    let opened: boolean;
+    try {
+      opened = await webContents.executeJavaScript(`(() => {
+      const visible = (element) => element instanceof HTMLElement && (() => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      })();
+      const entry = [...document.querySelectorAll('.article-cover-add')].find(visible);
+      if (!(entry instanceof HTMLElement)) return false;
+      entry.scrollIntoView({ block: 'center', inline: 'center' });
+      entry.click();
+      return true;
+    })()`);
+    } catch (error) {
+      throw new Error(`open_cover_dialog: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!opened) return false;
   }
-  try {
-    await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-    const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')]
-      .find((element) => normalize(element.textContent) === '单图');
-    if (single instanceof HTMLElement) single.click();
-    return Boolean(single);
-  })()`);
-  } catch (error) {
-    throw new Error(`select_single: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  await delay(700);
-  let opened: boolean;
-  try {
-    opened = await webContents.executeJavaScript(`(() => {
-    const visible = (element) => element instanceof HTMLElement && (() => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    })();
-    const entry = [...document.querySelectorAll('.article-cover-add')].find(visible);
-    if (!(entry instanceof HTMLElement)) return false;
-    entry.scrollIntoView({ block: 'center', inline: 'center' });
-    entry.click();
-    return true;
-  })()`);
-  } catch (error) {
-    throw new Error(`open_cover_dialog: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!opened) return false;
   let selector = '';
   for (let attempt = 0; attempt < 30 && !selector; attempt += 1) {
     try {
-      selector = await webContents.executeJavaScript(`(() => {
-      const marker = 'data-geo-desktop-cover-file';
-      document.querySelectorAll('[' + marker + ']').forEach((element) => element.removeAttribute(marker));
-      const inputs = [...document.querySelectorAll('input[type="file"]')].filter((input) => {
-        const accept = String(input.getAttribute('accept') || '').toLowerCase();
-        return !accept || accept.includes('image') || accept.includes('.jpg') || accept.includes('.png');
-      });
-      const target = inputs[0];
-      if (!(target instanceof HTMLInputElement)) return '';
-      target.setAttribute(marker, 'true');
-      return '[' + marker + '="true"]';
-    })()`);
+      selector = await locateToutiaoCoverFileInput(webContents);
     } catch (error) {
       throw new Error(`locate_file_input: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -519,6 +566,7 @@ export async function fillToutiaoDraft(
   } catch (error) {
     throw new Error(`TOUTIAO_COVER_STAGE: ${error instanceof Error ? error.message : String(error)}`);
   }
+  if (!coverUploaded) throw new Error('TOUTIAO_COVER_NOT_APPLIED: 封面上传后未确认应用状态');
   await delay(1200);
   const finalNoAdsSelected = await ensureNoAds(webContents);
   const finalAiDeclarationSelected = await ensureAiDeclaration(webContents);

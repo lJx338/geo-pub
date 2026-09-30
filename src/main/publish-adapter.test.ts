@@ -37,12 +37,44 @@ describe('publish result reconciliation', () => {
     }, '内容发布前如何减少重复修改')).toBe(true);
   });
 
+  it('recognizes a Toutiao article when the management list inserts whitespace', () => {
+    expect(isPublishSuccess('toutiao', {
+      url: 'https://mp.toutiao.com/profile_v4/graphic/articles',
+      pageTitle: '作品管理',
+      text: '食品级硅胶密封圈为什么要做二次硫化 去掉发物？ 审核中',
+    }, '食品级硅胶密封圈为什么要做二次硫化去掉发物？')).toBe(true);
+  });
+
   it('does not accept a management page without the matching title and status', () => {
     expect(isPublishSuccess('toutiao', {
       url: 'https://mp.toutiao.com/profile_v4/graphic/articles',
       pageTitle: '作品管理',
       text: '其他文章 审核中',
     }, '内容发布前如何减少重复修改')).toBe(false);
+  });
+
+  it('recognizes a Penguin article on the article management page', () => {
+    expect(isPublishSuccess('penguin', {
+      url: 'https://om.qq.com/article/articleManage',
+      pageTitle: '作品管理',
+      text: '食品级硅胶密封圈为什么要做二次硫化，去掉发物？ 审核中',
+    }, '食品级硅胶密封圈为什么要做二次硫化，去掉发物？')).toBe(true);
+  });
+
+  it('recognizes a newly accepted Penguin article while it is processing', () => {
+    expect(isPublishSuccess('penguin', {
+      url: 'https://om.qq.com/main/contentManage',
+      pageTitle: '内容管理',
+      text: '内容管理 测试连接发布流程 加工中',
+    }, '测试连接发布流程')).toBe(true);
+  });
+
+  it('does not treat the Penguin editor as a confirmed publish result', () => {
+    expect(isPublishSuccess('penguin', {
+      url: 'https://om.qq.com/main/creation/article',
+      pageTitle: '发布文章',
+      text: '食品级硅胶密封圈为什么要做二次硫化，去掉发物？ 发布成功',
+    }, '食品级硅胶密封圈为什么要做二次硫化，去掉发物？')).toBe(false);
   });
 });
 

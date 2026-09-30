@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "0.6.0-beta.8",
+  "version": "0.6.0-beta.14",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "description": "GEO Publisher desktop application with a built-in persistent browser",
@@ -9,8 +9,8 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "build:cli": "sh scripts/build-cli.sh production",
-    "build:cli:dev": "sh scripts/build-cli.sh development",
+    "build:cli": "node scripts/build-cli.mjs production",
+    "build:cli:dev": "node scripts/build-cli.mjs development",
     "dev": "npm run build && npm run build:cli && electron .",
     "pretest": "node node_modules/electron/install.js",
     "test": "vitest run",
@@ -18,12 +18,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package:mac": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release && electron-builder --mac --arm64",
     "package:win": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release && electron-builder --win --x64",
+    "package:store": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release/store && node scripts/package-store.mjs",
+    "validate:appx": "node scripts/validate-appx.mjs release/store",
     "clean:release": "node scripts/prepare-release-output.mjs release",
     "version:set": "node scripts/set-version.mjs",
     "verify": "npm run typecheck && npm test && npm run build && npm run build:cli"
   },
   "dependencies": {
     "@fontsource-variable/noto-sans-sc": "^5.3.0",
+    "@types/adm-zip": "^0.5.8",
+    "adm-zip": "^0.6.1",
     "electron-updater": "^6.8.9",
     "lucide-react": "^1.31.0",
     "react": "^19.2.8",
@@ -36,7 +40,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "cos-nodejs-sdk-v5": "^2.15.4",
-    "electron": "43.1.1",
+    "electron": "^43.1.1",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.28.1",
     "playwright": "^1.62.1",
@@ -106,6 +110,18 @@
       "target": [
         "nsis"
       ]
+    },
+    "appx": {
+      "identityName": "78707CBF.LingxiWorkspace",
+      "publisher": "CN=5C62BC82-3986-4D37-81C4-0EAF060A1A5D",
+      "publisherDisplayName": "灵犀科技",
+      "applicationId": "LingxiWorkspace",
+      "displayName": "GEO Publisher",
+      "languages": [
+        "zh-CN"
+      ],
+      "minVersion": "10.0.17763.0",
+      "maxVersionTested": "10.0.26100.0"
     },
     "nsis": {
       "oneClick": false,
