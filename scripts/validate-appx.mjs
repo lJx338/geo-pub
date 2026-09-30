@@ -38,8 +38,8 @@ assertEqual(getElementText(properties, 'PublisherDisplayName'), expectedPublishe
 assertEqual(getAttribute(application, 'Id'), expectedApplicationId, 'Application.Id');
 
 const displayName = getElementText(properties, 'DisplayName');
-if (displayName !== 'GEO Publisher') {
-  throw new Error(`Properties.DisplayName 应为 GEO Publisher，实际为 ${displayName || '(空)'}`);
+if (displayName !== 'Lingxi Workspace') {
+  throw new Error(`Properties.DisplayName 应为 Lingxi Workspace，实际为 ${displayName || '(空)'}`);
 }
 
 for (const [assetName, dimensions] of requiredAssets) {
