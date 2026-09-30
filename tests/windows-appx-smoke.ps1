@@ -63,7 +63,22 @@ try {
     Remove-Item -LiteralPath $discoveryPath -Force
   }
 
-  Add-AppxPackage -Path $signedPackage
+  Write-Host "Installing signed AppX package: $signedPackage"
+  $installJob = Start-Job -ScriptBlock {
+    param($path)
+    $ErrorActionPreference = 'Stop'
+    Add-AppxPackage -Path $path
+  } -ArgumentList $signedPackage
+  try {
+    if (-not (Wait-Job -Job $installJob -Timeout 180)) {
+      Stop-Job -Job $installJob -ErrorAction SilentlyContinue
+      throw 'Add-AppxPackage did not finish within 180 seconds'
+    }
+    Receive-Job -Job $installJob -ErrorAction Stop
+  } finally {
+    Remove-Job -Job $installJob -Force -ErrorAction SilentlyContinue
+  }
+  Write-Host 'AppX package installation completed'
   $installed = Get-AppxPackage -Name $IdentityName | Select-Object -First 1
   if (-not $installed) {
     throw "AppX package $IdentityName was not installed"
