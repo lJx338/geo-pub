@@ -45,6 +45,7 @@ try {
   Export-PfxCertificate -Cert $certificate -FilePath $pfxPath -Password $password | Out-Null
   Export-Certificate -Cert $certificate -FilePath $cerPath | Out-Null
   Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
+  Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
 
   $signature = Get-AuthenticodeSignature -FilePath $signedPackage
   if ($signature.Status -ne 'Valid') {
@@ -115,5 +116,6 @@ try {
   if ($certificate) {
     Remove-Item -Path "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
     Remove-Item -Path "Cert:\CurrentUser\TrustedPeople\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path "Cert:\CurrentUser\Root\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
   }
 }
