@@ -84,7 +84,8 @@ jobs:
             -IdentityName '78707CBF.LingxiWorkspace' `
             -Publisher 'CN=5C62BC82-3986-4D37-81C4-0EAF060A1A5D' `
             -ExpectedVersion "$env:STORE_PACKAGE_VERSION.0" `
-            -ApplicationId 'LingxiWorkspace'
+            -ApplicationId 'LingxiWorkspace' `
+            -SkipLaunch
 
       - name: Run Windows App Certification Kit when available
         shell: pwsh
@@ -103,6 +104,8 @@ jobs:
         if: always()
         with:
           name: lingxi-workspace-msix-${{ env.STORE_PACKAGE_VERSION }}
-          path: release/store/*.{appx,msix}
+          path: |
+            release/store/*.appx
+            release/store/*.msix
           if-no-files-found: error
           retention-days: 14

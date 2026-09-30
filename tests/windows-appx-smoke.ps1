@@ -12,7 +12,9 @@ param(
   [string]$ExpectedVersion,
 
   [Parameter(Mandatory = $true)]
-  [string]$ApplicationId
+  [string]$ApplicationId,
+
+  [switch]$SkipLaunch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,6 +93,12 @@ try {
   $application = @($manifest.Package.Applications.Application) | Where-Object { $_.Id -eq $ApplicationId } | Select-Object -First 1
   if (-not $application) {
     throw "Application.Id $ApplicationId was not found in the installed manifest"
+  }
+
+  if ($SkipLaunch) {
+    Write-Warning 'Skipping GUI launch and bundled CLI checks because this runner is headless.'
+    Write-Host "MSIX install smoke passed: package=$package version=$ExpectedVersion (launch skipped)"
+    return
   }
 
   $launchTarget = "shell:AppsFolder\$($installed.PackageFamilyName)!$ApplicationId"
