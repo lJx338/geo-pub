@@ -70,7 +70,7 @@ jobs:
         run: npm run package:store
 
       - name: Validate manifest and Store assets
-        run: npm run validate:appx -- release/store $env:STORE_PACKAGE_VERSION
+        run: npm run validate:appx -- $env:STORE_PACKAGE_VERSION
 
       - name: Install and launch the package in a clean runner
         shell: pwsh
