@@ -77,7 +77,14 @@ function run(argv) {
       var data = $.NSURLConnection.sendSynchronousRequestReturningResponseError(req, response, error);
       if (data.isNil()) throw new Error('Cannot connect to GEO Publisher. Open the app and retry.');
       var result = JSON.parse(utf8(data));
-      if (Number(response[0].statusCode) !== 200) throw new Error(result.error || 'Local bridge request failed');
+      // Validate the bridge's JSON envelope. JXA can expose the response out-parameter
+      // as NSURLResponse, which does not expose the HTTP subclass's statusCode accessor.
+      if (result.error) throw new Error(String(result.error));
+      if (route === '/health') {
+        if (result.ok !== true) throw new Error('Invalid bridge health response');
+      } else if (typeof result.stdout !== 'string' || typeof result.stderr !== 'string' || !Number.isInteger(result.exitCode)) {
+        throw new Error('Invalid bridge CLI response');
+      }
       return result;
     }
     var target;
