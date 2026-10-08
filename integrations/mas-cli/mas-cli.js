@@ -1,5 +1,7 @@
 /* JavaScript for Automation, using only macOS system frameworks. No Node/Python installation. */
 ObjC.import('Foundation');
+// Foundation's URL loading classes are supplied by CFNetwork on current macOS.
+ObjC.import('CFNetwork');
 ObjC.bindFunction('exit', ['void', ['int']]);
 ObjC.bindFunction('isatty', ['int', ['int']]);
 
