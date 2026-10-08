@@ -1,5 +1,7 @@
 # CI/CD 发布流程
 
+Mac App Store 使用独立的 `Build Mac App Store` 工作流；操作和沙盒验收见 [Mac App Store 构建指南](MAC-APP-STORE.md)。下面的版本标签及 COS 流程适用于原有商店外安装包。
+
 以后每次发布都使用同一个版本标签。GitHub Actions 并行构建 Windows 和 macOS，开发者电脑负责上传腾讯云 COS。禁止从 GitHub Runner 直接上传大文件到 COS。
 
 ## 对象存储结构

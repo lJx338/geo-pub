@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildWorkBuddyPrompt } from './workbuddy-integration.js';
+import { buildWorkBuddyPrompt, cliCallPrefix } from './workbuddy-integration.js';
 
 describe('WorkBuddy connection prompt', () => {
+  it('uses the supplied sandbox directory and shell client for MAS', () => {
+    expect(cliCallPrefix('/Applications/GEO Publisher.app/client', 'darwin', true, "/Users/o'neil/Library/Containers/app/Data"))
+      .toBe("env GEO_PUBLISHER_USER_DATA_DIR='/Users/o'\\''neil/Library/Containers/app/Data' /bin/sh '/Applications/GEO Publisher.app/client'");
+    expect(() => cliCallPrefix('/client', 'darwin', true)).toThrow('data directory');
+  });
   it('uses the current installation and runtime paths instead of a fixed user path', () => {
     const prompt = buildWorkBuddyPrompt({
       appPath: 'D:\\Apps\\GEO Publisher\\GEO Publisher.exe',

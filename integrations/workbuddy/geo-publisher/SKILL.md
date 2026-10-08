@@ -68,6 +68,8 @@ All materials, topics, article packages, and distribution records belong to the 
 
 ## Resolve the CLI
 
+If the user supplied the desktop's “连接 WorkBuddy” prompt, use its complete CLI call prefix for every command. For Mac App Store installations it includes `env GEO_PUBLISHER_USER_DATA_DIR=... /bin/sh ...`; preserve all of it. The app obtains the data directory from Electron's sandbox runtime. Never replace it with the non-store path below, and never run the embedded Go helper directly. The bundled client transfers input JSON and local cover/material files to the running app. Existing command names and JSON results stay the same. A connection failure does not authorize retrying a publish; inspect the platform state first.
+
 Run `geo-publisher doctor` when the command is available. Otherwise read `discovery.json` from the operating system's GEO Publisher user-data directory and invoke its `cliPath`:
 
 - macOS: resolve from the current user's `~/Library/Application Support/GEO Publisher Desktop` directory.

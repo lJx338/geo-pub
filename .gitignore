@@ -14,3 +14,8 @@ beta-invites/
 tmp/
 *.log
 .DS_Store
+*.p12
+*.pfx
+*.provisionprofile
+*.mobileprovision
+*.dpapi

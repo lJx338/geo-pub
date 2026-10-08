@@ -170,6 +170,9 @@ func run(args []string) (string, json.RawMessage, error) {
 	case "platforms":
 		return command, platformOverview(), nil
 	case "start":
+		if os.Getenv("GEO_PUBLISHER_MAS") == "1" {
+			return call(command, controlRequest{Action: "app.show"}, defaultTimeout)
+		}
 		if err := startDesktop(); err != nil {
 			return command, nil, err
 		}
@@ -1054,6 +1057,9 @@ func validDiscoveredControlEndpoint(endpoint string) bool {
 }
 
 func validDiscoveredControlEndpointForOS(endpoint string, goos string) bool {
+	if _, valid := loopbackAddress(endpoint); valid {
+		return true
+	}
 	var key string
 	if goos == "windows" {
 		key = strings.TrimPrefix(endpoint, `\\.\pipe\geo-publisher-`)

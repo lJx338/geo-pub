@@ -230,7 +230,7 @@ func TestValidateDoesNotContactDesktop(t *testing.T) {
 	if err := os.WriteFile(cover, []byte("image"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"toutiao","document":{"title":"正常标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"`+cover+`"}`))
+	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"toutiao","document":{"title":"正常标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":`+string(mustJSON(cover))+`}`))
 	if err != nil {
 		t.Fatal(err)
 	}

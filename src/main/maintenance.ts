@@ -1,7 +1,7 @@
 import { readdir, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { dataDirectory } from './runtime-paths.js';
+import { dataDirectory, isMacAppStoreRuntime } from './runtime-paths.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -62,6 +62,6 @@ export async function runIdleMaintenance(now = Date.now()): Promise<{ evidence: 
     : process.platform === 'win32'
       ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'geo-publisher-desktop-updater')
       : join(dataDirectory(), 'updater-cache');
-  const updater = await removeOlderThan(await walkFiles(updaterRoot), now - 7 * DAY);
+  const updater = isMacAppStoreRuntime() ? 0 : await removeOlderThan(await walkFiles(updaterRoot), now - 7 * DAY);
   return { evidence, temporary, updater, cliVersions: await cleanOldCliVersions() };
 }

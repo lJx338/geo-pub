@@ -1,0 +1,35 @@
+"""Run on the macOS runner after electron-builder, before uploading any artifact."""
+import os
+from pathlib import Path
+import plistlib
+import subprocess
+
+root = Path('release/mas')
+apps = list(root.glob('mas*/GEO Publisher.app'))
+assert len(apps) == 1, 'Expected exactly one MAS application'
+app = apps[0]
+helper = app / 'Contents/Resources/cli/geo-publisher-darwin-arm64'
+info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+assert info['CFBundleIdentifier'] == 'com.lingxi.geo-publisher'
+assert info['CFBundleShortVersionString'] == os.environ['MAS_APP_VERSION']
+assert info['CFBundleVersion'] == os.environ['MAS_BUILD_NUMBER']
+assert info['ElectronTeamID'] == 'F8X7472LW9'
+assert (app / 'Contents/embedded.provisionprofile').exists()
+for path in [app, helper]:
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(path)], check=True)
+    result = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(path)], check=True, capture_output=True)
+    entitlement_bytes = result.stdout if b'<plist' in result.stdout else result.stderr
+    start = entitlement_bytes.find(b'<?xml')
+    end = entitlement_bytes.find(b'</plist>') + len(b'</plist>')
+    rights = plistlib.loads(entitlement_bytes[start:end])
+    assert rights.get('com.apple.security.app-sandbox') is True, 'Missing sandbox entitlement'
+    assert not rights.get('com.apple.security.get-task-allow'), 'Debug entitlement in release'
+    if path == helper:
+        assert rights.get('com.apple.security.inherit') is True, 'CLI must inherit app sandbox'
+    else:
+        assert rights.get('com.apple.security.network.client') and rights.get('com.apple.security.network.server')
+packages = list(root.rglob('*.pkg'))
+assert len(packages) == 1, 'Expected one signed installer'
+result = subprocess.check_output(['pkgutil', '--check-signature', str(packages[0])], text=True)
+assert '3rd Party Mac Developer Installer:' in result and 'F8X7472LW9' in result, 'Wrong installer identity'
+print('Bundle ID, versions, app/helper sandbox signatures and installer signature verified.')

@@ -17,6 +17,7 @@
     "test:e2e": "npm run build && npm run build:cli && npm run build:cli:dev && node tests/electron-smoke.mjs && node tests/background-start-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package:mac": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release && electron-builder --mac --arm64",
+    "package:mas": "node scripts/package-mas.mjs",
     "package:win": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release && electron-builder --win --x64",
     "package:store": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release/store && node scripts/package-store.mjs",
     "validate:appx": "node scripts/validate-appx.mjs release/store",

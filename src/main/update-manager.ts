@@ -21,8 +21,12 @@ export function updatePlatformKey(platform = process.platform, arch = process.ar
   return null;
 }
 
-export function isStoreManagedRuntime(platform = process.platform, windowsStore = process.windowsStore): boolean {
-  return platform === 'win32' && windowsStore === true;
+export function isStoreManagedRuntime(platform = process.platform, windowsStore = process.windowsStore, mas = process.mas): boolean {
+  return (platform === 'win32' && windowsStore === true) || (platform === 'darwin' && mas === true);
+}
+
+function storeUpdateMessage(): string {
+  return process.mas === true ? '苹果商店版由 App Store 管理更新' : '微软商店版由 Microsoft Store 管理更新';
 }
 
 export function updateFeedUrl(
@@ -55,7 +59,7 @@ export class UpdateManager {
     private readonly isBusy: () => boolean,
     private readonly onChange: (status: UpdateStatus) => void,
   ) {
-    this.channel = this.readChannel(currentVersion);
+    this.channel = isStoreManagedRuntime() ? 'stable' : this.readChannel(currentVersion);
     const storeManaged = isStoreManagedRuntime();
     this.status = {
       phase: app.isPackaged && !storeManaged ? 'idle' : 'disabled',
@@ -66,7 +70,7 @@ export class UpdateManager {
       message: !app.isPackaged
         ? '开发模式不检查更新'
         : storeManaged
-          ? '微软商店版由 Microsoft Store 管理更新'
+          ? storeUpdateMessage()
           : '等待检查更新',
       checkedAt: null,
       canRestart: false,
@@ -100,7 +104,7 @@ export class UpdateManager {
 
   async activateBeta(code: string): Promise<BetaActivationResult> {
     if (isStoreManagedRuntime()) {
-      return { accepted: false, enabled: false, message: '微软商店版由 Microsoft Store 管理更新，不能切换 COS 灰度通道', update: this.getStatus() };
+      return { accepted: false, enabled: false, message: `${storeUpdateMessage()}，不能切换 COS 灰度通道`, update: this.getStatus() };
     }
     const normalized = code.trim().toUpperCase();
     if (!/^BETA-[A-Z0-9]{6,32}$/.test(normalized)) {
@@ -122,7 +126,7 @@ export class UpdateManager {
 
   deactivateBeta(): BetaActivationResult {
     if (isStoreManagedRuntime()) {
-      return { accepted: false, enabled: false, message: '微软商店版由 Microsoft Store 管理更新，不能切换 COS 灰度通道', update: this.getStatus() };
+      return { accepted: false, enabled: false, message: `${storeUpdateMessage()}，不能切换 COS 灰度通道`, update: this.getStatus() };
     }
     try {
       writeFileSync(this.channelPath, JSON.stringify({ channel: 'stable', deactivatedAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
@@ -155,7 +159,7 @@ export class UpdateManager {
   }
 
   install(): { accepted: boolean; message: string } {
-    if (isStoreManagedRuntime()) return { accepted: false, message: '微软商店版由 Microsoft Store 管理更新' };
+    if (isStoreManagedRuntime()) return { accepted: false, message: storeUpdateMessage() };
     if (this.status.phase !== 'downloaded') return { accepted: false, message: '尚未下载可安装的更新' };
     if (this.isBusy()) return { accepted: false, message: '发布任务正在运行，任务完成后才能重启安装' };
     setImmediate(() => autoUpdater.quitAndInstall(true, true));

@@ -2,7 +2,27 @@ import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+let sandboxUserData: string | undefined;
+let activeControlEndpoint: string | undefined;
+
+export function isMacAppStoreRuntime(): boolean {
+  return process.platform === 'darwin' && process.mas === true;
+}
+
+/** Call before constructing stores. The path must come from Electron, not a guessed container name. */
+export function configureSandboxUserData(path: string): void {
+  sandboxUserData = path;
+}
+
+export function setActiveControlEndpoint(endpoint: string | undefined): void {
+  activeControlEndpoint = endpoint;
+}
+
 export function dataDirectory(): string {
+  if (isMacAppStoreRuntime()) {
+    if (!sandboxUserData) throw new Error('Mac App Store data directory has not been initialized');
+    return sandboxUserData;
+  }
   if (process.env.GEO_PUBLISHER_USER_DATA_DIR) return process.env.GEO_PUBLISHER_USER_DATA_DIR;
   if (process.platform === 'win32') {
     return join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'GEO Publisher Desktop');
@@ -43,6 +63,7 @@ export function integrationsDirectory(): string {
 }
 
 export function controlEndpoint(): string {
+  if (isMacAppStoreRuntime()) return activeControlEndpoint || 'tcp://127.0.0.1:0';
   if (process.env.GEO_PUBLISHER_CONTROL_ENDPOINT) return process.env.GEO_PUBLISHER_CONTROL_ENDPOINT;
   const userKey = createHash('sha256').update(homedir()).digest('hex').slice(0, 12);
   if (process.platform === 'win32') return `\\\\.\\pipe\\geo-publisher-${userKey}`;

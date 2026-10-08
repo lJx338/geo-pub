@@ -1,0 +1,68 @@
+name: Build Mac App Store
+
+on:
+  push:
+    branches: [codex/mas-workbuddy]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'App Store Connect 中的 macOS 版本号，例如 1.0'
+        required: true
+        default: '1.0'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mas:
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      MAS_APP_VERSION: ${{ inputs.version || '1.0' }}
+      MAS_BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+      GEO_BUILD_VERSION: ${{ inputs.version || '1.0' }}
+      MAS_PROFILE_PATH: ${{ runner.temp }}/lingxi-mas.provisionprofile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - name: Validate signing inputs
+        env:
+          MAS_CSC_LINK: ${{ secrets.MAS_CSC_LINK }}
+          MAS_CSC_KEY_PASSWORD: ${{ secrets.MAS_CSC_KEY_PASSWORD }}
+          MAS_CSC_INSTALLER_LINK: ${{ secrets.MAS_CSC_INSTALLER_LINK }}
+          MAS_CSC_INSTALLER_KEY_PASSWORD: ${{ secrets.MAS_CSC_INSTALLER_KEY_PASSWORD }}
+          MAS_PROVISIONING_PROFILE: ${{ secrets.MAS_PROVISIONING_PROFILE }}
+        run: python3 scripts/prepare-mas-profile.py
+      - run: npm ci
+      - run: npm run typecheck
+      - run: go test ./...
+        working-directory: cli
+      - run: npm run build
+      - run: npm run build:cli
+      - run: npm test
+      - name: Build signed store package
+        run: npm run package:mas
+        env:
+          CSC_LINK: ${{ secrets.MAS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAS_CSC_KEY_PASSWORD }}
+          CSC_INSTALLER_LINK: ${{ secrets.MAS_CSC_INSTALLER_LINK }}
+          CSC_INSTALLER_KEY_PASSWORD: ${{ secrets.MAS_CSC_INSTALLER_KEY_PASSWORD }}
+      - name: Verify package and embedded helper
+        run: python3 scripts/verify-mas-package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lingxi-Workspace-MAS-${{ inputs.version || '1.0' }}-${{ github.run_number }}
+          path: release/mas/**/*.pkg
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove temporary profile
+        if: always()
+        run: python3 -c 'import os; from pathlib import Path; Path(os.environ["MAS_PROFILE_PATH"]).unlink(missing_ok=True)'

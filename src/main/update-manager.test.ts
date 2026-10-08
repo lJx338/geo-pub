@@ -18,6 +18,11 @@ describe('update feed platform selection', () => {
     expect(isStoreManagedRuntime('darwin', true)).toBe(false);
   });
 
+  it('keeps Mac App Store updates out of the COS updater while preserving DMG updates', () => {
+    expect(isStoreManagedRuntime('darwin', false, true)).toBe(true);
+    expect(isStoreManagedRuntime('darwin', false, false)).toBe(false);
+  });
+
   it('keeps prerelease builds on beta and production builds on stable', () => {
     expect(updateChannelForVersion('0.1.0-beta.1')).toBe('beta');
     expect(updateChannelForVersion('0.1.0-alpha.2')).toBe('beta');

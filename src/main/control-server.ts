@@ -1,8 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import { rm } from 'node:fs/promises';
-import { createServer, type Server, type Socket } from 'node:net';
+import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 import { controlRequestSchema, type ControlRequest, type ControlResponse } from '../shared/protocol.js';
-import { controlEndpoint } from './runtime-paths.js';
+import { controlEndpoint, setActiveControlEndpoint } from './runtime-paths.js';
 import { AttentionRequiredError } from './attention-required.js';
 
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
@@ -15,38 +15,56 @@ export function errorCodeForMessage(message: string): string {
 
 export class ControlServer {
   private server: Server | null = null;
+  private endpoint: string | null = null;
+  private readonly sockets = new Set<Socket>();
 
   constructor(private readonly token: string, private readonly handler: ControlHandler) {}
 
   async start(): Promise<string> {
     const endpoint = controlEndpoint();
-    if (process.platform !== 'win32') await rm(endpoint, { force: true });
+    const tcp = endpoint === 'tcp://127.0.0.1:0';
+    if (!tcp && process.platform !== 'win32') await rm(endpoint, { force: true });
     this.server = createServer((socket) => this.handleSocket(socket));
+    this.server.maxConnections = 32;
     await new Promise<void>((resolve, reject) => {
       this.server?.once('error', reject);
-      this.server?.listen(endpoint, () => resolve());
+      if (tcp) this.server?.listen(0, '127.0.0.1', () => resolve());
+      else this.server?.listen(endpoint, () => resolve());
     });
-    return endpoint;
+    this.endpoint = tcp ? `tcp://127.0.0.1:${(this.server.address() as AddressInfo).port}` : endpoint;
+    if (tcp) setActiveControlEndpoint(this.endpoint);
+    return this.endpoint;
   }
 
   async stop(): Promise<void> {
     const server = this.server;
     this.server = null;
+    for (const socket of this.sockets) socket.destroy();
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (process.platform !== 'win32') await rm(controlEndpoint(), { force: true });
+    if (this.endpoint && !this.endpoint.startsWith('tcp://') && process.platform !== 'win32') await rm(this.endpoint, { force: true });
+    if (this.endpoint?.startsWith('tcp://')) setActiveControlEndpoint(undefined);
+    this.endpoint = null;
   }
 
   private handleSocket(socket: Socket): void {
+    this.sockets.add(socket);
+    socket.once('close', () => this.sockets.delete(socket));
+    socket.on('error', () => socket.destroy());
+    socket.setTimeout(300_000, () => socket.destroy());
     socket.setEncoding('utf8');
     let input = '';
+    let handled = false;
     socket.on('data', (chunk: string) => {
+      if (handled) return;
       input += chunk;
       if (Buffer.byteLength(input, 'utf8') > MAX_REQUEST_BYTES) {
+        handled = true;
         this.reply(socket, { id: 'unknown', ok: false, error: { code: 'REQUEST_TOO_LARGE', message: '请求体超过 5MB' } });
         return;
       }
       const newline = input.indexOf('\n');
       if (newline < 0) return;
+      handled = true;
       const line = input.slice(0, newline);
       input = '';
       void this.processLine(socket, line);

@@ -1,0 +1,4 @@
+#!/bin/sh
+# WorkBuddy runs this bundled text client. Only the sandboxed app launches the signed Go helper.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec /usr/bin/osascript -l JavaScript "$script_dir/mas-cli.js" "$script_dir" "$@"

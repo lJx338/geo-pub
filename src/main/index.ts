@@ -3,16 +3,18 @@ import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
+import { persistSandboxFile } from './sandbox-imports.js';
 import { desktopDistributionRequestSchema, type ControlRequest, type DataChangeEvent, type Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
-import { installBundledCli } from './cli-installer.js';
+import { bundledCliPath, installBundledCli } from './cli-installer.js';
+import { MasCliBridge } from './mas-cli-bridge.js';
 import { ControlServer } from './control-server.js';
 import { createDiscoveryRecord, writeDiscoveryRecord } from './discovery.js';
 import { PlatformSessions } from './platform-sessions.js';
 import { ProjectStore, type ProjectInput } from './project-store.js';
 import { ContentStore, type ContentKind, type ContentInput, type ContentFilter } from './content-store.js';
 import { DataChangeTracker } from './data-change.js';
-import { dataDirectory } from './runtime-paths.js';
+import { configureSandboxUserData, dataDirectory, isMacAppStoreRuntime } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
 import { UpdateManager } from './update-manager.js';
 import { prepareWorkBuddyIntegration, prepareWorkBuddyMaterialOrganization, workBuddyIntegrationStatus } from './workbuddy-integration.js';
@@ -23,7 +25,9 @@ import { exportDistributionDiagnosticBundle } from './diagnostic-bundle.js';
 
 guardProcessOutputStreams();
 app.setName('GEO Publisher');
-app.setPath('userData', dataDirectory());
+if (isMacAppStoreRuntime()) configureSandboxUserData(app.getPath('userData'));
+else app.setPath('userData', dataDirectory());
+const appVersion = isMacAppStoreRuntime() ? app.getVersion() : packageJson.version;
 
 // Match the browser-worker runtime used by the last working release. Sohu's
 // captcha and SMS flow relies on timers and renderer activity while the page
@@ -44,7 +48,7 @@ async function runDesktop(): Promise<void> {
   await projects.load();
   const content = new ContentStore();
   const dataChanges = new DataChangeTracker();
-  const cliPath = await installBundledCli(packageJson.version).catch((error) => {
+  const cliPath = await installBundledCli(appVersion).catch((error) => {
     diagnosticError(`Failed to install bundled CLI: ${error instanceof Error ? error.stack || error.message : String(error)}`);
     return null;
   });
@@ -81,13 +85,13 @@ async function runDesktop(): Promise<void> {
   };
   let closingForUpdate = false;
   let distributionRunning = false;
-  const sessions = new PlatformSessions(window, packageJson.version, (attention) => {
+  const sessions = new PlatformSessions(window, appVersion, (attention) => {
     if (!window.isDestroyed()) window.webContents.send('geo:attention-required', attention);
   }, () => {
     if (!window.isDestroyed()) window.webContents.send('geo:status-changed', { ...sessions.status(), busy: sessions.isBusy() || distributionRunning, cliPath, currentProject: projects.current() });
   });
   if (projects.current()) await sessions.selectProject(projects.current()!.id);
-  const updateManager = new UpdateManager(packageJson.version, () => sessions.isBusy() || distributionRunning, (status) => {
+  const updateManager = new UpdateManager(appVersion, () => sessions.isBusy() || distributionRunning, (status) => {
     if (status.phase === 'error') closingForUpdate = false;
     if (!window.isDestroyed()) window.webContents.send('geo:update-status-changed', status);
   });
@@ -152,7 +156,7 @@ async function runDesktop(): Promise<void> {
   };
   const distribution = new DistributionService(content, sessions, (record, source) => {
     recordDataChange({ entity: 'content', action: 'saved', projectId: record.projectId, itemId: record.id, contentKind: record.kind, source });
-  }, (projectId) => projects.get(projectId)?.publishingDefaults ?? null, packageJson.version);
+  }, (projectId) => projects.get(projectId)?.publishingDefaults ?? null, appVersion);
   const route = async (request: ControlRequest): Promise<unknown> => {
     if (request.action === 'status') return desktopStatus();
     if (request.action === 'project.list') return { projects: projects.list(), currentProject: projects.current() };
@@ -262,9 +266,17 @@ async function runDesktop(): Promise<void> {
     throw new Error('不支持的控制命令');
   };
 
-  const controlServer = new ControlServer(await loadOrCreateControlToken(), route);
-  await controlServer.start();
-  await writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPath, true));
+  const token = await loadOrCreateControlToken();
+  const controlServer = new ControlServer(token, route);
+  const endpoint = await controlServer.start();
+  await writeDiscoveryRecord(createDiscoveryRecord(appVersion, cliPath, true));
+  let masBridge: MasCliBridge | undefined;
+  if (isMacAppStoreRuntime()) {
+    const helper = bundledCliPath();
+    if (!helper || !cliPath) throw new Error('Mac App Store CLI is missing');
+    masBridge = new MasCliBridge({ token, dataDir: dataDirectory(), helper, endpoint });
+    await masBridge.start();
+  }
 
   ipcMain.handle('geo:status', desktopStatus);
   ipcMain.handle('geo:projects-list', () => ({ projects: projects.list(), currentProject: projects.current() }));
@@ -437,7 +449,12 @@ async function runDesktop(): Promise<void> {
       title: '选择文章封面', properties: ['openFile'],
       filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
     });
-    return { canceled: result.canceled, filePath: result.filePaths[0] || '' };
+    let filePath = result.filePaths[0] || '';
+    if (filePath && isMacAppStoreRuntime()) {
+      // The file picker grants access for this session. Keep a copy for later publishing/restarts.
+      filePath = await persistSandboxFile(dataDirectory(), await readFile(filePath), filePath);
+    }
+    return { canceled: result.canceled, filePath };
   });
   ipcMain.handle('geo:distribution-run', async (_event, rawInput: unknown) => {
     ensureAppIdle('已有任务正在执行，请等待完成');
@@ -481,7 +498,7 @@ async function runDesktop(): Promise<void> {
     const currentUpdate = updateManager.getStatus();
     const diagnostic = {
       generatedAt: new Date().toISOString(),
-      app: { version: packageJson.version, platform: process.platform, arch: process.arch, packaged: app.isPackaged },
+      app: { version: appVersion, platform: process.platform, arch: process.arch, packaged: app.isPackaged },
       cli: { installed: Boolean(cliPath), profile: 'production' as const },
       publisher: {
         ready: publisher.ready,
@@ -516,7 +533,7 @@ async function runDesktop(): Promise<void> {
     if (choice.canceled || !choice.filePath) return { exported: false, message: '已取消保存' };
     let source: string | undefined;
     try {
-      const bundle = await exportDistributionDiagnosticBundle(record, packageJson.version);
+      const bundle = await exportDistributionDiagnosticBundle(record, appVersion);
       source = resolve(bundle.path);
       const temporaryRoot = `${resolve(join(tmpdir(), 'geo-publisher-diagnostic-exports'))}${sep}`;
       if (!source.startsWith(temporaryRoot) || !source.toLowerCase().endsWith('.zip')) return { exported: false, message: '诊断包路径无效' };
@@ -555,8 +572,8 @@ async function runDesktop(): Promise<void> {
     updateManager.stop();
     void Promise.all([
       sessions.flushStorage(),
-      controlServer.stop(),
-      writeDiscoveryRecord(createDiscoveryRecord(packageJson.version, cliPath, false)),
+      (async () => { await masBridge?.stop(); await controlServer.stop(); })(),
+      writeDiscoveryRecord(createDiscoveryRecord(appVersion, cliPath, false)),
     ])
       .finally(() => {
         sessions.dispose();

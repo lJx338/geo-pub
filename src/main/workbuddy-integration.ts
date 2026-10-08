@@ -1,8 +1,18 @@
 import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { app, clipboard, shell } from 'electron';
 import type { WorkBuddyIntegrationStatus } from '../shared/protocol.js';
-import { cliExecutablePath, integrationsDirectory } from './runtime-paths.js';
+import { cliExecutablePath, dataDirectory, integrationsDirectory, isMacAppStoreRuntime } from './runtime-paths.js';
+
+export function cliCallPrefix(cliPath: string, platform = process.platform, mas = isMacAppStoreRuntime(), userData = ''): string {
+  if (platform === 'win32') return `& '${cliPath.replaceAll("'", "''")}'`;
+  const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+  if (mas) {
+    if (!userData) throw new Error('Missing Mac App Store user data directory');
+    return `env GEO_PUBLISHER_USER_DATA_DIR=${quote(userData)} /bin/sh ${quote(cliPath)}`;
+  }
+  return quote(cliPath);
+}
 
 const WORKBUDDY_SKILLS = ['geo-publisher', 'geo-customer-profile', 'geo-topic-planner', 'geo-article-writer', 'geo-material-organizer'] as const;
 
@@ -35,12 +45,12 @@ export function buildWorkBuddyPrompt(options: {
   materialSkillPath: string;
   platform?: NodeJS.Platform;
   arch?: string;
+  mas?: boolean;
+  userData?: string;
 }): string {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
-  const quotedCli = platform === 'win32'
-    ? `& '${options.cliPath.replaceAll("'", "''")}'`
-    : `'${options.cliPath.replaceAll("'", `'\\''`)}'`;
+  const quotedCli = cliCallPrefix(options.cliPath, platform, options.mas ?? false, options.userData);
   return [
     '请从下面五个独立目录安装并启用本机 GEO Publisher 的五个 Skill；不要把它们合并成一个 Skill。',
     '以下路径由当前安装自动生成，仅适用于这台电脑；不要替换成其他电脑的路径：',
@@ -54,7 +64,8 @@ export function buildWorkBuddyPrompt(options: {
     `CLI 调用前缀：${quotedCli}`,
     `系统与架构：${platform} / ${arch}`,
     '只允许使用上述 production CLI；不要查找或调用 geo-publisher-dev、.dev-cli 或开发诊断命令。',
-    'CLI 路径可能包含空格。执行时必须把完整路径作为一个可执行文件参数；Windows PowerShell 必须保留开头的 & 和引号。',
+    '必须原样使用完整 CLI 调用前缀，再追加命令；不要省略前缀中的环境变量、/bin/sh、& 或引号，不要改为直接执行安装包里的 Go 二进制文件。',
+    'Windows PowerShell 必须保留开头的 & 和引号。',
     'Windows 首次调用请只做一次连通性检查：& \'<CLI 位置>\' doctor --json；必须看到 JSON 且包含 ok 或 command 字段后才能继续。若 PowerShell 工具只回显 powershell 路径、没有 JSON 输出，不要重复执行同一条命令，也不要判定 CLI 损坏；改用 cmd.exe /d /s /c \'"<CLI 位置>" doctor --json\'，或使用 Git Bash 调用同一个完整 CLI 路径，并继续核对 JSON 返回。',
     '不要把 CLI 路径拆成多个参数，不要用 Start-Process 丢失标准输出，也不要把 PowerShell 路径本身当作 CLI 返回。每条命令都必须捕获 stdout、stderr 和退出码；退出码非 0 或无效 JSON 才报告 CLI_EXECUTION_ERROR。',
     '安装时分别完整读取五个目录中的 SKILL.md，并保留每个目录内的 agents 与 references；以后按用户意图调用对应 Skill。',
@@ -69,6 +80,7 @@ export function buildWorkBuddyPrompt(options: {
 }
 
 function currentApplicationPath(): string {
+  if (app.isPackaged && process.platform === 'darwin') return resolve(process.execPath, '../../..');
   // On packaged Windows builds app.getAppPath() resolves inside app.asar.
   // WorkBuddy needs the executable path the customer actually installed.
   return app.isPackaged && process.platform === 'win32' ? process.execPath : app.getAppPath();
@@ -117,6 +129,8 @@ export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCl
     topicSkillPath: targets['geo-topic-planner'],
     articleSkillPath: targets['geo-article-writer'],
     materialSkillPath: targets['geo-material-organizer'],
+    mas: isMacAppStoreRuntime(),
+    userData: dataDirectory(),
   });
   const promptPath = join(directory, 'CONNECT-WORKBUDDY.txt');
   await writeFile(promptPath, `${prompt}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -131,9 +145,7 @@ export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCl
 export async function prepareWorkBuddyMaterialOrganization(activeCliPath: string | null = null): Promise<WorkBuddyIntegrationStatus & { prompt: string }> {
   const cliPath = activeCliPath || cliExecutablePath();
   const prepared = await prepareWorkBuddyIntegration(false, cliPath);
-  const quotedCli = process.platform === 'win32'
-    ? `& '${cliPath.replaceAll("'", "''")}'`
-    : `'${cliPath.replaceAll("'", `'\\''`)}'`;
+  const quotedCli = cliCallPrefix(cliPath, process.platform, isMacAppStoreRuntime(), dataDirectory());
   const prompt = [
     '请使用 geo-material-organizer Skill 整理 GEO Publisher 当前客户项目中所有待整理图片。',
     `Skill 路径：${prepared.materialSkillPath}`,

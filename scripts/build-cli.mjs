@@ -8,6 +8,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(root, 'dist', 'cli');
 const developmentOutput = join(root, '.dev-cli');
 const mode = process.argv[2] || 'production';
+const requestedVersion = process.env.GEO_BUILD_VERSION || packageJson.version;
+const version = /^\d+\.\d+$/.test(requestedVersion) ? `${requestedVersion}.0` : requestedVersion;
+if (!/^\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Invalid CLI version');
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -30,7 +33,7 @@ async function build(targetOutput, buildMode, names) {
   await run('go', ['mod', 'download'], { cwd: join(root, 'cli') });
   for (const target of targets) {
     const environment = { ...process.env, GOOS: target.os, GOARCH: target.arch };
-    const flags = `-s -w -X main.version=${packageJson.version} -X main.buildMode=${buildMode}`;
+    const flags = `-s -w -X main.version=${version} -X main.buildMode=${buildMode}`;
     await run('go', ['build', '-trimpath', `-ldflags=${flags}`, '-o', join(targetOutput, names(target))], {
       cwd: join(root, 'cli'),
       env: environment,
