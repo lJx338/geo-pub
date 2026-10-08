@@ -2,7 +2,7 @@ name: Build Mac App Store
 
 on:
   push:
-    branches: [codex/mas-workbuddy]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:

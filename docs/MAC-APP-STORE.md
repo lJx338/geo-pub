@@ -8,8 +8,7 @@ Bundle ID：`com.lingxi.geo-publisher`；Apple Team ID：`F8X7472LW9`。
 
 Windows 负责修改代码和操作网页，GitHub 的 macOS runner 负责生成并签名 `.pkg`。
 
-1. 将本次 MAS 代码和 `.github/workflows/build-mas.yml` 提交到仓库。首次在 GitHub 网页显示手动工作流，需要工作流文件已进入默认分支。
-   初次接入阶段，推送 `codex/mas-workbuddy` 分支会按 `build/store-version.json` 中的商店版本自动构建，便于在合并前验证。
+1. 将 MAS 代码和 `.github/workflows/build-mas.yml` 提交到主分支。推送 `v*` 版本标签（例如 `v0.6.1`）会按 `build/store-version.json` 中的商店版本自动构建。
 2. 打开 [GitHub Actions](https://github.com/lJx338/geo-pub/actions)，选择 **Build Mac App Store**。
 3. 点击 **Run workflow**，选择代码分支，版本留空使用两家商店共用的 `build/store-version.json`。App Store Connect 的待提交版本必须与此一致。
 4. 等待全部步骤成功。脚本会检查 profile、运行测试、打包、检查应用和 CLI 的沙盒签名、检查安装器签名。
@@ -70,7 +69,7 @@ Windows 上的测试和云端签名检查不能代替沙盒中的实际运行测
 ## 版本说明
 
 两家商店共用 `build/store-version.json` 中的三段版本，目前为 `1.0.13`：苹果商店版本是 `1.0.13`，Windows 商店包版本是 `1.0.13.0`（第四段固定为 0）。
-App Store Connect 原来的 `1.0` 待提交版本需要改为 `1.0.13`，才能匹配新的苹果安装包。新的编号按本地现有 Windows 包 `1.0.12.0` 递增；若微软后台已经发布更高版本，提交前必须相应提高共用版本。
+App Store Connect 原来的 `1.0` 待提交版本需要改为 `1.0.13`，才能匹配新的苹果安装包。微软商店当前线上版本已确认为 `1.0.12.0`（2026-10-08），本次 Windows 包按此递增。
 程序界面、诊断信息和 Go CLI 都跟随项目 `package.json` 中的版本，目前为 `0.6.1`；与 Windows 的程序内部版本保持一致。苹果安装包内的 `package.json` 也保留此版本。
 苹果安装包文件名使用项目版本，例如 `Lingxi-Workspace-0.6.1-mas-7.1-arm64.pkg`。苹果构建号由 Actions 运行编号和重跑次数生成，避免同一构建号重复上传。
 升级产品版本使用 `npm run version:set -- 0.6.1` 同步应用、CLI 和 Skill；升级两家商店版本修改共用配置。云端会同时检查商店版本和内部版本，防止混用。
