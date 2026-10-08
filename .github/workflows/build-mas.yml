@@ -21,7 +21,6 @@ jobs:
     env:
       MAS_APP_VERSION: ${{ inputs.version || '1.0' }}
       MAS_BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
-      GEO_BUILD_VERSION: ${{ inputs.version || '1.0' }}
       MAS_PROFILE_PATH: /tmp/lingxi-mas.provisionprofile
     steps:
       - uses: actions/checkout@v4

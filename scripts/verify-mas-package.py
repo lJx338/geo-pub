@@ -1,4 +1,5 @@
 """Run on the macOS runner after electron-builder, before uploading any artifact."""
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -15,6 +16,13 @@ assert info['CFBundleShortVersionString'] == os.environ['MAS_APP_VERSION']
 assert info['CFBundleVersion'] == os.environ['MAS_BUILD_NUMBER']
 assert info['ElectronTeamID'] == 'F8X7472LW9'
 assert (app / 'Contents/embedded.provisionprofile').exists()
+source_version = json.loads(Path('package.json').read_text())['version']
+packed_metadata = json.loads(subprocess.check_output([
+    'node', '-e',
+    "process.stdout.write(require('@electron/asar').extractFile(process.argv[1], 'package.json'))",
+    str(app / 'Contents/Resources/app.asar'),
+], text=True))
+assert packed_metadata['version'] == source_version, 'Store version must not replace the internal product version'
 for path in [app, helper]:
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(path)], check=True)
     result = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(path)], check=True, capture_output=True)
@@ -32,4 +40,5 @@ packages = list(root.rglob('*.pkg'))
 assert len(packages) == 1, 'Expected one signed installer'
 result = subprocess.check_output(['pkgutil', '--check-signature', str(packages[0])], text=True)
 assert '3rd Party Mac Developer Installer:' in result and 'F8X7472LW9' in result, 'Wrong installer identity'
-print('Bundle ID, versions, app/helper sandbox signatures and installer signature verified.')
+print(f"Internal version {source_version}, store version {info['CFBundleShortVersionString']}, "
+      'Bundle ID, app/helper sandbox signatures and installer signature verified.')

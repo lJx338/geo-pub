@@ -69,8 +69,9 @@ Windows 上的测试和云端签名检查不能代替沙盒中的实际运行测
 
 ## 版本说明
 
-工作流输入 `1.0` 对应商店展示版本 `1.0`，安装包内应用和 CLI 使用规范化版本 `1.0.0`。
-构建号由 Actions 运行编号和重跑次数生成，避免同一构建号重复上传。
-这组版本只用于 MAS，不修改仓库原来的 Windows/DMG 版本号。
+工作流输入 `1.0` 只设置苹果商店版本（`CFBundleShortVersionString`），用于匹配 App Store Connect 中的版本。
+程序界面、诊断信息、安装包内的 `package.json` 和 Go CLI 都跟随项目 `package.json` 中的版本，目前为 `0.6.0`；与 Windows 的程序内部版本保持一致。
+安装包文件名使用项目版本，例如 `Lingxi-Workspace-0.6.0-mas-6.1-arm64.pkg`。构建号由 Actions 运行编号和重跑次数生成，避免同一构建号重复上传。
+调整苹果商店版本不会改动项目版本；后续升级项目版本时，应用和 CLI 会一起更新。云端会同时检查商店版本和内部版本，防止混用。
 
 技术依据：[Electron MAS 指南](https://www.electronjs.org/docs/latest/tutorial/mac-app-store-submission-guide)、[Apple 沙盒 helper 指南](https://developer.apple.com/documentation/xcode/embedding-a-helper-tool-in-a-sandboxed-app)。

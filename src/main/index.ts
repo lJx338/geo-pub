@@ -27,7 +27,8 @@ guardProcessOutputStreams();
 app.setName('GEO Publisher');
 if (isMacAppStoreRuntime()) configureSandboxUserData(app.getPath('userData'));
 else app.setPath('userData', dataDirectory());
-const appVersion = isMacAppStoreRuntime() ? app.getVersion() : packageJson.version;
+// Product/CLI version follows the source release, independently of store package versions.
+const appVersion = packageJson.version;
 
 // Match the browser-worker runtime used by the last working release. Sohu's
 // captcha and SMS flow relies on timers and renderer activity while the page

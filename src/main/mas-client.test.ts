@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { MasCliBridge, type CliResult } from './mas-cli-bridge.js';
 import { ControlServer } from './control-server.js';
 import type { ControlRequest } from '../shared/protocol.js';
+import packageJson from '../../package.json' with { type: 'json' };
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); cleanups.length = 0; vi.unstubAllEnvs(); });
@@ -41,10 +42,9 @@ describe.skipIf(process.platform !== 'darwin')('macOS WorkBuddy client', () => {
     expect(status.stderr).toBe('');
     expect(status.exitCode).toBe(0);
     expect(JSON.parse(status.stdout).ok).toBe(true);
-    if (process.env.MAS_APP_VERSION) {
-      const expected = process.env.MAS_APP_VERSION.split('.').length === 2 ? `${process.env.MAS_APP_VERSION}.0` : process.env.MAS_APP_VERSION;
-      expect(JSON.parse(status.stdout).version).toBe(expected);
-    }
+    const sourceVersion = process.env.GEO_BUILD_VERSION || packageJson.version;
+    const expectedVersion = sourceVersion.split('.').length === 2 ? `${sourceVersion}.0` : sourceVersion;
+    expect(JSON.parse(status.stdout).version).toBe(expectedVersion);
     expect(received[0]?.action).toBe('status');
     const start = await run(['start']);
     expect(start.exitCode).toBe(0);

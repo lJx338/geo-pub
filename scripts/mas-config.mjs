@@ -11,8 +11,7 @@ export function masConfig(env = process.env) {
     directories: { output: 'release/mas' },
     files: ['dist/**/*', '!dist/cli/**/*', 'package.json'],
     // Keep internal name and existing DMG settings; these overrides apply only to this build.
-    extraMetadata: { version: version.split('.').length === 2 ? `${version}.0` : version },
-    artifactName: `Lingxi-Workspace-${version}-mas-${buildNumber}-\${arch}.\${ext}`,
+    artifactName: `Lingxi-Workspace-${packageJson.version}-mas-${buildNumber}-\${arch}.\${ext}`,
     publish: null,
     mac: { ...packageJson.build.mac, target: [{ target: 'mas', arch: ['arm64'] }], notarize: false },
     mas: {
