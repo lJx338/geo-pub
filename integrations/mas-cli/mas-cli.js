@@ -79,9 +79,9 @@ function run(argv) {
       return result;
     }
     var target;
-    try { target = connection(); request(target, '/health', undefined, 2); } catch (_) {
+    try { target = connection(); request(target, '/health', undefined, 2); } catch (initialError) {
       var appPath = argv[0].split('/Contents/')[0];
-      if (!/\.app$/.test(appPath)) throw new Error('Open GEO Publisher, then retry this command.');
+      if (!/\.app$/.test(appPath)) throw initialError;
       var task = $.NSTask.alloc.init;
       task.setLaunchPath('/usr/bin/open');
       task.setArguments(['-a', appPath]);
