@@ -2,6 +2,8 @@
 
 Mac App Store 使用独立的 `Build Mac App Store` 工作流；操作和沙盒验收见 [Mac App Store 构建指南](MAC-APP-STORE.md)。下面的版本标签及 COS 流程适用于原有商店外安装包。
 
+苹果和微软商店包共用 `build/store-version.json` 的商店版本：例如 `1.0.13` 对应苹果 `1.0.13`、Windows `1.0.13.0`。工作流默认读取该文件，不再按各自运行次数决定商店版本。应用内部版本仍由 `npm run version:set` 单独同步。两种商店安装包统一保存在项目 `release/store/`。
+
 以后每次发布都使用同一个版本标签。GitHub Actions 并行构建 Windows 和 macOS，开发者电脑负责上传腾讯云 COS。禁止从 GitHub Runner 直接上传大文件到 COS。
 
 ## 对象存储结构

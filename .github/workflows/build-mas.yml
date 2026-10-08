@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'App Store Connect 中的 macOS 版本号，例如 1.0'
-        required: true
-        default: '1.0'
+        description: '留空使用 build/store-version.json，与 Windows 商店包版本保持一致'
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -19,7 +19,6 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     env:
-      MAS_APP_VERSION: ${{ inputs.version || '1.0' }}
       MAS_BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
       MAS_PROFILE_PATH: /tmp/lingxi-mas.provisionprofile
     steps:
@@ -28,6 +27,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Resolve store version
+        env:
+          STORE_VERSION_OVERRIDE: ${{ inputs.version }}
+        run: node scripts/store-version.mjs
       - uses: actions/setup-go@v5
         with:
           go-version-file: cli/go.mod
@@ -58,8 +61,8 @@ jobs:
         run: python3 scripts/verify-mas-package.py
       - uses: actions/upload-artifact@v4
         with:
-          name: Lingxi-Workspace-MAS-${{ inputs.version || '1.0' }}-${{ github.run_number }}
-          path: release/mas/**/*.pkg
+          name: Lingxi-Workspace-MAS-${{ env.MAS_APP_VERSION }}-${{ github.run_number }}
+          path: release/store/mas-*/*.pkg
           if-no-files-found: error
           retention-days: 14
       - name: Remove temporary profile

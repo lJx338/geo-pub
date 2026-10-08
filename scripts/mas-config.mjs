@@ -1,14 +1,14 @@
 import packageJson from '../package.json' with { type: 'json' };
+import { storeVersion } from './store-version.mjs';
 
 export function masConfig(env = process.env) {
-  const version = env.MAS_APP_VERSION || '1.0';
+  const version = storeVersion(env.MAS_APP_VERSION);
   const buildNumber = env.MAS_BUILD_NUMBER || '1';
-  if (!/^[1-9]\d*\.\d+(?:\.\d+)?$/.test(version)) throw new Error('MAS_APP_VERSION must be numeric, for example 1.0');
   if (!/^[1-9]\d*(?:\.\d+){0,2}$/.test(buildNumber)) throw new Error('Invalid MAS_BUILD_NUMBER');
   if (!env.MAS_PROFILE_PATH) throw new Error('MAS_PROFILE_PATH is required');
   return {
     ...packageJson.build,
-    directories: { output: 'release/mas' },
+    directories: { output: 'release/store' },
     files: ['dist/**/*', '!dist/cli/**/*', 'package.json'],
     // Keep internal name and existing DMG settings; these overrides apply only to this build.
     artifactName: `Lingxi-Workspace-${packageJson.version}-mas-${buildNumber}-\${arch}.\${ext}`,

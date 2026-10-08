@@ -5,7 +5,7 @@ from pathlib import Path
 import plistlib
 import subprocess
 
-root = Path('release/mas')
+root = Path('release/store')
 apps = list(root.glob('mas*/GEO Publisher.app'))
 assert len(apps) == 1, 'Expected exactly one MAS application'
 app = apps[0]
@@ -36,7 +36,7 @@ for path in [app, helper]:
         assert rights.get('com.apple.security.inherit') is True, 'CLI must inherit app sandbox'
     else:
         assert rights.get('com.apple.security.network.client') and rights.get('com.apple.security.network.server')
-packages = list(root.rglob('*.pkg'))
+packages = list(app.parent.glob('*.pkg'))
 assert len(packages) == 1, 'Expected one signed installer'
 result = subprocess.check_output(['pkgutil', '--check-signature', str(packages[0])], text=True)
 assert '3rd Party Mac Developer Installer:' in result and 'F8X7472LW9' in result, 'Wrong installer identity'

@@ -8,6 +8,7 @@ on:
       - 'scripts/**'
       - 'build/icon.png'
       - 'build/appx/**'
+      - 'build/store-version.json'
       - 'src/**'
       - 'cli/**'
       - 'integrations/**'
@@ -19,6 +20,7 @@ on:
       - 'scripts/**'
       - 'build/icon.png'
       - 'build/appx/**'
+      - 'build/store-version.json'
       - 'src/**'
       - 'cli/**'
       - 'integrations/**'
@@ -26,16 +28,13 @@ on:
   workflow_dispatch:
     inputs:
       store_version:
-        description: 'MSIX 商店包版本的前三段数字，例如 1.0.0；第四段由脚本固定为 0'
-        required: true
-        default: '1.0.0'
+        description: '留空使用 build/store-version.json，与苹果商店版本保持一致；第四段固定为 0'
+        required: false
+        default: ''
         type: string
 
 permissions:
   contents: read
-
-env:
-  STORE_PACKAGE_VERSION: ${{ inputs.store_version || format('1.0.{0}', github.run_number) }}
 
 jobs:
   build-validate-msix:
@@ -56,6 +55,11 @@ jobs:
         with:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
+
+      - name: Resolve store version
+        env:
+          STORE_VERSION_OVERRIDE: ${{ inputs.store_version }}
+        run: node scripts/store-version.mjs
 
       - name: Install dependencies from lockfile
         run: npm ci

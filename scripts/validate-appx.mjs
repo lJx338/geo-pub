@@ -1,9 +1,10 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
+import { storeVersion } from './store-version.mjs';
 
 const releaseDirectory = path.resolve(process.argv[2] || 'release/store');
-const requestedVersion = process.argv[3] || process.env.STORE_PACKAGE_VERSION || '1.0.0';
+const requestedVersion = process.argv[3] || process.env.STORE_PACKAGE_VERSION || storeVersion();
 const expectedVersion = normalizeVersion(requestedVersion);
 const expectedIdentity = '78707CBF.LingxiWorkspace';
 const expectedPublisher = 'CN=5C62BC82-3986-4D37-81C4-0EAF060A1A5D';
