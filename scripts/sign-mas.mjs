@@ -16,6 +16,9 @@ export default async function signMas(options) {
   // identity and strict verification. Only shared code was signed separately.
   await signAsync({
     ...options,
-    ignore: [...existingIgnore, (file) => libraries.has(realpathSync(file))],
+    // osx-sign 1.3.3 drops an array in validateOptsIgnore. Pass one predicate
+    // so it cannot sign these libraries again with inherited entitlements.
+    ignore: (file) => libraries.has(realpathSync(file)) || existingIgnore.some((rule) =>
+      typeof rule === 'function' ? rule(file) : Boolean(file.match(rule))),
   });
 }
