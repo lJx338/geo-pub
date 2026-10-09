@@ -14,7 +14,9 @@ for name in required:
 profile_path = Path(os.environ['MAS_PROFILE_PATH'])
 profile = base64.b64decode(''.join(os.environ['MAS_PROVISIONING_PROFILE'].split()), validate=True)
 profile_path.write_bytes(profile)
-profile_path.chmod(0o600)
+# This public, Apple-signed profile is copied into the installed app. It must
+# remain readable by normal users; it does not contain our signing private key.
+profile_path.chmod(0o644)
 decoded = subprocess.check_output(['security', 'cms', '-D', '-i', str(profile_path)], stderr=subprocess.PIPE)
 info = plistlib.loads(decoded)
 entitlements = info['Entitlements']

@@ -11,7 +11,7 @@ Windows 负责修改代码和操作网页，GitHub 的 macOS runner 负责生成
 1. 将 MAS 代码和 `.github/workflows/build-mas.yml` 提交到主分支。推送 `v*` 版本标签（例如 `v0.6.1`）会按 `build/store-version.json` 中的商店版本自动构建。
 2. 打开 [GitHub Actions](https://github.com/lJx338/geo-pub/actions)，选择 **Build Mac App Store**。
 3. 点击 **Run workflow**，选择代码分支，版本留空使用两家商店共用的 `build/store-version.json`。App Store Connect 的待提交版本必须与此一致。
-4. 等待全部步骤成功。脚本会检查 profile、运行测试、打包、检查应用和 CLI 的沙盒签名、检查安装器签名。
+4. 等待全部步骤成功。脚本会检查 profile、运行测试、打包、检查应用和 CLI 的沙盒签名、检查安装器签名及安装后的文件读取权限，并调用苹果服务器校验安装包。
 5. 在该次运行底部 **Artifacts** 下载 `Lingxi-Workspace-MAS-...`，解压取得 `.pkg`，保存在本项目 `release/store/`，与 Windows 商店安装包放在一起。本机 Mac 构建的中间文件位于 `release/store/mas-arm64/`。
 
 这个工作流生成安装包，不会自动上传 App Store Connect、提交审核或发布到 COS。
@@ -25,7 +25,7 @@ Windows 负责修改代码和操作网页，GitHub 的 macOS runner 负责生成
 2. 打开 [Upload Mac App Store](https://github.com/lJx338/geo-pub/actions/workflows/upload-mas.yml)，点击 **Run workflow**。
 3. 分支选择 `main`，`release_tag` 填 `v0.6.1`，`operation` 选择 `upload`，点击绿色 **Run workflow**。
 4. 工作流下载这个 GitHub Release 中唯一的 MAS `.pkg`，核对 SHA-256 和安装器签名，先执行苹果校验，再上传。使用仓库已有的 `APPLE_ID` 和 `APPLE_APP_SPECIFIC_PASSWORD` Secrets；不需要将密码填进运行表单。
-5. 显示成功后，等待苹果处理，在 **Lingxi Workspace → TestFlight → macOS** 查看 `1.0.13 (8.1)`。处理完成后，可在分发版本页面的“构建版本”中选择它。
+5. 显示成功后，等待苹果处理，在 **Lingxi Workspace → TestFlight → macOS** 查看 `1.0.13` 下的新构建号。处理完成后，可在分发版本页面的“构建版本”中选择它。
 
 `operation=validate` 仅执行苹果校验，不创建可选构建版本。上传工作流只能从 `main` 手动运行，不会随代码推送自动上传，也不会提交审核或正式上架。若上传结果不明确，先检查 TestFlight 和苹果通知邮件，再决定是否重试；同一构建号不能作为新构建重复交付。
 
@@ -40,6 +40,8 @@ Windows 负责修改代码和操作网页，GitHub 的 macOS runner 负责生成
 | `MAS_CSC_INSTALLER_LINK` | Mac Installer Distribution 的 P12，Base64 编码 |
 | `MAS_CSC_INSTALLER_KEY_PASSWORD` | 安装器 P12 密码 |
 | `MAS_PROVISIONING_PROFILE` | 对应该 Bundle ID 的 Mac App Store profile，Base64 编码 |
+| `APPLE_ID` | 拥有该 App 上传权限的 Apple 账号，用于苹果服务器校验和上传 |
+| `APPLE_APP_SPECIFIC_PASSWORD` | 上述账号的 App 专用密码，沿用已有 Secret |
 
 仓库和构建产物中不存放私钥或 P12 密码。原来的 Developer ID Application 用于商店外 DMG。
 商店构建不走 Developer ID 公证流程。

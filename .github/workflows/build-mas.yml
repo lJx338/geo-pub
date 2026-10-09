@@ -59,6 +59,17 @@ jobs:
           CSC_INSTALLER_KEY_PASSWORD: ${{ secrets.MAS_CSC_INSTALLER_KEY_PASSWORD }}
       - name: Verify package and embedded helper
         run: python3 scripts/verify-mas-package.py
+      - name: Validate package with App Store Connect
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          : "${APPLE_ID:?Missing APPLE_ID repository secret}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD repository secret}"
+          packages=(release/store/mas-*/*.pkg)
+          test "${#packages[@]}" -eq 1
+          xcrun altool --validate-app --file "${packages[0]}" --type macos \
+            --username "$APPLE_ID" --password '@env:APPLE_APP_SPECIFIC_PASSWORD' --output-format json
       - uses: actions/upload-artifact@v4
         with:
           name: Lingxi-Workspace-MAS-${{ env.MAS_APP_VERSION }}-${{ github.run_number }}
