@@ -63,6 +63,10 @@ with tempfile.TemporaryDirectory(prefix='mas-permissions-') as directory:
             fields = entry.split('\t')
             assert len(fields) >= 2, f'Unexpected package permission entry: {entry}'
             mode = int(fields[1], 8)
+            # lsbom's synthetic archive-root entry is ".\t0\t0/0"; it is
+            # not an installed directory. Actual app paths must still be checked.
+            if fields[0] == '.' and mode == 0:
+                continue
             if stat.S_ISLNK(mode):
                 continue
             assert mode & stat.S_IROTH, f'Installer file is not readable by normal users: {fields[0]}'
