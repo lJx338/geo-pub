@@ -17,6 +17,14 @@ Windows 负责修改代码和操作网页，GitHub 的 macOS runner 负责生成
 这个工作流生成安装包，不会自动上传 App Store Connect、提交审核或发布到 COS。
 现有 Windows/DMG 发布流程继续使用原来的工作流和证书。
 
+### 苹果警告 ITMS-91166：权限声明位置
+
+进程权限只能签入 Mach-O 可执行程序，不能签入 framework、dylib 等共享库。
+MAS 专用的 `scripts/sign-mas.mjs` 先用相同的发行身份签署共享库（不附加权限），再让原签名工具处理主程序、Electron Helper 和 Go CLI，保留它们的沙盒权限与 profile。
+文件类型按 Mach-O 头识别，包括无扩展名的 framework 二进制；不会按文件名猜测。
+打包后逐个验证所有 Mach-O 签名，检查每个可执行程序的沙盒权限，并拒绝任何带权限声明的共享库。分类逻辑也在 CI 和 MAS 构建中运行回归测试。
+苹果上传前校验通过后，仍需查看 TestFlight 的处理结果；服务端处理阶段可能给出额外警告。
+
 ## Windows 电脑如何上传到苹果
 
 已生成的商店包可以通过独立的手动工作流上传，不需要重新打包：

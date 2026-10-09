@@ -7,6 +7,22 @@ import stat
 import subprocess
 import tempfile
 
+from mas_macho import MH_EXECUTE, macho_files
+
+
+def signed_entitlements(path):
+    result = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(path)],
+                            check=True, capture_output=True)
+    for output in (result.stdout, result.stderr):
+        start = output.find(b'<?xml')
+        end = output.find(b'</plist>')
+        if start >= 0 and end >= start:
+            return plistlib.loads(output[start:end + len(b'</plist>')])
+    # No entitlements output is expected for frameworks and dylibs.
+    if b'<plist' in result.stdout + result.stderr:
+        raise ValueError(f'Malformed entitlements: {path}')
+    return {}
+
 root = Path('release/store')
 apps = list(root.glob('mas*/GEO Publisher.app'))
 assert len(apps) == 1, 'Expected exactly one MAS application'
@@ -36,17 +52,29 @@ packed_metadata = json.loads(subprocess.check_output([
 assert packed_metadata['version'] == source_version, 'Store version must not replace the internal product version'
 for path in [app, helper]:
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(path)], check=True)
-    result = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(path)], check=True, capture_output=True)
-    entitlement_bytes = result.stdout if b'<plist' in result.stdout else result.stderr
-    start = entitlement_bytes.find(b'<?xml')
-    end = entitlement_bytes.find(b'</plist>') + len(b'</plist>')
-    rights = plistlib.loads(entitlement_bytes[start:end])
+    rights = signed_entitlements(path)
     assert rights.get('com.apple.security.app-sandbox') is True, 'Missing sandbox entitlement'
     assert not rights.get('com.apple.security.get-task-allow'), 'Debug entitlement in release'
     if path == helper:
         assert rights.get('com.apple.security.inherit') is True, 'CLI must inherit app sandbox'
     else:
         assert rights.get('com.apple.security.network.client') and rights.get('com.apple.security.network.server')
+# Apple ITMS-91166: only MH_EXECUTE code may carry process entitlements.
+# Check every real Mach-O file, including extensionless framework binaries.
+library_count = executable_count = 0
+for path, types in macho_files(app):
+    subprocess.run(['codesign', '--verify', '--strict', str(path)], check=True)
+    rights = signed_entitlements(path)
+    if MH_EXECUTE in types:
+        executable_count += 1
+        assert rights.get('com.apple.security.app-sandbox') is True, f'Unsandboxed executable: {path}'
+        assert not rights.get('com.apple.security.get-task-allow'), f'Debug entitlement: {path}'
+    else:
+        library_count += 1
+        assert not rights, f'ITMS-91166: non-executable has entitlements: {path}'
+assert library_count and executable_count, 'Missing Mach-O app components'
+print(f'Entitlement locations verified: {library_count} libraries without entitlements, '
+      f'{executable_count} sandboxed executables.')
 packages = list(app.parent.glob('*.pkg'))
 assert len(packages) == 1, 'Expected one signed installer'
 result = subprocess.check_output(['pkgutil', '--check-signature', str(packages[0])], text=True)

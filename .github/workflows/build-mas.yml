@@ -44,6 +44,8 @@ jobs:
           MAS_PROVISIONING_PROFILE: ${{ secrets.MAS_PROVISIONING_PROFILE }}
         run: python3 scripts/prepare-mas-profile.py
       - run: npm ci
+      - name: Test Mach-O signing classification
+        run: python3 -B -m unittest discover -s scripts -p 'test_mas_*.py'
       - run: npm run typecheck
       - run: go test ./...
         working-directory: cli

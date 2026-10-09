@@ -16,6 +16,7 @@ export function masConfig(env = process.env) {
     mac: { ...packageJson.build.mac, target: [{ target: 'mas', arch: ['arm64'] }], notarize: false },
     mas: {
       type: 'distribution',
+      sign: 'scripts/sign-mas.mjs',
       hardenedRuntime: false,
       forceCodeSigning: true,
       entitlements: 'build/entitlements.mas.plist',
