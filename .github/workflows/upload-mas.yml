@@ -1,0 +1,70 @@
+name: Upload Mac App Store
+run-name: Mac App Store ${{ inputs.operation }} - ${{ inputs.release_tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '要上传的 GitHub Release 标签'
+        required: true
+        default: 'v0.6.1'
+        type: string
+      operation:
+        description: 'upload 上传至苹果；validate 只执行苹果校验'
+        required: true
+        default: upload
+        type: choice
+        options:
+          - upload
+          - validate
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-app-store-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify release package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 scripts/download-mas-release.py
+      - name: Verify installer signature
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          result = subprocess.check_output(['pkgutil', '--check-signature', os.environ['MAS_PKG_PATH']], text=True)
+          if '3rd Party Mac Developer Installer:' not in result or 'F8X7472LW9' not in result:
+              raise SystemExit('The package must be signed by the Lingxi Mac App Store installer identity')
+          print('Mac App Store installer signature verified')
+          PY
+      - name: Validate with Apple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          : "${APPLE_ID:?Missing APPLE_ID repository secret}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD repository secret}"
+          xcrun altool --validate-app --file "$MAS_PKG_PATH" --type macos \
+            --username "$APPLE_ID" --password '@env:APPLE_APP_SPECIFIC_PASSWORD' --output-format json
+      - name: Upload to App Store Connect
+        if: inputs.operation == 'upload'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          xcrun altool --upload-app --file "$MAS_PKG_PATH" --type macos \
+            --username "$APPLE_ID" --password '@env:APPLE_APP_SPECIFIC_PASSWORD' --output-format json
+          printf '%s\n' '已交付苹果，等待处理。前往 App Store Connect → Lingxi Workspace → TestFlight → macOS 查看构建版本。本流程不会提交正式审核或发布上架。' >> "$GITHUB_STEP_SUMMARY"
+      - name: Validation result
+        if: inputs.operation == 'validate'
+        run: printf '%s\n' '苹果校验通过。本次仅校验，未上传构建版本；需要上传时重新运行并选择 upload。' >> "$GITHUB_STEP_SUMMARY"

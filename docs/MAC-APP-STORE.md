@@ -17,6 +17,18 @@ Windows 负责修改代码和操作网页，GitHub 的 macOS runner 负责生成
 这个工作流生成安装包，不会自动上传 App Store Connect、提交审核或发布到 COS。
 现有 Windows/DMG 发布流程继续使用原来的工作流和证书。
 
+## Windows 电脑如何上传到苹果
+
+已生成的商店包可以通过独立的手动工作流上传，不需要重新打包：
+
+1. 在 App Store Connect 的版本页面填写包对应的商店版本（当前 `1.0.13`），点击保存。
+2. 打开 [Upload Mac App Store](https://github.com/lJx338/geo-pub/actions/workflows/upload-mas.yml)，点击 **Run workflow**。
+3. 分支选择 `main`，`release_tag` 填 `v0.6.1`，`operation` 选择 `upload`，点击绿色 **Run workflow**。
+4. 工作流下载这个 GitHub Release 中唯一的 MAS `.pkg`，核对 SHA-256 和安装器签名，先执行苹果校验，再上传。使用仓库已有的 `APPLE_ID` 和 `APPLE_APP_SPECIFIC_PASSWORD` Secrets；不需要将密码填进运行表单。
+5. 显示成功后，等待苹果处理，在 **Lingxi Workspace → TestFlight → macOS** 查看 `1.0.13 (8.1)`。处理完成后，可在分发版本页面的“构建版本”中选择它。
+
+`operation=validate` 仅执行苹果校验，不创建可选构建版本。上传工作流只能从 `main` 手动运行，不会随代码推送自动上传，也不会提交审核或正式上架。若上传结果不明确，先检查 TestFlight 和苹果通知邮件，再决定是否重试；同一构建号不能作为新构建重复交付。
+
 ## GitHub Secrets
 
 在仓库 **Settings → Secrets and variables → Actions** 保存：
@@ -64,7 +76,7 @@ Windows 上的测试和云端签名检查不能代替沙盒中的实际运行测
 7. 验证商店版更新交给 App Store，不能进入 COS 灰度更新流程。
 
 发行证书签出的 MAS 包不适合直接双击当作普通 DMG 测试；应走 TestFlight，或使用登记测试设备的开发证书和 profile。
-可使用 Mac 上的 [Transporter](https://apps.apple.com/app/transporter/id1450874784) 上传 `.pkg`；Windows 用户也可以后续配置云端上传凭据。当前工作流不包含上传凭据。
+可使用 Mac 上的 [Transporter](https://apps.apple.com/app/transporter/id1450874784) 上传 `.pkg`；Windows 用户使用上面的独立上传工作流。生成安装包的 `Build Mac App Store` 工作流仍然只负责构建。
 
 ## 版本说明
 
