@@ -172,7 +172,9 @@ export interface WorkBuddyIntegrationStatus {
 
 export interface LaunchAtLoginStatus {
   available: boolean;
-  enabled: boolean;
+  enabled: boolean | null;
+  management: 'app' | 'system';
+  message: string;
 }
 
 export interface DiagnosticSummary {

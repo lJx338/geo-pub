@@ -38,6 +38,20 @@ assertEqual(getAttribute(identity, 'Version'), expectedVersion, 'Identity.Versio
 assertEqual(getElementText(properties, 'PublisherDisplayName'), expectedPublisherDisplayName, 'PublisherDisplayName');
 assertEqual(getAttribute(application, 'Id'), expectedApplicationId, 'Application.Id');
 
+const startupExtension = manifest.match(/<desktop:Extension\b(?=[^>]*\bCategory=["']windows\.startupTask["'])[^>]*>[\s\S]*?<\/desktop:Extension>/)?.[0];
+if (!startupExtension) throw new Error('包中缺少 Windows 开机启动任务');
+const startupTask = getElement(startupExtension, 'desktop:StartupTask');
+assertEqual(getAttribute(startupTask, 'TaskId'), 'LingxiWorkspaceStartup', 'StartupTask.TaskId');
+assertEqual(getAttribute(startupTask, 'Enabled'), 'false', 'StartupTask.Enabled');
+assertEqual(getAttribute(startupTask, 'DisplayName'), 'Lingxi Workspace', 'StartupTask.DisplayName');
+assertEqual(getAttribute(startupExtension, 'Executable'), getAttribute(application, 'Executable'), 'StartupTask.Executable');
+assertEqual(getAttribute(startupExtension, 'EntryPoint'), 'Windows.FullTrustApplication', 'StartupTask.EntryPoint');
+assertEqual(getAttribute(startupExtension, 'uap10:Parameters'), '--background', 'StartupTask.Parameters');
+const executableEntryName = getAttribute(application, 'Executable').replace(/\\/g, '/').toLowerCase();
+if (!zip.getEntries().some((entry) => decodeURIComponent(entry.entryName).replace(/\\/g, '/').toLowerCase() === executableEntryName)) {
+  throw new Error('启动任务的可执行文件不在安装包内');
+}
+
 const displayName = getElementText(properties, 'DisplayName');
 if (displayName !== 'Lingxi Workspace') {
   throw new Error(`Properties.DisplayName 应为 Lingxi Workspace，实际为 ${displayName || '(空)'}`);
@@ -55,6 +69,7 @@ for (const [assetName, dimensions] of requiredAssets) {
 console.log(`MSIX 验证通过：${packagePath}`);
 console.log(`身份：${expectedIdentity}`);
 console.log(`版本：${expectedVersion}`);
+console.log('开机启动：Lingxi Workspace（由 Windows 设置管理，默认关闭）');
 console.log('商店图标：StoreLogo、Square150x150Logo、Square44x44Logo、Wide310x150Logo');
 
 function normalizeVersion(value) {

@@ -8,6 +8,7 @@ import { articleDocumentSchema, type ArticleBlock, type ArticleDocument } from '
 import { buildDistributionDiagnosis } from '../shared/distribution-diagnostics.js';
 import type { ContentRepairNotice } from '../main/content-repair.js';
 import { ContentRepairBanner } from './components/content-repair-notice.js';
+import type { LaunchAtLoginStatus } from '../shared/protocol.js';
 
 const platforms = [['baijia', '百家号'], ['toutiao', '头条号'], ['zhihu', '知乎'], ['penguin', '企鹅号'], ['sohu', '搜狐号'], ['netease', '网易号']] as const;
 const platformLabels = Object.fromEntries(platforms) as Record<string, string>;
@@ -682,12 +683,15 @@ function BaijiaDefaultsDialog({ values, setValues, saving, close, save }: any) {
 }
 
 function SettingsView({ status, workBuddy, setWorkBuddy, update, setUpdate, connect, notify }: any) {
-  const [launchAtLogin, setLaunchAtLogin] = useState({ available: false, enabled: false });
+  const [launchAtLogin, setLaunchAtLogin] = useState<LaunchAtLoginStatus>({ available: false, enabled: false, management: 'app', message: '正在读取开机启动设置…' });
   const [betaCode, setBetaCode] = useState('');
   const [working, setWorking] = useState<string | null>(null);
 
   useEffect(() => {
-    void window.geoPublisher.launchAtLoginStatus().then(setLaunchAtLogin).catch((error) => notify(error.message, true));
+    void window.geoPublisher.launchAtLoginStatus().then(setLaunchAtLogin).catch((error) => {
+      setLaunchAtLogin({ available: false, enabled: false, management: 'app', message: `无法读取开机启动设置：${error.message}` });
+      notify(error.message, true);
+    });
   }, []);
 
   const checkUpdate = async () => {
@@ -741,6 +745,17 @@ function SettingsView({ status, workBuddy, setWorkBuddy, update, setUpdate, conn
       setWorking(null);
     }
   };
+  const openLaunchAtLoginSettings = async () => {
+    setWorking('launch');
+    try {
+      await window.geoPublisher.openLaunchAtLoginSettings();
+      notify('请在 Windows 启动设置中开启或关闭 Lingxi Workspace。');
+    } catch (error) {
+      notify((error as Error).message, true);
+    } finally {
+      setWorking(null);
+    }
+  };
   const copyDiagnostics = async () => {
     try {
       await window.geoPublisher.copyDiagnostics();
@@ -777,7 +792,7 @@ function SettingsView({ status, workBuddy, setWorkBuddy, update, setUpdate, conn
 
       <Card className="settings-card">
         <CardHeader><div><CardTitle>启动与后台运行</CardTitle><CardDescription>开机后启动桌面端并保持待机，不会自动发布文章。</CardDescription></div><Power size={18}/></CardHeader>
-        <CardContent><div className="setting-row"><div><strong>开机启动</strong><p>{launchAtLogin.available ? '开启后，WorkBuddy 随时可以连接桌面端。' : '当前安装方式暂不支持修改，安装正式版本后即可设置。'}</p></div><Switch label="开机启动" checked={launchAtLogin.enabled} disabled={!launchAtLogin.available || working === 'launch'} onCheckedChange={(enabled) => void toggleLaunchAtLogin(enabled)} /></div></CardContent>
+        <CardContent><div className="setting-row"><div><strong>开机启动</strong><p>{launchAtLogin.message}</p></div>{launchAtLogin.management === 'system' ? <Button variant="outline" icon={Settings2} disabled={working === 'launch'} onClick={() => void openLaunchAtLoginSettings()}>打开 Windows 启动设置</Button> : <Switch label="开机启动" checked={Boolean(launchAtLogin.enabled)} disabled={!launchAtLogin.available || working === 'launch'} onCheckedChange={(enabled) => void toggleLaunchAtLogin(enabled)} />}</div></CardContent>
       </Card>
 
       <Card className="settings-card">

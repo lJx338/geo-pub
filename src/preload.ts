@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   deactivateBeta: (): Promise<BetaActivationResult> => ipcRenderer.invoke('geo:beta-deactivate'),
   launchAtLoginStatus: (): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:launch-at-login-status'),
   setLaunchAtLogin: (enabled: boolean): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:set-launch-at-login', enabled),
+  openLaunchAtLoginSettings: (): Promise<{ opened: true }> => ipcRenderer.invoke('geo:open-launch-at-login-settings'),
   copyDiagnostics: (): Promise<{ copied: true; diagnostic: DiagnosticSummary }> => ipcRenderer.invoke('geo:copy-diagnostics'),
   exportDiagnostic: (projectId: string, recordId: string): Promise<{ exported: boolean; path?: string; message?: string }> => ipcRenderer.invoke('geo:diagnostic-export', projectId, recordId),
   copyText: (text: string): Promise<{ copied: true }> => ipcRenderer.invoke('geo:copy-text', text),

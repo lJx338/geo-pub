@@ -22,6 +22,7 @@ import { DistributionService } from './distribution-service.js';
 import { runIdleMaintenance } from './maintenance.js';
 import { diagnosticError, guardProcessOutputStreams } from './diagnostics.js';
 import { exportDistributionDiagnosticBundle } from './diagnostic-bundle.js';
+import { getLaunchAtLoginStatus, openWindowsStartupSettings, setLaunchAtLogin } from './launch-at-login.js';
 
 guardProcessOutputStreams();
 app.setName('GEO Publisher');
@@ -58,7 +59,7 @@ async function runDesktop(): Promise<void> {
   setupStealthSession(session.defaultSession);
   if (process.platform === 'win32') Menu.setApplicationMenu(null);
 
-  const startsInBackground = process.argv.includes('--background') || app.getLoginItemSettings().wasOpenedAsHidden;
+  const startsInBackground = process.argv.includes('--background') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAsHidden);
   const window = new BrowserWindow({
     width: 1360,
     height: 900,
@@ -492,12 +493,9 @@ async function runDesktop(): Promise<void> {
   });
   ipcMain.handle('geo:beta-activate', async (_event, code: string) => await updateManager.activateBeta(String(code || '')));
   ipcMain.handle('geo:beta-deactivate', () => updateManager.deactivateBeta());
-  ipcMain.handle('geo:launch-at-login-status', () => ({ available: app.isPackaged, enabled: app.isPackaged && app.getLoginItemSettings().openAtLogin }));
-  ipcMain.handle('geo:set-launch-at-login', (_event, enabled: boolean) => {
-    if (!app.isPackaged) return { available: false, enabled: false };
-    app.setLoginItemSettings({ openAtLogin: Boolean(enabled), openAsHidden: Boolean(enabled), args: ['--background'] });
-    return { available: true, enabled: app.getLoginItemSettings().openAtLogin };
-  });
+  ipcMain.handle('geo:launch-at-login-status', () => getLaunchAtLoginStatus(app));
+  ipcMain.handle('geo:set-launch-at-login', (_event, enabled: boolean) => setLaunchAtLogin(app, Boolean(enabled)));
+  ipcMain.handle('geo:open-launch-at-login-settings', () => openWindowsStartupSettings((url) => shell.openExternal(url)));
   ipcMain.handle('geo:copy-diagnostics', () => {
     const publisher = desktopStatus();
     const currentUpdate = updateManager.getStatus();

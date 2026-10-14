@@ -1,0 +1,4 @@
+<desktop:Extension Category="windows.startupTask" Executable="app\GEO Publisher.exe"
+  EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--background">
+  <desktop:StartupTask TaskId="LingxiWorkspaceStartup" Enabled="false" DisplayName="Lingxi Workspace" />
+</desktop:Extension>

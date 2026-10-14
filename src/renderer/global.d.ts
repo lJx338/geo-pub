@@ -42,6 +42,7 @@ declare global {
       deactivateBeta(): Promise<BetaActivationResult>;
       launchAtLoginStatus(): Promise<LaunchAtLoginStatus>;
       setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginStatus>;
+      openLaunchAtLoginSettings(): Promise<{ opened: true }>;
       copyDiagnostics(): Promise<{ copied: true; diagnostic: DiagnosticSummary }>;
       exportDiagnostic(projectId: string, recordId: string): Promise<{ exported: boolean; path?: string; message?: string }>;
       copyText(text: string): Promise<{ copied: true }>;
