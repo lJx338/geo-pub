@@ -55,6 +55,14 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
+export function normalizeZhihuEditorText(value: unknown): string {
+  return String(value || '')
+    .replace(/[\u200b-\u200d\ufeff]/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function withDebugger<T>(webContents: WebContents, task: () => Promise<T>): Promise<T> {
   const debuggerApi = webContents.debugger;
   const attachedHere = !debuggerApi.isAttached();
@@ -81,31 +89,93 @@ async function cdpEscape(webContents: WebContents): Promise<void> {
   });
 }
 
-async function waitForEditorCommit(webContents: WebContents, expectedText = '', timeoutMs = 12_000): Promise<void> {
-  const expected = expectedText.replace(/[\s\-•·]/g, '');
+export async function ensureZhihuEditorInputFocus(webContents: WebContents): Promise<void> {
+  const inspectCaret = `(() => {
+    const normalize = ${normalizeZhihuEditorText.toString()};
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!(body instanceof HTMLElement) || !body.isContentEditable) return { ready: false, restore: false };
+    const selection = window.getSelection();
+    const inEditor = Boolean(selection?.anchorNode && selection.focusNode
+      && body.contains(selection.anchorNode) && body.contains(selection.focusNode) && selection.isCollapsed);
+    const focused = document.activeElement === body || body.contains(document.activeElement);
+    let atEnd = false;
+    if (inEditor) {
+      const blocks = body.querySelectorAll('[data-block="true"]');
+      let endBlock = blocks[blocks.length - 1];
+      if (!endBlock) {
+        endBlock = body.lastElementChild || body;
+        while (endBlock.lastElementChild && endBlock.lastElementChild.tagName !== 'BR') endBlock = endBlock.lastElementChild;
+        if (endBlock.tagName === 'HR') endBlock = body;
+      }
+      const remaining = document.createRange();
+      remaining.selectNodeContents(body);
+      remaining.setStart(selection.focusNode, selection.focusOffset);
+      atEnd = endBlock.contains(selection.focusNode) && !normalize(remaining.toString());
+    }
+    if (!focused) body.focus({ preventScroll: true });
+    return { ready: document.activeElement === body || body.contains(document.activeElement), restore: !focused || !inEditor || !atEnd };
+  })()`;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const state = await webContents.executeJavaScript(inspectCaret);
+    if (state.ready) {
+      if (!state.restore) return;
+      // Draft.js needs a Chromium selection change, not just a DOM Range.
+      // This fill appends blocks to an empty editor; resume at its end so a
+      // recovered caret cannot overwrite or reorder earlier paragraphs.
+      await withDebugger(webContents, async () => {
+        const key = process.platform === 'darwin' ? 'ArrowDown' : 'End';
+        const modifiers = process.platform === 'darwin' ? 4 : 2;
+        const windowsVirtualKeyCode = process.platform === 'darwin' ? 40 : 35;
+        await webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+          type: 'rawKeyDown', key, code: key, windowsVirtualKeyCode, modifiers, commands: ['moveToEndOfDocument'],
+        });
+        await webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode, modifiers });
+      });
+      const restored = await webContents.executeJavaScript(inspectCaret);
+      if (restored.ready && !restored.restore) return;
+    }
+    await delay(120);
+  }
+  throw new Error('ZHIHU_EDITOR_FOCUS_LOST: 无法恢复知乎正文输入光标，已停止以避免覆盖已填写内容');
+}
+
+export async function waitForEditorCommit(webContents: WebContents, expectedText = '', timeoutMs = 12_000): Promise<void> {
+  const expected = normalizeZhihuEditorText(expectedText).replace(/[\s\-•·]/g, '');
   const deadline = Date.now() + timeoutMs;
   let previous = '';
   let stableSamples = 0;
   while (Date.now() < deadline) {
     const state = await webContents.executeJavaScript(`(() => {
+      const normalize = ${normalizeZhihuEditorText.toString()};
       const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-      if (!(body instanceof HTMLElement)) return { focused: false, text: '' };
+      if (!(body instanceof HTMLElement)) return { ready: false, focused: false, selectionInEditor: false, text: '' };
       const active = document.activeElement;
       const selection = window.getSelection();
-      const selectionInEditor = Boolean(selection?.anchorNode && body.contains(selection.anchorNode));
+      const selectionInEditor = Boolean(selection?.anchorNode && selection.focusNode
+        && body.contains(selection.anchorNode) && body.contains(selection.focusNode) && selection.isCollapsed);
       return {
+        ready: true,
         focused: active === body || body.contains(active),
         selectionInEditor,
-        text: String(body.innerText || body.textContent || '').replace(/[\\s\\-•·]/g, ''),
+        text: normalize(body.innerText || body.textContent || '').replace(/[\\s\\-•·]/g, ''),
       };
     })()`);
+    // A toolbar can retain focus after the editor has committed the text.
+    // Restore the caret without replaying input or duplicating the paragraph.
+    if (state.ready && (!state.focused || !state.selectionInEditor)) {
+      await ensureZhihuEditorInputFocus(webContents);
+      stableSamples = 0;
+      previous = state.text;
+      await delay(120);
+      continue;
+    }
     const hasExpectedText = !expected || String(state.text).includes(expected);
     stableSamples = state.focused && state.selectionInEditor && hasExpectedText && state.text === previous ? stableSamples + 1 : 0;
     if (stableSamples >= 2) return;
     previous = state.text;
     await delay(120);
   }
-  throw new Error('ZHIHU_EDITOR_COMMIT_TIMEOUT: 知乎编辑器未完成上一段输入，请检查页面加载状态后重试');
+  throw new Error('ZHIHU_EDITOR_COMMIT_TIMEOUT: 知乎正文未确认完整写入，已停止以避免发布不完整内容');
 }
 
 async function waitForEditorEmpty(webContents: WebContents, timeoutMs = 12_000): Promise<void> {
@@ -126,7 +196,7 @@ async function waitForEditorEmpty(webContents: WebContents, timeoutMs = 12_000):
 async function clickEditorControl(webContents: WebContents, labels: string[], scope: 'toolbar' | 'menu' = 'toolbar'): Promise<boolean> {
   const point = await webContents.executeJavaScript(`(() => {
     const labels = ${JSON.stringify(labels)};
-    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = ${normalizeZhihuEditorText.toString()};
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none'
@@ -235,7 +305,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
   formatVerification: FormatVerification;
 }> {
   const prepared = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const normalize = ${normalizeZhihuEditorText.toString()};
     const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
     const requestedTitle = ${JSON.stringify(title)};
     const sourceHtml = ${JSON.stringify(html)};
@@ -305,11 +375,13 @@ async function fillContent(webContents: WebContents, title: string, html: string
     await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
     await waitForEditorEmpty(webContents);
     const enter = async () => {
+      await ensureZhihuEditorInputFocus(webContents);
       await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await waitForEditorCommit(webContents);
     };
     const insert = async (text: string) => {
+      await ensureZhihuEditorInputFocus(webContents);
       await debuggerApi.sendCommand('Input.insertText', { text });
       await waitForEditorCommit(webContents, text);
     };
@@ -317,28 +389,37 @@ async function fillContent(webContents: WebContents, title: string, html: string
     for (let index = 0; index < blocks.length; index += 1) {
       const block = blocks[index];
       if (!block) continue;
-      if (block.type === 'heading') {
-        if (!await setHeadingLevel(webContents, block.level)) await closeFormattingMenu(webContents);
-        await insert(block.text);
-        await enter();
-      } else if (block.type === 'list') {
-        if (!await setListStyle(webContents, block.ordered)) await closeFormattingMenu(webContents);
-        for (const item of block.items) {
-          await insert(item);
+      try {
+        await ensureZhihuEditorInputFocus(webContents);
+        if (block.type === 'heading') {
+          if (!await setHeadingLevel(webContents, block.level)) await closeFormattingMenu(webContents);
+          await insert(block.text);
           await enter();
+        } else if (block.type === 'list') {
+          if (!await setListStyle(webContents, block.ordered)) await closeFormattingMenu(webContents);
+          for (const item of block.items) {
+            await insert(item);
+            await enter();
+          }
+          await enter();
+        } else if (block.type === 'quote') {
+          const quoteEnabled = await clickEditorControl(webContents, ['引用']);
+          await insert(block.text);
+          await enter();
+          if (quoteEnabled) await clickEditorControl(webContents, ['引用']);
+        } else if (block.type === 'divider') {
+          if (!await clickEditorControl(webContents, ['分割线', '分隔线'])) await insert('---');
+          await enter();
+        } else {
+          await insert(block.text);
+          if (index < blocks.length - 1) await enter();
         }
-        await enter();
-      } else if (block.type === 'quote') {
-        const quoteEnabled = await clickEditorControl(webContents, ['引用']);
-        await insert(block.text);
-        await enter();
-        if (quoteEnabled) await clickEditorControl(webContents, ['引用']);
-      } else if (block.type === 'divider') {
-        if (!await clickEditorControl(webContents, ['分割线', '分隔线'])) await insert('---');
-        await enter();
-      } else {
-        await insert(block.text);
-        if (index < blocks.length - 1) await enter();
+      } catch (error) {
+        if (error instanceof Error && /^ZHIHU_EDITOR_(?:COMMIT_TIMEOUT|FOCUS_LOST):/.test(error.message)) {
+          const labels = { paragraph: '段落', heading: '小标题', list: '列表', quote: '引用', divider: '分隔线' };
+          error.message = error.message.replace(/^([^:]+):\s*/, `$1: 正文第 ${index + 1} 块（${labels[block.type]}）：`);
+        }
+        throw error;
       }
     }
     await delay(1_800);
@@ -351,7 +432,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
   for (let attempt = 0; attempt < 16; attempt += 1) {
     await delay(500 + attempt * 150);
     result = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+      const normalize = ${normalizeZhihuEditorText.toString()};
       const compact = (value) => normalize(value).replace(/[\\s\\-•·]/g, '');
       const requestedTitle = ${JSON.stringify(title)};
       const parser = document.createElement('div');
@@ -403,7 +484,7 @@ async function fillContent(webContents: WebContents, title: string, html: string
 async function openPublishSettings(webContents: WebContents): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const state = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+      const normalize = ${normalizeZhihuEditorText.toString()};
       const visible = (element) => element instanceof HTMLElement && (() => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -430,7 +511,7 @@ async function openPublishSettings(webContents: WebContents): Promise<boolean> {
 
 async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: boolean; selected: boolean }> {
   const readCurrentSelection = async (): Promise<{ found: boolean; selected: boolean }> => await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = ${normalizeZhihuEditorText.toString()};
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
@@ -462,7 +543,7 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
   const current = await readCurrentSelection();
   if (current.selected) return current;
   const control = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = ${normalizeZhihuEditorText.toString()};
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
@@ -501,7 +582,7 @@ async function ensureAiDeclaration(webContents: WebContents): Promise<{ found: b
   }
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const state = await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+      const normalize = ${normalizeZhihuEditorText.toString()};
       const visible = (element) => element instanceof HTMLElement && (() => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -576,7 +657,7 @@ export async function fillZhihuDraft(
   let declaration = { found: false, selected: false };
   if (publishSettingsOpened) declaration = await ensureAiDeclaration(webContents);
   const finalState = await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+    const normalize = ${normalizeZhihuEditorText.toString()};
     const visible = (element) => element instanceof HTMLElement && (() => {
       const rect = element.getBoundingClientRect(); const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';

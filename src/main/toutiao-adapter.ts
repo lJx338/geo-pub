@@ -1,11 +1,24 @@
-import { access } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, extname, join, resolve } from 'node:path';
 import type { WebContents } from 'electron';
 import { resumeVisibleDraft } from './editor-draft.js';
 
 const PUBLISH_URL = 'https://mp.toutiao.com/profile_v4/graphic/publish';
 const TITLE_SELECTOR = 'textarea[placeholder*="标题"],input[placeholder*="标题"]';
 const BODY_SELECTOR = '.ProseMirror[contenteditable="true"],.ql-editor[contenteditable="true"],[data-editor="content"] [contenteditable="true"]';
+// Keep large covers responsive in Toutiao's upload drawer. This is an
+// operational limit for the desktop adapter; the platform may accept larger
+// files, but they are much more likely to outlive the upload confirmation
+// window on a slow connection.
+export const TOUTIAO_MAX_COVER_BYTES = 2 * 1024 * 1024;
+const TOUTIAO_MAX_COVER_DIMENSION = 5_000;
+const TOUTIAO_COVER_UPLOAD_TIMEOUT_MS = 90_000;
+const TOUTIAO_COVER_CONFIRM_TIMEOUT_MS = 20_000;
+
+export function toutiaoCoverUploadNeedsNormalization(byteLength: number): boolean {
+  return byteLength > TOUTIAO_MAX_COVER_BYTES;
+}
 
 export interface DraftFillResult {
   titleFilled: boolean;
@@ -28,6 +41,65 @@ export interface DraftFillResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+async function prepareToutiaoCoverUpload(
+  webContents: WebContents,
+  filePath: string,
+): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
+  const absolutePath = resolve(filePath);
+  await access(absolutePath);
+  const source = await readFile(absolutePath);
+  if (!toutiaoCoverUploadNeedsNormalization(source.length)) return { filePath: absolutePath, cleanup: async () => undefined };
+
+  const extension = extname(absolutePath).toLowerCase();
+  const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg';
+  const directory = await mkdtemp(join(tmpdir(), 'geo-publisher-toutiao-cover-'));
+  const convertedPath = join(directory, 'cover.jpg');
+  try {
+    const jpegBase64 = await webContents.executeJavaScript(`(async () => {
+      const encoded = ${JSON.stringify(source.toString('base64'))};
+      const binary = atob(encoded);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: ${JSON.stringify(mime)} }));
+      try {
+        const scale = Math.min(1, ${TOUTIAO_MAX_COVER_DIMENSION} / bitmap.width, ${TOUTIAO_MAX_COVER_DIMENSION} / bitmap.height);
+        let width = Math.max(1, Math.floor(bitmap.width * scale));
+        let height = Math.max(1, Math.floor(bitmap.height * scale));
+        let quality = 0.86;
+        let dataUrl = '';
+        const encodedBytes = (value) => Math.ceil(Math.max(0, value.length - value.indexOf(',') - 1) * 3 / 4);
+        for (let pass = 0; pass < 14; pass += 1) {
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext('2d');
+          if (!context) throw new Error('canvas context unavailable');
+          context.fillStyle = '#ffffff';
+          context.fillRect(0, 0, width, height);
+          context.drawImage(bitmap, 0, 0, width, height);
+          dataUrl = canvas.toDataURL('image/jpeg', quality);
+          if (!dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('JPEG encoding failed');
+          if (encodedBytes(dataUrl) <= ${TOUTIAO_MAX_COVER_BYTES}) break;
+          if (quality > 0.5) quality = Math.max(0.5, quality - 0.1);
+          else { width = Math.max(640, Math.floor(width * 0.85)); height = Math.max(640, Math.floor(height * 0.85)); }
+        }
+        if (!dataUrl || encodedBytes(dataUrl) > ${TOUTIAO_MAX_COVER_BYTES}) throw new Error('封面压缩后仍超过2MB');
+        return dataUrl.slice('data:image/jpeg;base64,'.length);
+      } finally {
+        bitmap.close();
+      }
+    })()`);
+    const jpeg = Buffer.from(String(jpegBase64), 'base64');
+    if (jpeg.length < 3 || jpeg.subarray(0, 3).toString('hex') !== 'ffd8ff' || jpeg.length > TOUTIAO_MAX_COVER_BYTES) {
+      throw new Error('invalid JPEG');
+    }
+    await writeFile(convertedPath, jpeg, { mode: 0o600 });
+    return { filePath: convertedPath, cleanup: async () => { await rm(directory, { recursive: true, force: true }); } };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw new Error(`TOUTIAO_COVER_NORMALIZATION_FAILED: 封面压缩失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function collapseAssistant(webContents: WebContents): Promise<void> {
@@ -298,7 +370,15 @@ async function confirmCoverDialog(webContents: WebContents): Promise<boolean> {
   })()`);
 }
 
-async function isToutiaoCoverUploadDialogOpen(webContents: WebContents): Promise<boolean> {
+type ToutiaoCoverUploadState = {
+  open: boolean;
+  uploading: boolean;
+  hasUploadedItem: boolean;
+  confirmEnabled: boolean;
+  fileName: string;
+};
+
+async function inspectToutiaoCoverUpload(webContents: WebContents): Promise<ToutiaoCoverUploadState> {
   return await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && (() => {
@@ -307,10 +387,69 @@ async function isToutiaoCoverUploadDialogOpen(webContents: WebContents): Promise
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     })();
     const localUpload = [...document.querySelectorAll('button,[role="button"]')]
-      .filter(visible).some((element) => normalize(element.textContent) === '本地上传');
-    const fileInput = [...document.querySelectorAll('.upload-btn input[type="file"],input[type="file"]')]
-      .some((element) => element instanceof HTMLInputElement && visible(element.closest('button,.upload-btn,.btns-wrapper') || element));
-    return localUpload && fileInput;
+      .filter(visible).find((element) => normalize(element.textContent) === '本地上传');
+    let root = localUpload instanceof HTMLElement ? localUpload.parentElement : null;
+    for (let depth = 0; root && depth < 18; depth += 1, root = root.parentElement) {
+      const text = normalize(root.textContent);
+      if (text.includes('上传图片') && (text.includes('本地上传') || text.includes('已上传'))) break;
+    }
+    const open = root instanceof HTMLElement;
+    if (!open) return { open: false, uploading: false, hasUploadedItem: false, confirmEnabled: false, fileName: '' };
+    const text = normalize(root.textContent);
+    const exact = root.querySelector('[data-e2e="imageUploadConfirm-btn"]');
+    const fallback = [...root.querySelectorAll('button,[role="button"]')]
+      .filter(visible)
+      .find((element) => ['确定', '完成', '使用'].includes(normalize(element.textContent)));
+    const confirm = exact instanceof HTMLElement && visible(exact) ? exact : fallback;
+    const confirmEnabled = confirm instanceof HTMLElement
+      && !confirm.hasAttribute('disabled')
+      && confirm.getAttribute('aria-disabled') !== 'true';
+    const progressNodes = [...root.querySelectorAll('[role="progressbar"],[class*="progress"],[class*="Progress"]')];
+    const activeProgress = progressNodes.some((node) => {
+      const value = Number(node.getAttribute('aria-valuenow'));
+      if (Number.isFinite(value)) return value < 100;
+      const parentWidth = node.getBoundingClientRect().width;
+      if (parentWidth <= 0) return false;
+      return [...node.querySelectorAll('*')].some((child) => {
+        const width = child.getBoundingClientRect().width;
+        return width > 0 && width < parentWidth - 1;
+      });
+    });
+    const uploading = activeProgress || /上传中|处理中|正在上传|解析中/.test(text);
+    const hasUploadedItem = root.querySelectorAll('img').length > 0 || /已上传\\s*\\d+\\s*张/.test(text);
+    const fileInput = root.querySelector('input[type="file"]');
+    const fileName = fileInput instanceof HTMLInputElement && fileInput.files?.length ? fileInput.files[0].name : '';
+    return { open: true, uploading, hasUploadedItem, confirmEnabled, fileName };
+  })()`);
+}
+
+async function isToutiaoCoverUploadDialogOpen(webContents: WebContents): Promise<boolean> {
+  return (await inspectToutiaoCoverUpload(webContents)).open;
+}
+
+async function closeToutiaoCoverUploadDialog(webContents: WebContents): Promise<boolean> {
+  return await webContents.executeJavaScript(`(() => {
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (element) => element instanceof HTMLElement && (() => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    })();
+    const localUpload = [...document.querySelectorAll('button,[role="button"]')]
+      .filter(visible).find((element) => normalize(element.textContent) === '本地上传');
+    let root = localUpload instanceof HTMLElement ? localUpload.parentElement : null;
+    for (let depth = 0; root && depth < 18; depth += 1, root = root.parentElement) {
+      const text = normalize(root.textContent);
+      if (text.includes('上传图片') && (text.includes('本地上传') || text.includes('已上传'))) break;
+    }
+    if (!(root instanceof HTMLElement)) return false;
+    const close = [...root.querySelectorAll('button,[role="button"]')]
+      .filter(visible)
+      .find((element) => /^(取消|关闭|×|✕)$/.test(normalize(element.textContent))
+        || /关闭|取消/.test(String(element.getAttribute('aria-label') || element.getAttribute('title') || '')));
+    if (!(close instanceof HTMLElement)) return false;
+    close.click();
+    return true;
   })()`);
 }
 
@@ -338,19 +477,48 @@ async function locateToutiaoCoverFileInput(webContents: WebContents): Promise<st
   })()`);
 }
 
-async function uploadCover(webContents: WebContents, coverPath: string): Promise<boolean> {
+async function waitForToutiaoCoverConfirmation(
+  webContents: WebContents,
+  expectedFileName: string,
+): Promise<boolean> {
+  const uploadDeadline = Date.now() + TOUTIAO_COVER_UPLOAD_TIMEOUT_MS;
+  while (Date.now() < uploadDeadline) {
+    const state = await inspectToutiaoCoverUpload(webContents);
+    if (!state.open) return await hasCoverAsset(webContents);
+    if (expectedFileName && state.fileName && state.fileName !== expectedFileName) return false;
+    if (!state.uploading && state.confirmEnabled) {
+      const clicked = await confirmCoverDialog(webContents);
+      if (clicked) {
+        const confirmDeadline = Date.now() + TOUTIAO_COVER_CONFIRM_TIMEOUT_MS;
+        while (Date.now() < confirmDeadline) {
+          await delay(500);
+          const closed = !(await inspectToutiaoCoverUpload(webContents)).open;
+          if (closed && await hasCoverAsset(webContents)) return true;
+        }
+        return false;
+      }
+    }
+    await delay(500);
+  }
+  return false;
+}
+
+async function uploadCoverOnce(webContents: WebContents, coverPath: string): Promise<boolean> {
   const absolutePath = resolve(coverPath);
   await access(absolutePath);
-  if (await confirmCoverDialog(webContents)) {
+  if (await hasCoverAsset(webContents)) return true;
+
+  let state = await inspectToutiaoCoverUpload(webContents);
+  if (state.open && (state.uploading || state.hasUploadedItem)) {
+    const existingApplied = await waitForToutiaoCoverConfirmation(webContents, basename(absolutePath));
+    if (existingApplied) return true;
+    await closeToutiaoCoverUploadDialog(webContents);
     await delay(800);
+    state = await inspectToutiaoCoverUpload(webContents);
+    if (state.open) throw new Error('TOUTIAO_COVER_UPLOAD_BUSY: 上一次头条封面上传仍在进行，已阻止重复上传');
   }
-  try {
-    if (await hasCoverAsset(webContents)) return true;
-  } catch (error) {
-    throw new Error(`inspect_initial: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const uploadDialogOpen = await isToutiaoCoverUploadDialogOpen(webContents);
-  if (!uploadDialogOpen) {
+
+  if (!state.open) {
     try {
       await collapseAssistant(webContents);
     } catch (error) {
@@ -358,12 +526,12 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
     }
     try {
       await webContents.executeJavaScript(`(() => {
-      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-      const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')]
-        .find((element) => normalize(element.textContent) === '单图');
-      if (single instanceof HTMLElement) single.click();
-      return Boolean(single);
-    })()`);
+        const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+        const single = [...document.querySelectorAll('label,[role="radio"],.byte-radio,.semi-radio')]
+          .find((element) => normalize(element.textContent) === '单图');
+        if (single instanceof HTMLElement) single.click();
+        return Boolean(single);
+      })()`);
     } catch (error) {
       throw new Error(`select_single: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -371,22 +539,23 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
     let opened: boolean;
     try {
       opened = await webContents.executeJavaScript(`(() => {
-      const visible = (element) => element instanceof HTMLElement && (() => {
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-      })();
-      const entry = [...document.querySelectorAll('.article-cover-add')].find(visible);
-      if (!(entry instanceof HTMLElement)) return false;
-      entry.scrollIntoView({ block: 'center', inline: 'center' });
-      entry.click();
-      return true;
-    })()`);
+        const visible = (element) => element instanceof HTMLElement && (() => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        })();
+        const entry = [...document.querySelectorAll('.article-cover-add')].find(visible);
+        if (!(entry instanceof HTMLElement)) return false;
+        entry.scrollIntoView({ block: 'center', inline: 'center' });
+        entry.click();
+        return true;
+      })()`);
     } catch (error) {
       throw new Error(`open_cover_dialog: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (!opened) return false;
   }
+
   let selector = '';
   for (let attempt = 0; attempt < 30 && !selector; attempt += 1) {
     try {
@@ -402,14 +571,28 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
   } catch (error) {
     throw new Error(`set_file_input: ${error instanceof Error ? error.message : String(error)}`);
   }
-  await delay(1200);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const clicked = await confirmCoverDialog(webContents);
-    if (clicked) await delay(900);
-    if (await hasCoverAsset(webContents)) return true;
-    await delay(700);
+  const applied = await waitForToutiaoCoverConfirmation(webContents, basename(absolutePath));
+  if (applied) return true;
+  await closeToutiaoCoverUploadDialog(webContents);
+  await delay(800);
+  if (await isToutiaoCoverUploadDialogOpen(webContents)) {
+    throw new Error('TOUTIAO_COVER_UPLOAD_TIMEOUT: 封面上传或确认超时，已停止继续操作');
   }
   return await hasCoverAsset(webContents);
+}
+
+const activeToutiaoCoverUploads = new WeakMap<WebContents, Promise<boolean>>();
+
+async function uploadCover(webContents: WebContents, coverPath: string): Promise<boolean> {
+  const active = activeToutiaoCoverUploads.get(webContents);
+  if (active) return await active;
+  const task = uploadCoverOnce(webContents, coverPath);
+  activeToutiaoCoverUploads.set(webContents, task);
+  try {
+    return await task;
+  } finally {
+    if (activeToutiaoCoverUploads.get(webContents) === task) activeToutiaoCoverUploads.delete(webContents);
+  }
 }
 
 export async function ensureToutiaoEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {

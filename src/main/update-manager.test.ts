@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { isStoreManagedRuntime, updateChannelForVersion, updateFeedUrl, updatePlatformKey, updaterManifestChannel } from './update-manager.js';
+import { NsisUpdater } from 'electron-updater';
+import { configureUpdaterChannel, isStoreManagedRuntime, updateChannelForVersion, updateFeedUrl, updatePlatformKey, updaterManifestChannel } from './update-manager.js';
+
+// Exercise the installed updater's real channel setter and version comparison.
+// The app adapter and rollout callbacks avoid Electron, disk writes and network.
+class TestUpdater extends NsisUpdater {
+  constructor(version: string) {
+    super(null, {
+      version, name: 'GEO updater regression test', isPackaged: true,
+      appUpdateConfigPath: '', userDataPath: '', baseCachePath: '',
+      whenReady: async () => {}, relaunch: () => {}, quit: () => {}, onQuit: () => {},
+    });
+    this.isUpdateSupported = () => true;
+    this.isUserWithinRollout = () => true;
+  }
+
+  canUpdateTo(version: string): Promise<boolean> {
+    // Use the library's internal predicate without starting a download.
+    return Reflect.get(this, 'isUpdateAvailable').call(this, {
+      version, files: [], path: '', sha512: '', releaseDate: '2026-10-08T00:00:00Z',
+    });
+  }
+}
 
 describe('update feed platform selection', () => {
   it('supports Apple Silicon macOS and Windows x64 only', () => {
@@ -37,5 +59,29 @@ describe('update feed platform selection', () => {
   it('uses the default latest manifest for stable releases', () => {
     expect(updaterManifestChannel('stable')).toBe('latest');
     expect(updaterManifestChannel('beta')).toBe('beta');
+  });
+
+  it('does not downgrade beta.14 to beta.8 when the beta feed is stale', async () => {
+    const updater = new TestUpdater('0.6.0-beta.14');
+    configureUpdaterChannel(updater, 'beta');
+    expect(await updater.canUpdateTo('0.6.0-beta.8')).toBe(false);
+    expect(await updater.canUpdateTo('0.6.0-beta.14')).toBe(false);
+    expect(await updater.canUpdateTo('0.6.0-beta.15')).toBe(true);
+  });
+
+  it('does not downgrade to the old stable release after leaving beta', async () => {
+    const updater = new TestUpdater('0.6.0-beta.14');
+    configureUpdaterChannel(updater, 'beta');
+    configureUpdaterChannel(updater, 'stable');
+    expect(await updater.canUpdateTo('0.2.13')).toBe(false);
+    expect(await updater.canUpdateTo('0.6.0')).toBe(true);
+  });
+
+  it('keeps the installed stable release when opting into an older beta feed', async () => {
+    const updater = new TestUpdater('0.6.0');
+    configureUpdaterChannel(updater, 'stable');
+    configureUpdaterChannel(updater, 'beta');
+    expect(await updater.canUpdateTo('0.6.0-beta.14')).toBe(false);
+    expect(await updater.canUpdateTo('0.7.0-beta.1')).toBe(true);
   });
 });

@@ -130,8 +130,11 @@ async function runDesktop(): Promise<void> {
     if (!window.isDestroyed()) window.webContents.send('geo:data-changed', event);
     return event;
   };
+  content.onRepair((notice) => {
+    if (!window.isDestroyed()) window.webContents.send('geo:content-repair', notice);
+  });
   const workspaceSnapshot = async () => {
-    let snapshot = { revision: dataChanges.current(), projects: projects.list(), currentProject: projects.current(), items: [] as Awaited<ReturnType<ContentStore['list']>>, contentCounts: {} as Record<string, number> };
+    let snapshot = { revision: dataChanges.current(), projects: projects.list(), currentProject: projects.current(), items: [] as Awaited<ReturnType<ContentStore['list']>>, contentCounts: {} as Record<string, number>, contentRepair: content.getRepairNotice() };
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const revision = dataChanges.current();
       const currentProject = projects.current();
@@ -144,6 +147,7 @@ async function runDesktop(): Promise<void> {
         currentProject,
         items: pages.flatMap((page) => page.items),
         contentCounts: Object.fromEntries(kinds.map((kind, index) => [kind, pages[index]?.total ?? 0])),
+        contentRepair: content.getRepairNotice(),
       };
       if (dataChanges.current() === revision) break;
     }
@@ -552,6 +556,10 @@ async function runDesktop(): Promise<void> {
   });
   ipcMain.handle('geo:open-data-directory', async () => {
     const error = await shell.openPath(dataDirectory());
+    return error ? { opened: false, error } : { opened: true };
+  });
+  ipcMain.handle('geo:open-content-backups', async () => {
+    const error = await shell.openPath(content.backupDirectory);
     return error ? { opened: false, error } : { opened: true };
   });
   await window.loadFile(join(__dirname, '..', 'renderer', 'index.html'));

@@ -1,12 +1,90 @@
-import { access, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { ContentStore } from './content-store.js';
 
 const projectId = '11111111-1111-4111-8111-111111111111';
 
 describe('content store', () => {
+  it('repairs persisted policies on startup and reads the repaired database on later starts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-startup-repair-'));
+    const root = join(directory, 'content');
+    const first = new ContentStore(root);
+    const original = await first.save(projectId, { kind: 'topic', title: '常青主题', status: 'approved', payload: { body: '保留原内容' } });
+    const database = new DatabaseSync(join(root, 'content.sqlite3'));
+    try {
+      database.prepare('UPDATE content_items SET reuse_policy = ? WHERE id = ?').run(' EVERGREEN ', original.id);
+      const repaired = new ContentStore(root);
+      expect(repaired.getRepairNotice()).toMatchObject({ status: 'repaired', repairedCount: 1 });
+      expect((await repaired.listPage(projectId, 'topic')).items).toEqual([{ ...original, reusePolicy: 'evergreen' }]);
+      const restarted = new ContentStore(root);
+      expect(restarted.getRepairNotice()).toBeNull();
+      expect(await restarted.list(projectId)).toEqual([{ ...original, reusePolicy: 'evergreen' }]);
+      expect(await readdir(join(directory, 'backups'))).toHaveLength(1);
+    } finally { database.close(); }
+  });
+
+  it('keeps the workspace readable after backup failure without silently saving the fallback', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-failed-repair-'));
+    const root = join(directory, 'content');
+    const originalStore = new ContentStore(root);
+    const original = await originalStore.save(projectId, { kind: 'topic', title: '待修复', status: 'approved' });
+    await writeFile(join(directory, 'backups'), 'blocked');
+    const database = new DatabaseSync(join(root, 'content.sqlite3'));
+    try {
+      database.prepare('UPDATE content_items SET reuse_policy = ? WHERE id = ?').run('', original.id);
+      const store = new ContentStore(root);
+      expect(store.getRepairNotice()).toMatchObject({ status: 'failed', repairedCount: 0 });
+      expect((await store.listPage(projectId, 'topic')).items).toEqual([original]);
+      await expect(store.save(projectId, { id: original.id, kind: 'topic', title: '不应写入' })).rejects.toThrow('CONTENT_REPAIR_REQUIRED');
+      await expect(store.reserveTopic(projectId, original.id, 'task')).rejects.toThrow('CONTENT_REPAIR_REQUIRED');
+      expect(database.prepare('SELECT reuse_policy, title, status FROM content_items WHERE id = ?').get(original.id)).toMatchObject({ reuse_policy: '', title: '待修复', status: 'approved' });
+    } finally { database.close(); }
+  });
+
+  it('coalesces repairs for invalid values written while the app is running and reports the result', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-runtime-repair-'));
+    const root = join(directory, 'content');
+    const store = new ContentStore(root);
+    const first = await store.save(projectId, { kind: 'topic', title: '普通主题' });
+    await store.save(projectId, { kind: 'topic', title: '另一条主题' });
+    const database = new DatabaseSync(join(root, 'content.sqlite3'));
+    try {
+      database.prepare('UPDATE content_items SET reuse_policy = ?').run('unknown');
+      const notices: unknown[] = [];
+      store.onRepair((notice) => notices.push(notice));
+      expect((await store.list(projectId)).every((item) => item.reusePolicy === 'standard')).toBe(true);
+      expect(notices).toHaveLength(1);
+      expect(store.getRepairNotice()).toMatchObject({ status: 'repaired', repairedCount: 2 });
+      expect(database.prepare('SELECT DISTINCT reuse_policy FROM content_items').all()).toEqual([{ reuse_policy: 'standard' }]);
+      await store.save(projectId, { id: first.id, kind: 'topic', title: '修复后可修改' });
+      expect(await readdir(join(directory, 'backups'))).toHaveLength(1);
+    } finally { database.close(); }
+  });
+
+  it('defers a repair encountered inside a reservation transaction until after rollback', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-reservation-repair-'));
+    const root = join(directory, 'content');
+    const store = new ContentStore(root);
+    const topic = await store.save(projectId, { kind: 'topic', title: '主题', status: 'approved' });
+    const database = new DatabaseSync(join(root, 'content.sqlite3'));
+    try {
+      database.prepare('UPDATE content_items SET reuse_policy = ? WHERE id = ?').run('unknown', topic.id);
+      await expect(store.reserveTopic(projectId, topic.id, 'task')).rejects.toThrow('CONTENT_REPAIR_REQUIRED');
+      expect(store.getRepairNotice()).toMatchObject({ status: 'repaired', repairedCount: 1 });
+      expect(await store.reserveTopic(projectId, topic.id, 'task')).toMatchObject({ reusePolicy: 'standard', status: 'reserved' });
+    } finally { database.close(); }
+  });
+
+  it.each(['', 'unknown', 'EVERGREEN', null])('still rejects an invalid policy in new input: %s', async (reusePolicy) => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-content-input-policy-'));
+    const store = new ContentStore(join(directory, 'content'));
+    await expect(store.save(projectId, { kind: 'topic', reusePolicy: reusePolicy as never })).rejects.toThrow();
+    expect(await store.list(projectId)).toHaveLength(0);
+  });
+
   it('keeps content isolated by customer project and supports kind filtering', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-content-store-'));
     const store = new ContentStore(directory);

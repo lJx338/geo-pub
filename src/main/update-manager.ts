@@ -48,6 +48,17 @@ export function updaterManifestChannel(channel: 'stable' | 'beta'): 'latest' | '
   return channel === 'beta' ? 'beta' : 'latest';
 }
 
+export function configureUpdaterChannel(
+  updater: Pick<typeof autoUpdater, 'allowPrerelease' | 'channel' | 'allowDowngrade'>,
+  channel: 'stable' | 'beta',
+): void {
+  updater.allowPrerelease = channel === 'beta';
+  updater.channel = updaterManifestChannel(channel);
+  // electron-updater's channel setter enables downgrades, even within beta.
+  // Reset this after every channel change so a stale feed cannot roll users back.
+  updater.allowDowngrade = false;
+}
+
 export class UpdateManager {
   private status: UpdateStatus;
   private timer: NodeJS.Timeout | null = null;
@@ -187,8 +198,7 @@ export class UpdateManager {
   }
 
   private configureFeed(): void {
-    autoUpdater.allowPrerelease = this.channel === 'beta';
-    autoUpdater.channel = updaterManifestChannel(this.channel);
+    configureUpdaterChannel(autoUpdater, this.channel);
     autoUpdater.setFeedURL({ provider: 'generic', url: updateFeedUrl(this.channel)! });
   }
 

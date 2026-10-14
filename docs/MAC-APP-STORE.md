@@ -92,8 +92,8 @@ Windows 上的测试和云端签名检查不能代替沙盒中的实际运行测
 
 两家商店共用 `build/store-version.json` 中的三段版本，目前为 `1.0.13`：苹果商店版本是 `1.0.13`，Windows 商店包版本是 `1.0.13.0`（第四段固定为 0）。
 App Store Connect 原来的 `1.0` 待提交版本需要改为 `1.0.13`，才能匹配新的苹果安装包。微软商店当前线上版本已确认为 `1.0.12.0`（2026-10-08），本次 Windows 包按此递增。
-程序界面、诊断信息和 Go CLI 都跟随项目 `package.json` 中的版本，目前为 `0.6.1`；与 Windows 的程序内部版本保持一致。苹果安装包内的 `package.json` 也保留此版本。
-苹果安装包文件名使用项目版本，例如 `Lingxi-Workspace-0.6.1-mas-7.1-arm64.pkg`。苹果构建号由 Actions 运行编号和重跑次数生成，避免同一构建号重复上传。
-升级产品版本使用 `npm run version:set -- 0.6.1` 同步应用、CLI 和 Skill；升级两家商店版本修改共用配置。云端会同时检查商店版本和内部版本，防止混用。
+程序界面、诊断信息和 Go CLI 都跟随项目 `package.json` 中的版本，目前为 `0.6.2`；与 Windows 的程序内部版本保持一致。苹果安装包内的 `package.json` 也保留此版本。
+苹果安装包文件名使用项目版本，例如 `Lingxi-Workspace-0.6.2-mas-7.1-arm64.pkg`。苹果构建号由 Actions 运行编号和重跑次数生成，避免同一构建号重复上传。
+升级产品版本使用 `npm run version:set -- 0.6.2` 同步应用、CLI 和 Skill；升级两家商店版本修改共用配置。云端会同时检查商店版本和内部版本，防止混用。
 
 技术依据：[Electron MAS 指南](https://www.electronjs.org/docs/latest/tutorial/mac-app-store-submission-guide)、[Apple 沙盒 helper 指南](https://developer.apple.com/documentation/xcode/embedding-a-helper-tool-in-a-sandboxed-app)。

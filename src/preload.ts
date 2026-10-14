@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { BetaActivationResult, DataChangeEvent, DesktopDistributionRequest, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
 import type { Project, ProjectInput } from './main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from './main/content-store.js';
+import type { ContentRepairNotice } from './main/content-repair.js';
 
 // 反检测：确保不暴露任何Electron相关的全局对象
 // 删除可能被注入的 process 和 require
@@ -28,7 +29,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   chooseDistributionCover: (): Promise<{ canceled: boolean; filePath: string }> => ipcRenderer.invoke('geo:distribution-cover-choose'),
   runDistribution: (input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> => ipcRenderer.invoke('geo:distribution-run', input),
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),
-  workspaceSnapshot: (): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[]; contentCounts: Record<string, number> }> => ipcRenderer.invoke('geo:workspace-snapshot'),
+  workspaceSnapshot: (): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[]; contentCounts: Record<string, number>; contentRepair: ContentRepairNotice | null }> => ipcRenderer.invoke('geo:workspace-snapshot'),
   dataRevision: (): Promise<number> => ipcRenderer.invoke('geo:data-revision'),
   contentList: (projectId: string, kind?: ContentKind, filter?: ContentFilter): Promise<{ items: ContentItem[] }> => ipcRenderer.invoke('geo:content-list', projectId, kind, filter),
   contentSave: (projectId: string, input: ContentInput): Promise<{ item: ContentItem }> => ipcRenderer.invoke('geo:content-save', projectId, input),
@@ -59,6 +60,12 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   exportDiagnostic: (projectId: string, recordId: string): Promise<{ exported: boolean; path?: string; message?: string }> => ipcRenderer.invoke('geo:diagnostic-export', projectId, recordId),
   copyText: (text: string): Promise<{ copied: true }> => ipcRenderer.invoke('geo:copy-text', text),
   openDataDirectory: (): Promise<{ opened: boolean; error?: string }> => ipcRenderer.invoke('geo:open-data-directory'),
+  openContentBackups: (): Promise<{ opened: boolean; error?: string }> => ipcRenderer.invoke('geo:open-content-backups'),
+  onContentRepair: (listener: (notice: ContentRepairNotice) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, notice: ContentRepairNotice) => listener(notice);
+    ipcRenderer.on('geo:content-repair', handler);
+    return () => ipcRenderer.removeListener('geo:content-repair', handler);
+  },
   onUpdateStatus: (listener: (status: UpdateStatus) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
     ipcRenderer.on('geo:update-status-changed', handler);

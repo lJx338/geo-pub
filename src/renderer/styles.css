@@ -40,3 +40,13 @@
 .distribution-diagnosis-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px;border-bottom:1px solid #eaecf0}
 .distribution-diagnosis-head>div{min-width:0}.distribution-diagnosis-head h2{margin:4px 0 0;color:#101828;font-size:19px;line-height:1.45}.distribution-diagnosis-head p:not(.eyebrow){margin:5px 0 0;color:#667085;font-size:11px}.distribution-diagnosis-head>.ui-button{width:36px;min-height:36px;padding:0}
 .distribution-diagnosis-body{overflow-y:auto;padding:20px 22px}.distribution-diagnosis-status{display:flex;align-items:flex-start;gap:10px;padding:13px;border:1px solid #eaecf0;border-radius:7px;background:#fcfcfd}.distribution-diagnosis-status strong{color:#344054;font-size:12px;line-height:1.55}.distribution-diagnosis-body section{padding:16px 0;border-bottom:1px solid #f2f4f7}.distribution-diagnosis-body section:last-child{border-bottom:0}.distribution-diagnosis-body h3{margin:0;color:#344054;font-size:12px}.distribution-diagnosis-body p{margin:6px 0 0;color:#667085;font-size:12px;line-height:1.6}.distribution-diagnosis-body ul{margin:7px 0 0;padding-left:18px;color:#667085;font-size:11px;line-height:1.65}.distribution-diagnosis-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 22px;border-top:1px solid #eaecf0;background:#fcfcfd}
+
+.content-repair-notice { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:20px; padding:14px 16px; border:1px solid #abefc6; border-radius:10px; background:#ecfdf3; color:#067647; font-size:13px; }
+.content-repair-notice.error { border-color:#fecdca; background:#fef3f2; color:#b42318; }
+.content-repair-notice > svg { flex:0 0 auto; }
+.content-repair-notice p { flex:1 1 240px; margin:0; line-height:1.6; }
+.content-repair-notice .ui-button { flex:0 0 auto; }
+
+.workbuddy-prompt-list > .workbuddy-connect-step { margin-bottom:0; }
+.workbuddy-connect-step .workbuddy-workspace-emphasis { color:#b42318; font-size:inherit; font-weight:700; }
+.workbuddy-automation-note.guide-usage-note { margin:0 0 12px; }
