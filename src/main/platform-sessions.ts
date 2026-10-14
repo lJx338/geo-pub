@@ -576,10 +576,7 @@ export class PlatformSessions {
       cookieSnapshotTimer: null,
       cookieChangeListener: null,
     };
-    view.webContents.setWindowOpenHandler(({ url }) => {
-      if (!managed.loading && url !== managed.view.webContents.getURL()) void this.loadUrl(managed, url);
-      return { action: 'deny' };
-    });
+    this.configurePlatformPopups(managed, view.webContents, useMinimalBrowserEnvironment);
     view.webContents.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown' || managed.host !== 'interactive' || this.activePlatform !== platform || this.isBusy()) return;
       const modifiers = input.modifiers || [];
@@ -631,6 +628,43 @@ export class PlatformSessions {
     partition.cookies.on('changed', cookieChangeListener);
     if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
     return managed;
+  }
+
+  private configurePlatformPopups(managed: ManagedView, opener: WebContents, useMinimalBrowserEnvironment: boolean): void {
+    opener.setWindowOpenHandler(({ url }) => {
+      if (managed.cancelled || this.window.isDestroyed() || !/^(?:https?:\/\/|about:blank$)/i.test(url)) {
+        return { action: 'deny' };
+      }
+      // WeChat registration opens about:blank synchronously, then assigns the
+      // QR URL after an API request. It needs a real WindowProxy and its opener;
+      // loading the URL in the platform view destroys that handshake. Native
+      // child windows also preserve named targets, referrers and form POSTs.
+      return {
+        action: 'allow',
+        outlivesOpener: false,
+        overrideBrowserWindowOptions: {
+          parent: this.window,
+          width: 760,
+          height: 720,
+          autoHideMenuBar: true,
+          show: managed.host === 'interactive' && this.activePlatform === managed.platform
+            && this.window.isVisible() && !this.window.isMinimized() && !this.isBusy(),
+          webPreferences: {
+            session: managed.partition,
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
+          },
+        },
+      };
+    });
+    opener.on('did-create-window', (popup) => {
+      popup.setMenuBarVisibility(false);
+      this.configurePlatformPopups(managed, popup.webContents, useMinimalBrowserEnvironment);
+      if (!useMinimalBrowserEnvironment) setupStealthInjection(popup.webContents);
+    });
   }
 
   private async openBackground(platform: Platform): Promise<ManagedView> {
