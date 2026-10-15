@@ -57,7 +57,7 @@ def main():
             cli = app / 'Contents/Resources/cli/geo-publisher-darwin-arm64'
             for binary in (executable, cli):
                 require(binary.is_file(), f'Missing executable: {binary}')
-                run('lipo', '-verify_arch', 'arm64', binary)
+                run('lipo', binary, '-verify_arch', 'arm64')
             verify_signature(app, team)
             verify_signature(cli, team)
             run('xcrun', 'stapler', 'validate', app)
