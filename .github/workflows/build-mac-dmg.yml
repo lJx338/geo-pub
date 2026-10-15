@@ -1,0 +1,100 @@
+name: Build macOS DMG
+run-name: Build macOS DMG - ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-mac-dmg-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dmg:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - name: Validate signing and notarization inputs
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          : "${CSC_LINK:?Missing MAC_CSC_LINK repository secret}"
+          : "${CSC_KEY_PASSWORD:?Missing MAC_CSC_KEY_PASSWORD repository secret}"
+          : "${APPLE_ID:?Missing APPLE_ID repository secret}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD repository secret}"
+          : "${APPLE_TEAM_ID:?Missing APPLE_TEAM_ID repository secret}"
+      - name: Read application version
+        id: version
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Invalid application version');
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          NODE
+      - run: npm ci
+      - run: npm run typecheck
+      - run: go test ./...
+        working-directory: cli
+      - run: npm run build
+      - run: npm run build:cli
+      - run: npm test
+      - name: Build signed and notarized Apple Silicon DMG
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          node scripts/prepare-release-output.mjs release/mac-dmg
+          npx electron-builder --config scripts/mac-dmg-config.mjs --mac dmg --arm64 --publish never
+      - name: Verify mounted DMG, signatures and notarization
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: python3 scripts/verify-mac-dmg.py
+      - name: Save verified DMG and checksums
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GEO-Publisher-${{ steps.version.outputs.version }}-mac-arm64-dmg-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            release/mac-dmg/*.dmg
+            release/mac-dmg/SHA256SUMS.txt
+            release/mac-dmg/build-info.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Write download summary
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## macOS DMG ${APP_VERSION}
+
+          [下载安装包附件](${ARTIFACT_URL})，解压后将 DMG 中的应用拖入 Applications。
+
+          - 适用于 Apple Silicon（M 系列芯片），附件保留 14 天。
+          - 已完成类型检查、现有自动化测试、Go 测试、应用签名、公证及 DMG 挂载检查。
+          - SHA256SUMS.txt 和 build-info.json 记录校验值及源码提交。
+          - 安装包只保存在 GitHub Actions；未上传 COS、创建 Release 或上传苹果商店。
+          - TestFlight/商店版与 DMG 版的数据目录不同，目前不会自动迁移文章和登录状态；替换应用前请备份并退出原应用。
+          EOF
