@@ -9,8 +9,9 @@ import { buildDistributionDiagnosis } from '../shared/distribution-diagnostics.j
 import type { ContentRepairNotice } from '../main/content-repair.js';
 import { ContentRepairBanner } from './components/content-repair-notice.js';
 import type { LaunchAtLoginStatus } from '../shared/protocol.js';
+import { WechatSettingsDialog } from './components/wechat-settings.js';
 
-const platforms = [['baijia', '百家号'], ['toutiao', '头条号'], ['zhihu', '知乎'], ['penguin', '企鹅号'], ['sohu', '搜狐号'], ['netease', '网易号']] as const;
+const platforms = [['baijia', '百家号'], ['toutiao', '头条号'], ['zhihu', '知乎'], ['penguin', '企鹅号'], ['sohu', '搜狐号'], ['netease', '网易号'], ['wechat', '微信公众号']] as const;
 const platformLabels = Object.fromEntries(platforms) as Record<string, string>;
 const contentStatusLabels: Record<string, string> = { draft: '草稿', ready: '待分发', published: '已发布', active: '已整理', pending_analysis: '待整理', approved: '待使用', used: '已使用', pending_review: '待确认', paused: '已暂停', reserved: '生成中', failed: '失败' };
 const articleTypeLabels: Record<string, string> = { eeat: '专业权威型', question: '问题解答型', case: '案例型', pitfall: '避坑型', recommendation: '推荐选型', operation: '操作指南', seven_dimension: '七大维度', b2b_four_step: 'B2B 决策型' };
@@ -137,7 +138,7 @@ function App() {
   const saveProject = async () => { try { if (editing.id) { const result = await window.geoPublisher.updateProject(editing.id, editing); setEditing(null); notify(`已保存客户资料：${result.project.name}`); } else { const result = await window.geoPublisher.createProject(editing); setEditing(null); notify(`已创建并切换到客户项目：${result.currentProject.name}`); } await refresh(); } catch (e) { notify(friendlyProjectSaveError(e), true); throw e; } };
   const deleteProject = async (target: any) => {
     if (busy) return notify('分发任务运行中，暂时不能删除客户项目', true);
-    const confirmed = window.confirm(`确定永久删除客户项目“${target.name}”吗？\n\n该项目的公司资料、素材文件、选题、文章、分发记录和六个平台登录状态都会被删除，且无法恢复。`);
+    const confirmed = window.confirm(`确定永久删除客户项目“${target.name}”吗？\n\n该项目的公司资料、素材文件、选题、文章、分发记录、平台登录状态和公众号连接信息都会被删除，且无法恢复。`);
     if (!confirmed) return;
     try {
       await window.geoPublisher.deleteProject(target.id);
@@ -170,7 +171,7 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
   const features = [
     ['客户项目隔离', '每个客户都有独立的公司资料、平台登录状态、素材、选题、文章和分发记录。', UsersRound],
     ['内容中心', '图片素材、选题和文章分区管理。普通选题使用后保留，常青主题可以继续生成新的角度。', Boxes],
-    ['平台适配分发', '六个平台使用各自的页面适配逻辑，支持只填充不发布，也支持逐个平台真实发布。', Send],
+    ['平台适配分发', '原有六个平台支持页面填充与发布；微信公众号通过官方接口保存草稿，并读回核对。', Send],
     ['过程可追踪', '每次任务都会显示当前平台、执行阶段和结果。结果不确定时先到管理页核对，不会立即重复点击。', ShieldCheck],
   ] as const;
   const faqs = [
@@ -203,16 +204,16 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
       prompt: '请整理 GEO Publisher 当前客户项目中所有待整理的图片素材。识别每张图片的主体、适用场景和可用方式，区分产品、设备、工厂、案例、资质、团队或品牌素材，并保存整理结果。不要重新识别已经整理过的图片。完成后告诉我整理了多少张、各有多少类。',
     },
     {
-      number: '5', title: '生成选题和第一篇文章', badge: '内容准备', description: '把【平台名称】替换成百家号、头条号、知乎、企鹅号、搜狐号或网易号。',
-      prompt: '请基于 GEO Publisher 当前客户项目的公司资料和已整理素材，生成未来 7 天的选题，每天 1 个，共 7 个。每条标题只保留一个核心问题，避免空泛、重复和同义改写，检查通过后保存到选题池。然后从第一个可用选题生成 1 篇适合【平台名称】的文章并保存到内容中心。先不要填充，也不要发布。完成后告诉我选题标题和文章标题。',
+      number: '5', title: '生成选题和各平台文章', badge: '内容准备', description: '同一个选题，为七个平台分别写一篇，包含微信公众号；也可以指定只写部分平台。',
+      prompt: '请基于 GEO Publisher 当前客户项目的公司资料和已整理素材，生成未来 7 天的选题，每天 1 个，共 7 个。每条标题只保留一个核心问题，避免空泛、重复和同义改写，检查通过后保存到选题池。然后锁定第一个可用选题，按各平台写作规则，为百家号、头条号、知乎、企鹅号、搜狐号、网易号和微信公众号分别独立写一篇，共 7 篇，全部关联同一选题并保存到内容中心。不要复制同一篇正文给不同平台，全部保存成功后只标记一次选题已使用。先不要填充，也不要发布。完成后告诉我选题标题及各平台文章标题。',
     },
     {
-      number: '6', title: '先做一次填充检查', badge: '不会发布', description: '这一步只把文章写进平台页面，用来确认登录、正文格式、封面和声明是否正常。',
-      prompt: '请读取 GEO Publisher 当前客户项目中最新一篇待分发文章，只填充到【平台名称】，不要点击发布。填充前先检查连接和登录状态；填充后核对标题、正文格式、封面和平台声明是否完成。任何步骤失败都要返回真实原因，不要继续发布。完成后提醒我打开平台页面人工检查。',
+      number: '6', title: '先做一次填充检查', badge: '不会发布', description: '其他平台检查编辑器填充；微信公众号通过官方接口保存草稿并读回核对。',
+      prompt: '请读取 GEO Publisher 当前客户项目中适合【平台名称】的待分发文章，只填充或存草稿，不要点击发布。微信公众号使用已在桌面端配置的接口连接，调用 fill 保存并读回草稿，不要求先扫码登录；其他平台检查连接和登录状态，并核对标题、正文格式、封面和声明。任何步骤失败都要返回真实原因，不要继续发布。完成后提醒我打开平台页面人工检查。',
     },
     {
-      number: '7', title: '完成一次真实发布', badge: '人工确认', description: '确认上一步页面内容正确后再使用。结果不明确时会先核对，不会连续点击发布。',
-      prompt: '我已经人工检查过当前项目最新一篇文章的填充结果。请将这篇文章真实发布到【平台名称】。发布前重新校验当前客户项目、文章、登录状态和必填项；发布后查询管理页并核对标题与文章状态。遇到登录、验证码、风控或发文次数用完时立即停止并提醒我；如果结果不明确，先对账并通知我，禁止再次点击发布。',
+      number: '7', title: '完成一次真实发布', badge: '人工确认', description: '适用于原六个平台；微信公众号仅存草稿，正式发表请在公众号后台操作。结果不明确时先核对。',
+      prompt: '我已经人工检查过当前项目中【平台名称】对应文章的填充结果。请将该平台版本真实发布到【平台名称】。如果目标是微信公众号，只保存并核对草稿，告诉我正式发表需要在公众号后台操作，不调用 publish。发布前重新校验当前客户项目、文章、登录状态和必填项；发布后查询管理页并核对标题与文章状态。遇到登录、验证码、风控或发文次数用完时立即停止并提醒我；如果结果不明确，先对账并通知我，禁止再次点击发布。',
     },
     {
       number: '8', title: '设置选题池自动维护', badge: '每周维护', description: `把下面完整提示词发给 WorkBuddy，让它创建并启用选题池维护任务。任务在【每周一 09:00】（Asia/Shanghai）将可用主选题补足到 35 个，不按日期排期，只维护选题，不写文章、不发布。复制发送前，请将【】中的运行时间调整为适合自己的工作时间。当前教程锁定客户项目“${projectName}”。`,
@@ -220,7 +221,7 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
     },
     {
       number: '9', title: '设置自动发布', badge: '最后开启', description: `把下面完整提示词发给 WorkBuddy，让它创建并启用自动化任务。任务在【每天 10:30、14:30、16:30】（Asia/Shanghai）运行。复制发送前，请将【】中的运行时间调整为适合自己的工作时间。当前教程锁定客户项目“${projectName}”。`,
-      prompt: `请在 WorkBuddy 中直接创建并启用一条 GEO Publisher 自动发布自动化任务，不要只把下面内容当作一次性执行请求。\n\n任务名称：${projectName}｜GEO 自动发布\n运行时区：Asia/Shanghai\n运行频率：每天\n运行时间：【每天 10:30、14:30、16:30】\n固定客户项目：${projectName}\n目标平台：请使用我明确指定的平台；如果我还没有指定目标平台，先询问我，确认后再创建任务。\n\n创建任务前，请确认 WorkBuddy 已成功创建上述自动化，并向我返回任务名称、任务 ID（如果有）、运行时间和启用状态。若当前 WorkBuddy 无法通过对话创建或启用自动化，请明确告诉我需要手动完成的步骤，不要把下面的内容当作普通对话直接执行。\n\n这条任务只允许操作客户项目【${projectName}】。每次运行时先检查桌面端连接，并在项目列表中查找名称完全一致且唯一的项目；如果不存在、重名或无法确认，立即停止并提醒我，禁止发布。\n\n每次运行按以下顺序执行：\n1. 检查六个平台登录状态和当天可用情况。\n2. 读取该项目的公司资料、已整理素材、历史选题和历史文章。\n3. 优先从选题池中选择尚未使用且已审核的选题；如果没有合适的可用选题，再根据当前资料和历史内容生成不重复的新选题并保存到选题池。不同平台不要共用同一篇改写稿。\n4. 检查标题、正文结构、素材和平台要求，通过后保存文章。\n5. 按百家号、头条号、知乎、企鹅号、搜狐号、网易号的顺序，只处理我指定的平台，并且全程串行。\n6. 每个平台发布后查询管理页，核对标题和文章状态，再记录结果。\n\n安全规则：登录、验证码、风控、发文次数用完时停止对应平台并提醒我；某个平台失败不影响其他平台；同一文章不得重复发布；结果不明确时只提醒人工核对，禁止再次点击发布。任务结束后汇总每个平台的成功、失败和人工处理状态。`,
+      prompt: `请在 WorkBuddy 中直接创建并启用一条 GEO Publisher 自动发布自动化任务，不要只把下面内容当作一次性执行请求。\n\n任务名称：${projectName}｜GEO 自动发布\n运行时区：Asia/Shanghai\n运行频率：每天\n运行时间：【每天 10:30、14:30、16:30】\n固定客户项目：${projectName}\n目标平台：请使用我明确指定的平台；如果我还没有指定目标平台，先询问我，确认后再创建任务。\n\n创建任务前，请确认 WorkBuddy 已成功创建上述自动化，并向我返回任务名称、任务 ID（如果有）、运行时间和启用状态。若当前 WorkBuddy 无法通过对话创建或启用自动化，请明确告诉我需要手动完成的步骤，不要把下面的内容当作普通对话直接执行。\n\n这条任务只允许操作客户项目【${projectName}】。每次运行时先检查桌面端连接，并在项目列表中查找名称完全一致且唯一的项目；如果不存在、重名或无法确认，立即停止并提醒我，禁止发布。\n\n每次运行按以下顺序执行：\n1. 只检查目标平台的登录状态和当天可用情况；微信公众号使用桌面端已配置的接口连接，扫码登录不代表接口可用。\n2. 读取该项目的公司资料、已整理素材、历史选题和历史文章。\n3. 优先从选题池中选择尚未使用且已审核的选题；如果没有合适的可用选题，再根据当前资料和历史内容生成不重复的新选题并保存到选题池。本次所有目标平台共用同一个选题和事实素材，按各平台规则分别独立写一篇，关联同一个选题；不要为每个平台重新选题，也不要共用同一篇改写稿。\n4. 检查标题、正文结构、素材和平台要求，通过后为每个平台分别保存文章；全部目标版本保存成功后只标记一次选题已使用。失败重试时复用已保存版本，只补缺失平台。\n5. 按百家号、头条号、知乎、企鹅号、搜狐号、网易号、微信公众号的顺序，只处理我指定的平台（所有平台代表这七个），并且全程串行。每个平台使用自己的文章版本；微信公众号只能调用 fill 存草稿，禁止 publish 或群发。\n6. 其他平台发布后查询管理页核对；公众号草稿必须读回核对成功并取得草稿编号，记录为草稿已保存，不能报成发布成功。\n\n安全规则：登录、验证码、风控、发文次数用完时停止对应平台并提醒我；某个平台失败不影响其他平台；同一文章不得重复发布；结果不明确时只提醒人工核对，禁止再次点击发布。任务结束后汇总每个平台的成功、失败和人工处理状态。`,
     },
   ];
   const copyPrompt = async (title: string, prompt: string) => {
@@ -237,7 +238,7 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
 
 这条任务只允许读取和修改上述项目的公司资料、图片素材、选题、文章和分发记录，只允许操作该项目对应的平台登录态。不要修改、读取或发布其他客户项目的内容和账号。
 
-请根据我在 WorkBuddy 中设置的平台和时间运行自动发布：每个目标平台独立生成一篇文章，按平台串行执行；发布前先校验，发布后查询管理页并核对标题和状态。登录失效、验证码、风控、平台次数用完或项目上下文变化时，停止当前平台并说明原因。桌面端忙碌时不要抢占、等待或重复点击，直接报告 PUBLISHER_BUSY。结果不明确时只提醒人工核对，禁止再次点击发布。
+请根据我在 WorkBuddy 中设置的平台和时间运行自动发布：所有目标平台共用同一个选题，按各平台规则分别生成并保存一篇文章，全部完成后只标记一次选题已使用。七个平台包含微信公众号；分发时选择各平台自己的文章版本，按平台串行执行。公众号只能调用 fill 保存并读回草稿，不调用 publish、不群发；其他平台发布前先校验，发布后查询管理页核对。登录失效、验证码、风控、平台次数用完或项目上下文变化时，停止当前平台并说明原因。桌面端忙碌时不要抢占、等待或重复点击，直接报告 PUBLISHER_BUSY。结果不明确时只提醒人工核对，禁止再次点击发布。
 
 我会为每个客户项目分别创建一条自动化任务，请不要把多个客户合并到同一条任务中。`;
   return <div className="guide-page">
@@ -280,7 +281,11 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
 
 const distributionStatusLabels: Record<string, string> = { running: '执行中', filled: '已填充', success: '发布成功', failed: '失败', action_required: '需人工处理', result_uncertain: '结果待确认' };
 const distributionStatusTones: Record<string, 'neutral' | 'success' | 'warning' | 'danger'> = { running: 'warning', filled: 'success', success: 'success', failed: 'danger', action_required: 'warning', result_uncertain: 'warning' };
-const coverRequiredPlatforms = new Set(['baijia', 'toutiao', 'netease']);
+const coverRequiredPlatforms = new Set(['baijia', 'toutiao', 'netease', 'wechat']);
+
+function distributionStatusLabel(record: any): string {
+  return record.platform === 'wechat' && record.status === 'filled' ? '草稿已保存' : distributionStatusLabels[record.status] || record.status;
+}
 
 function DistributionView({ project, articles, distributions, status, busy, refresh, notify }: any) {
   const [draft, setDraft] = useState<any>(null);
@@ -302,6 +307,9 @@ function DistributionView({ project, articles, distributions, status, busy, refr
       confirmPublish: false,
       running: false,
       records: [],
+      wechatTitle: String(article.payload?.document?.title || article.title),
+      wechatAuthor: '',
+      wechatAppId: '',
     });
   };
   const run = async () => {
@@ -313,6 +321,7 @@ function DistributionView({ project, articles, distributions, status, busy, refr
       mode: draft.mode,
       coverPath: draft.coverPath,
       confirmPublish: draft.confirmPublish,
+      ...(draft.platforms.includes('wechat') ? { platformOptions: { wechat: { title: draft.wechatTitle.trim(), author: draft.wechatAuthor.trim(), expectedAppId: draft.wechatAppId } } } : {}),
     };
     setDraft(null);
     try {
@@ -321,19 +330,26 @@ function DistributionView({ project, articles, distributions, status, busy, refr
       const attention = result.records.filter((record: any) => record.status === 'action_required' || record.status === 'result_uncertain');
       if (failed.length > 0) notify(`${failed.length} 个平台执行失败，请查看分发记录中的具体原因`, true);
       else if (attention.length > 0) notify(`${attention.length} 个平台需要人工核对，暂未重复操作`, true);
-      else notify(request.mode === 'publish' ? '分发任务已完成，请核对每个平台结果' : '文章填充已完成，请检查平台草稿');
+      else notify(request.platforms.length === 1 && request.platforms[0] === 'wechat' ? '已保存到公众号草稿箱，并已读回核对' : request.mode === 'publish' ? '分发任务已完成，请核对每个平台结果' : '文章填充／存草稿已完成，请检查平台草稿');
       await refresh();
     } catch (error) {
       notify((error as Error).message, true);
       await refresh();
     }
   };
+  const recheckWechat = async (record: any) => {
+    try {
+      const result = await window.geoPublisher.wechatRecheckDraft(project.id, record.id);
+      notify(String((result.record.payload.evidence as any)?.message || '核对完成'), result.record.status !== 'filled');
+      await refresh();
+    } catch (error) { notify((error as Error).message, true); }
+  };
   return <div className="distribution-layout">
     <Card><div className="card-head"><div><h3>待首次发布</h3><p>本次选择的平台全部成功后，文章会进入下方已完成区域。</p></div><Badge tone={busy ? 'warning' : 'neutral'}>{busy ? '任务执行中' : `${readyArticles.length} 篇`}</Badge></div>{readyArticles.length ? <div className="item-list">{readyArticles.map((article: any) => <div className="item-row distribution-article-row" key={article.id}><FileText size={16}/><span><strong>{article.title || '未命名文章'}</strong><small>尚未发布 · {article.payload?.document?.blocks?.length || 0} 段内容</small></span><Button variant="outline" disabled={busy} icon={Send} onClick={() => openDraft(article)}>配置分发</Button></div>)}</div> : <Empty icon={Send} title="没有待首次发布的文章" description="发布成功的文章会移入下方，仍可继续分发到其他平台。"/>}
       {completedArticles.length > 0 && <section className="completed-distributions"><div className="section-head"><div><strong>已完成</strong><p>客户本次只发布一个平台也算完成，之后仍可继续分发。</p></div><Badge tone="success">{completedArticles.length} 篇</Badge></div><div className="item-list">{completedArticles.map((article: any) => { const published = articlePublishPlatforms(article.id, distributions, ['success']); const unavailable = articlePublishPlatforms(article.id, distributions); return <div className="item-row distribution-article-row" key={article.id}><CheckCircle2 size={16}/><span><strong>{article.title || '未命名文章'}</strong><small>已发布至 {[...published].map((id) => platformLabels[id] || id).join('、')} · 还有 {Math.max(0, platforms.length - unavailable.size)} 个平台可选</small></span><Button variant="outline" disabled={busy || unavailable.size >= platforms.length} icon={Send} onClick={() => openDraft(article)}>{unavailable.size >= platforms.length ? '全部完成' : '继续分发'}</Button></div>; })}</div></section>}
     </Card>
-    <Card><div className="card-head"><div><h3>最近分发记录</h3><p>每个平台独立留存结果，失败不会覆盖其他平台。</p></div>{history.length > 0 && <Badge>{history.length} 条</Badge>}</div>{busy ? <div className="running"><Spinner/><strong>{platformLabels[status.executingPlatform] || '平台'}正在执行</strong><p>任务会按选择顺序逐个平台处理。</p></div> : history.length ? <div className="distribution-history">{history.map((record: any) => <div className="distribution-history-row" key={record.id}><span className="distribution-history-icon">{record.status === 'failed' ? <CircleAlert size={15}/> : record.status === 'running' ? <Clock3 size={15}/> : <CheckCircle2 size={15}/>}</span><div><strong>{platformLabels[record.platform] || record.platform} · {record.title}</strong><p>{record.payload?.mode === 'publish' ? '真实发布' : '仅填充'} · {new Date(record.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>{record.payload?.error?.message && <small>{record.payload.error.message}</small>}</div><Badge tone={distributionStatusTones[record.status] || 'neutral'}>{distributionStatusLabels[record.status] || record.status}</Badge>{!['success', 'filled', 'running'].includes(record.status) && <Button type="button" variant="ghost" icon={Search} onClick={() => setDiagnosisRecord(record)}>诊断</Button>}</div>)}</div> : <Empty icon={Clock3} title="还没有分发记录" description="完成一次填充或发布后，这里会显示各平台结果。"/>}</Card>
-    {draft && <DistributionDialog draft={draft} setDraft={setDraft} busy={busy} status={status} run={run} onClose={() => !draft.running && setDraft(null)}/>}
+    <Card><div className="card-head"><div><h3>最近分发记录</h3><p>每个平台独立留存结果，失败不会覆盖其他平台。</p></div>{history.length > 0 && <Badge>{history.length} 条</Badge>}</div>{busy ? <div className="running"><Spinner/><strong>{platformLabels[status.executingPlatform] || '平台'}正在执行</strong><p>任务会按选择顺序逐个平台处理。</p></div> : history.length ? <div className="distribution-history">{history.map((record: any) => <div className="distribution-history-row" key={record.id}><span className="distribution-history-icon">{record.status === 'failed' || (record.platform === 'wechat' && ['action_required', 'result_uncertain'].includes(record.status)) ? <CircleAlert size={15}/> : record.status === 'running' ? <Clock3 size={15}/> : <CheckCircle2 size={15}/>}</span><div><strong>{platformLabels[record.platform] || record.platform} · {record.title}</strong><p>{record.platform === 'wechat' ? '保存草稿' : record.payload?.mode === 'publish' ? '真实发布' : '仅填充'} · {new Date(record.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>{record.platform === 'wechat' ? (record.payload?.error?.message || record.payload?.evidence?.message) && <small style={{ color: record.status === 'filled' ? '#027a48' : undefined }}>{String(record.payload?.error?.message || record.payload?.evidence?.message).replace(/WECHAT_[A-Z_]+:\s*/g, '')}</small> : record.payload?.error?.message && <small>{record.payload.error.message}</small>}</div><Badge tone={distributionStatusTones[record.status] || 'neutral'}>{distributionStatusLabel(record)}</Badge>{record.platform === 'wechat' && record.payload?.evidence?.mediaId && <Button variant="ghost" disabled={busy} onClick={() => void recheckWechat(record)}>重新核对</Button>}{!['success', 'filled', 'running'].includes(record.status) && <Button type="button" variant="ghost" icon={Search} onClick={() => setDiagnosisRecord(record)}>诊断</Button>}</div>)}</div> : <Empty icon={Clock3} title="还没有分发记录" description="完成一次填充或发布后，这里会显示各平台结果。"/>}</Card>
+    {draft && <DistributionDialog key={project.id} project={project} draft={draft} setDraft={setDraft} busy={busy} status={status} run={run} onClose={() => !draft.running && setDraft(null)}/>}
     {diagnosisRecord && <DistributionDiagnosisDialog project={project} record={diagnosisRecord} notify={notify} onClose={() => setDiagnosisRecord(null)}/>}
   </div>;
 }
@@ -363,12 +379,26 @@ function DistributionDiagnosisDialog({ project, record, notify, onClose }: { pro
   </dialog>;
 }
 
-function DistributionDialog({ draft, setDraft, busy, status, run, onClose }: any) {
+function DistributionDialog({ project, draft, setDraft, busy, status, run, onClose }: any) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [wechatSettingsOpen, setWechatSettingsOpen] = useState(false);
+  const [wechatMessage, setWechatMessage] = useState('正在读取公众号连接…');
+  const hasWechat = draft.platforms.includes('wechat');
+  const wechatTitleInvalid = hasWechat && ([...String(draft.wechatTitle || '').trim()].length > 32 || [...String(draft.wechatTitle || '').trim()].length < 2);
   const finalizedPlatforms = new Set<string>(draft.finalizedPlatforms || []);
   const requiresCover = draft.platforms.some((platform: string) => coverRequiredPlatforms.has(platform));
   const titleTooLong = draft.platforms.includes('toutiao') && [...String(draft.article.payload?.document?.title || draft.article.title)].length > 30;
-  const canRun = draft.platforms.length > 0 && (!requiresCover || draft.coverPath) && !titleTooLong && (draft.mode !== 'publish' || draft.confirmPublish) && !draft.running && !busy;
+  const canRun = draft.platforms.length > 0 && (!requiresCover || draft.coverPath) && !titleTooLong && !wechatTitleInvalid && (!hasWechat || (!!draft.wechatAppId && draft.mode === 'fill')) && (draft.mode !== 'publish' || draft.confirmPublish) && !draft.running && !busy;
+  useEffect(() => {
+    if (!hasWechat) return;
+    let canceled = false;
+    void window.geoPublisher.wechatSettings(project.id).then((settings) => {
+      if (canceled) return;
+      setDraft((previous: any) => previous && ({ ...previous, wechatAppId: settings.appId }));
+      setWechatMessage(settings.configured ? `保存到公众号：${settings.appId}` : '请先设置本客户的公众号连接。');
+    }).catch((error) => { if (!canceled) setWechatMessage(error.message); });
+    return () => { canceled = true; };
+  }, [project.id, hasWechat]);
   useEffect(() => {
     const dialog = dialogRef.current;
     if (dialog && !dialog.open) dialog.showModal();
@@ -378,26 +408,30 @@ function DistributionDialog({ draft, setDraft, busy, status, run, onClose }: any
     if (finalizedPlatforms.has(platform)) return;
     const selected = new Set(draft.platforms);
     if (selected.has(platform)) selected.delete(platform); else selected.add(platform);
-    setDraft({ ...draft, platforms: platforms.map(([id]) => id).filter((id) => selected.has(id)) });
+    setDraft({ ...draft, platforms: platforms.map(([id]) => id).filter((id) => selected.has(id)), ...(selected.has('wechat') ? { mode: 'fill', confirmPublish: false } : {}) });
   };
   const chooseCover = async () => {
     const result = await window.geoPublisher.chooseDistributionCover();
     if (!result.canceled) setDraft({ ...draft, coverPath: result.filePath });
   };
-  return <dialog ref={dialogRef} className="distribution-dialog" aria-labelledby="distribution-dialog-title" onCancel={(event) => { event.preventDefault(); onClose(); }}>
+  return <><dialog ref={dialogRef} className="distribution-dialog" aria-labelledby="distribution-dialog-title" onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <div className="distribution-dialog-layout">
       <header className="distribution-dialog-head"><div><p className="eyebrow">配置分发</p><h2 id="distribution-dialog-title">{draft.article.title}</h2><p>平台将按下方顺序串行执行，单个平台失败不会重复点击发布。</p></div><Button type="button" variant="ghost" icon={X} disabled={draft.running} onClick={onClose} aria-label="关闭分发配置"/></header>
       <div className="distribution-dialog-body">
         <section className="distribution-section"><div><strong>选择平台</strong><p>本次选中的平台就是本次分发目标；已发布或结果待确认的平台不可重复选择。</p></div><div className="distribution-platforms">{platforms.map(([id, label]) => { const finalized = finalizedPlatforms.has(id); return <label key={id} className={finalized ? 'finalized' : draft.platforms.includes(id) ? 'selected' : ''}><input type="checkbox" checked={draft.platforms.includes(id)} disabled={draft.running || finalized} onChange={() => togglePlatform(id)}/><span className="platform-dot"/><strong>{label}</strong>{finalized && <small>已处理</small>}</label>; })}</div></section>
-        <section className="distribution-section"><div><strong>执行方式</strong><p>建议先填充检查；真实发布会点击平台发布按钮。</p></div><div className="distribution-modes"><label className={draft.mode === 'fill' ? 'selected' : ''}><input type="radio" name="distribution-mode" value="fill" checked={draft.mode === 'fill'} disabled={draft.running} onChange={() => setDraft({ ...draft, mode: 'fill', confirmPublish: false })}/><span><strong>仅填充</strong><small>写入标题、正文、封面和声明，不点击发布</small></span></label><label className={draft.mode === 'publish' ? 'selected' : ''}><input type="radio" name="distribution-mode" value="publish" checked={draft.mode === 'publish'} disabled={draft.running} onChange={() => setDraft({ ...draft, mode: 'publish' })}/><span><strong>真实发布</strong><small>填充完成后点击发布，并核对结果</small></span></label></div></section>
-        <section className="distribution-section"><div><strong>文章封面</strong><p>{requiresCover ? '所选平台中包含必须上传封面的平台。' : '当前所选平台不强制要求封面。'}</p></div><div className="distribution-cover"><Button type="button" variant="outline" icon={ImagePlus} disabled={draft.running} onClick={() => void chooseCover()}>{draft.coverPath ? '更换封面' : '选择封面'}</Button><span>{draft.coverPath ? String(draft.coverPath).split(/[\\/]/).pop() : '尚未选择'}</span></div>{requiresCover && !draft.coverPath && <p className="distribution-error"><CircleAlert size={15}/>百家号、头条号和网易号必须选择封面。</p>}{titleTooLong && <p className="distribution-error"><CircleAlert size={15}/>当前标题超过头条号 30 字限制，请先修改文章标题。</p>}</section>
+        <section className="distribution-section"><div><strong>执行方式</strong><p>{hasWechat ? '微信公众号只保存草稿。若要发布其他平台，请分开执行。' : '建议先填充检查；真实发布会点击平台发布按钮。'}</p></div><div className="distribution-modes"><label className={draft.mode === 'fill' ? 'selected' : ''}><input type="radio" name="distribution-mode" value="fill" checked={draft.mode === 'fill'} disabled={draft.running} onChange={() => setDraft({ ...draft, mode: 'fill', confirmPublish: false })}/><span><strong>{hasWechat ? '仅填充／存草稿' : '仅填充'}</strong><small>{hasWechat ? '公众号保存到草稿箱，其他平台只填充' : '写入标题、正文、封面和声明，不点击发布'}</small></span></label><label className={draft.mode === 'publish' ? 'selected' : ''}><input type="radio" name="distribution-mode" value="publish" checked={draft.mode === 'publish'} disabled={draft.running || hasWechat} onChange={() => setDraft({ ...draft, mode: 'publish' })}/><span><strong>真实发布</strong><small>填充完成后点击发布，并核对结果</small></span></label></div></section>
+        <section className="distribution-section"><div><strong>文章封面</strong><p>{requiresCover ? '所选平台中包含必须上传封面的平台。' : '当前所选平台不强制要求封面。'}</p></div><div className="distribution-cover"><Button type="button" variant="outline" icon={ImagePlus} disabled={draft.running} onClick={() => void chooseCover()}>{draft.coverPath ? '更换封面' : '选择封面'}</Button><span>{draft.coverPath ? String(draft.coverPath).split(/[\\/]/).pop() : '尚未选择'}</span></div>{requiresCover && !draft.coverPath && <p className="distribution-error"><CircleAlert size={15}/>百家号、头条号、网易号和微信公众号必须选择封面。</p>}{titleTooLong && <p className="distribution-error"><CircleAlert size={15}/>当前标题超过头条号 30 字限制，请先修改文章标题。</p>}</section>
+        {hasWechat && <section className="distribution-section"><div><strong>微信公众号</strong><p>{wechatMessage}</p><Button variant="outline" disabled={busy} onClick={() => setWechatSettingsOpen(true)}>连接设置</Button></div><div className="platform-setting-group"><Field label="公众号标题" description="仅用于这次公众号草稿，不改动原文章。最多 32 个字。" htmlFor="distribution-wechat-title"><input id="distribution-wechat-title" value={draft.wechatTitle} disabled={draft.running} aria-invalid={wechatTitleInvalid} onChange={(event) => setDraft({ ...draft, wechatTitle: event.target.value })}/></Field><Field label="作者（选填）" htmlFor="distribution-wechat-author"><input id="distribution-wechat-author" value={draft.wechatAuthor} maxLength={16} disabled={draft.running} onChange={(event) => setDraft({ ...draft, wechatAuthor: event.target.value })}/></Field><p>封面 PNG/JPEG 小于 10 MB；每张正文图片小于 1 MB。</p>{wechatTitleInvalid && <p style={{ color: '#b42318' }}>请将公众号标题调整为 2～32 个字。</p>}</div></section>}
         {draft.mode === 'publish' && <label className="publish-confirm"><input type="checkbox" checked={draft.confirmPublish} disabled={draft.running} onChange={(event) => setDraft({ ...draft, confirmPublish: event.target.checked })}/><span><strong>我确认执行真实发布</strong><small>发布成功或结果待确认后，系统会阻止同一内容再次发布到该平台。</small></span></label>}
         {draft.running && <div className="distribution-progress"><Spinner/><div><strong>{platformLabels[status.executingPlatform] || '平台'}正在处理</strong><p>请不要切换客户项目或关闭应用。</p></div></div>}
-        {draft.records.length > 0 && <div className="distribution-results">{draft.records.map((record: any) => <div key={record.id}><span>{platformLabels[record.platform] || record.platform}</span><Badge tone={distributionStatusTones[record.status] || 'neutral'}>{distributionStatusLabels[record.status] || record.status}</Badge>{record.payload?.error?.message && <p>{record.payload.error.message}</p>}</div>)}</div>}
+        {draft.records.length > 0 && <div className="distribution-results">{draft.records.map((record: any) => <div key={record.id}><span>{platformLabels[record.platform] || record.platform}</span><Badge tone={distributionStatusTones[record.status] || 'neutral'}>{distributionStatusLabel(record)}</Badge>{record.payload?.error?.message && <p>{record.payload.error.message}</p>}</div>)}</div>}
       </div>
-      <footer className="distribution-dialog-foot"><p>{draft.mode === 'publish' ? '真实发布不会自动重试结果不明确的任务。' : '填充完成后可在平台页面人工检查。'}</p><div><Button type="button" variant="outline" disabled={draft.running} onClick={onClose}>取消</Button><Button id="distribution-run" type="button" icon={draft.mode === 'publish' ? Rocket : Send} disabled={!canRun} onClick={() => { dialogRef.current?.close(); void run(); }}>{draft.running ? '执行中' : draft.mode === 'publish' ? '确认发布' : '开始填充'}</Button></div></footer>
+      <footer className="distribution-dialog-foot"><p>{draft.mode === 'publish' ? '真实发布不会自动重试结果不明确的任务。' : hasWechat ? '公众号草稿保存后自动读回核对，不会正式发表。' : '填充完成后可在平台页面人工检查。'}</p><div><Button type="button" variant="outline" disabled={draft.running} onClick={onClose}>取消</Button><Button id="distribution-run" type="button" icon={draft.mode === 'publish' ? Rocket : Send} disabled={!canRun} onClick={() => { dialogRef.current?.close(); void run(); }}>{draft.running ? '执行中' : draft.mode === 'publish' ? '确认发布' : hasWechat ? '开始填充／存草稿' : '开始填充'}</Button></div></footer>
     </div>
-  </dialog>;
+  </dialog>{wechatSettingsOpen && <WechatSettingsDialog key={project.id} projectId={project.id} projectName={project.name} busy={busy} close={() => setWechatSettingsOpen(false)} onSaved={(settings) => {
+    setDraft((previous: any) => previous && ({ ...previous, wechatAppId: settings.appId }));
+    setWechatMessage(settings.configured ? `保存到公众号：${settings.appId}` : '请先设置本客户的公众号连接。');
+  }}/>}</>;
 }
 
 function ContentCenter({ project, items, materials, topics, articles, contentCounts = {}, busy, refresh, notify, initialTab = 'overview' }: any) {
@@ -634,6 +668,7 @@ function AccountsView({ project, busy, openPlatform, refresh, notify }: any) {
   const [baijiaDefaults, setBaijiaDefaults] = useState<BaijiaSettings>(project?.publishingDefaults?.baijia || defaultBaijiaSettings);
   const [saving, setSaving] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [wechatSettingsOpen, setWechatSettingsOpen] = useState(false);
   useEffect(() => {
     setBaijiaDefaults(project?.publishingDefaults?.baijia || defaultBaijiaSettings);
   }, [project?.id, project?.updatedAt]);
@@ -652,7 +687,8 @@ function AccountsView({ project, busy, openPlatform, refresh, notify }: any) {
     }
   };
   return <div className="platform-accounts-view">
-    <Card><div className="card-head"><div><h3>平台账号</h3><p>请在对应平台页面完成登录；发布任务进行中暂时不能切换。</p></div><Badge tone={busy ? 'warning' : 'success'}>{busy ? '任务进行中' : '可以操作'}</Badge></div><div className="account-grid">{platforms.map(([id,label])=><section key={id}><span className="platform-dot"/><strong>{label}</strong><p>{id === 'baijia' ? '已支持设置默认发布选项' : '打开平台后可以查看登录状态'}</p><div className="account-actions"><Button variant="outline" icon={LogIn} disabled={busy} onClick={() => openPlatform(id)}>打开平台</Button>{id === 'baijia' && <Button variant="ghost" icon={Settings2} disabled={busy} aria-label="设置百家号发布默认值" title="发布默认值" onClick={() => setSettingsOpen(true)}/>}</div></section>)}</div></Card>
+    <Card><div className="card-head"><div><h3>平台账号</h3><p>请在对应平台页面完成登录；发布任务进行中暂时不能切换。</p></div><Badge tone={busy ? 'warning' : 'success'}>{busy ? '任务进行中' : '可以操作'}</Badge></div><div className="account-grid">{platforms.map(([id,label])=><section key={id}><span className="platform-dot"/><strong>{label}</strong><p>{id === 'wechat' ? '官方接口存草稿 · 请先设置连接' : id === 'baijia' ? '已支持设置默认发布选项' : '打开平台后可以查看登录状态'}</p><div className="account-actions"><Button variant="outline" icon={LogIn} disabled={busy} onClick={() => openPlatform(id)}>打开平台</Button>{id === 'baijia' && <Button variant="ghost" icon={Settings2} disabled={busy} aria-label="设置百家号发布默认值" title="发布默认值" onClick={() => setSettingsOpen(true)}/>}<>{id === 'wechat' && <Button variant="ghost" icon={Settings2} disabled={busy} aria-label="设置微信公众号连接" title="公众号连接设置" onClick={() => setWechatSettingsOpen(true)}/>}</></div></section>)}</div></Card>
+    {wechatSettingsOpen && <WechatSettingsDialog key={project.id} projectId={project.id} projectName={project.name} busy={busy} close={() => setWechatSettingsOpen(false)}/>}
     {settingsOpen && <BaijiaDefaultsDialog values={baijiaDefaults} setValues={setBaijiaDefaults} saving={saving} close={() => !saving && setSettingsOpen(false)} save={savePublishingDefaults}/>}
   </div>;
 }

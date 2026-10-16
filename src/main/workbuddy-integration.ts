@@ -73,7 +73,9 @@ export function buildWorkBuddyPrompt(options: {
     '每个任务先按 geo-publisher 运行 production CLI 的 doctor 和 instructions --json；多客户任务再运行 project list，按客户名称精确匹配唯一项目，执行 project select <projectId> 后用 project current 复核。不要使用其他任务缓存的客户项目。',
     '客户资料、素材、选题、文章包和分发记录都必须保存在 GEO Publisher 当前客户项目中；不要创建或要求客户维护单独工作空间。',
     '如果客户要求创建项目，先交互式收集资料并展示摘要；只有客户明确确认后，才按 Skill 调用 production CLI 的 project create。',
-    '百家号、头条号、知乎、企鹅号、搜狐号、网易号的填充与发布只按 geo-publisher Skill 执行；选题和文章 Skill 不得直接控制平台页面。',
+    '七个平台为百家号、头条号、知乎、企鹅号、搜狐号、网易号和微信公众号。写作时共用同一个选题，按各平台规则分别生成并保存一篇，所有文章关联同一个 topicId；指定部分平台时只生成对应版本，未指定时默认七篇。全部目标文章保存成功后只标记一次选题已使用。',
+    '分发时选择该主题对应平台的文章包，不要把一篇正文自动复用到七个平台。填充与发布只按 geo-publisher Skill 执行；选题和文章 Skill 不得直接控制平台页面。',
+    '微信公众号使用 wechat，通过 fill 调用官方接口保存并读回草稿，禁止 publish 或群发。客户在桌面端的公众号连接设置填写 AppID/AppSecret；扫码登录不能替代接口配置，不要在对话或文章 JSON 中收集 AppSecret。',
     '平台发布选项默认使用 GEO Publisher 当前客户项目中保存的默认值。只有用户明确要求“这一次”修改某个选项时，才在 draft.fill 或 draft.publish 请求中传 platformOptions 作为单次覆盖；未明确提出时禁止猜测或传覆盖值。',
     '应用更新或更换安装位置后，重新点击 GEO Publisher 的“连接 WorkBuddy”，以刷新本机路径和 Skill。',
   ].join('\n');

@@ -9,6 +9,10 @@ export interface DistributionDiagnosisRecord {
     mode?: string;
     error?: { code?: string; message?: string; details?: { platform?: string; url?: string; screenshotPath?: string | null; originalCode?: string; pageTitle?: string; visibleFieldCount?: number; editorCandidateCount?: number; loginVisible?: boolean } };
     evidence?: {
+      errorCode?: string;
+      mediaId?: string;
+      saved?: boolean;
+      verified?: boolean;
       stage?: string;
       message?: string;
       url?: string;
@@ -37,6 +41,7 @@ const platformLabels: Record<string, string> = {
   penguin: '企鹅号',
   sohu: '搜狐号',
   netease: '网易号',
+  wechat: '微信公众号',
 };
 
 const normalize = (value: unknown): string => String(value || '').replace(/\s+/g, ' ').trim();
@@ -124,11 +129,25 @@ export function buildDistributionDiagnosis(record: DistributionDiagnosisRecord):
   const error = payload.error || {};
   const evidence = payload.evidence || {};
   const errorDetails = error.details || {};
-  const code = normalize(error.code) || normalize(evidence.stage) || status;
+  const code = normalize(error.code) || normalize(evidence.errorCode) || normalize(evidence.stage) || status;
   const message = normalize(error.message) || normalize(evidence.message);
   let result: Omit<DistributionDiagnosis, 'evidence'>;
 
-  if (status === 'success') {
+  if (record.platform === 'wechat') {
+    const saved = !!evidence.mediaId;
+    result = {
+      tone: status === 'filled' ? 'success' : status === 'failed' ? 'danger' : 'warning',
+      title: status === 'filled' ? '微信公众号草稿已保存' : status === 'result_uncertain' ? '微信草稿结果待确认' : '微信公众号需要处理',
+      summary: message || '请检查公众号连接或草稿箱状态。',
+      nextAction: status === 'filled' ? '打开公众号后台检查排版；需要发表时在后台手动操作。'
+        : saved ? '在记录中点击“重新核对”，或打开公众号草稿箱检查原文与图片。'
+          : status === 'result_uncertain' ? '先在公众号草稿箱按标题核对，不要重复创建。'
+            : '根据错误提示，在“平台账号 → 微信公众号 → 连接设置”检查凭据、接口权限和 IP 白名单，或调整文章和图片。',
+      retry: saved ? '重新核对只读取已有草稿，不会再次创建。'
+        : status === 'result_uncertain' ? '相同输入不会自动重建，需先人工核对公众号后台。' : '解决错误后再保存草稿；本模块不会正式发表或群发。',
+      code, stage: normalize(evidence.stage) || 'wechat_draft',
+    };
+  } else if (status === 'success') {
     result = { tone: 'success', title: `${platformLabel(record.platform || '')}已确认发布`, summary: message || '已完成发布并检测到成功状态。', nextAction: '可以在平台后台查看文章。', retry: '无需重试。', code: 'SUCCESS', stage: normalize(evidence.stage) || 'success' };
   } else if (status === 'filled') {
     result = { tone: 'success', title: `${platformLabel(record.platform || '')}已填充草稿`, summary: message || '内容已写入平台编辑器，但尚未点击发布。', nextAction: '打开平台检查标题、正文、封面和声明。', retry: '检查无误后再执行真实发布。', code: 'DRAFT_FILLED', stage: normalize(evidence.stage) || 'fill' };
@@ -148,7 +167,8 @@ export function buildDistributionDiagnosis(record: DistributionDiagnosisRecord):
     evidence: [
       record.title ? `文章：${normalize(record.title)}` : '',
       record.updatedAt ? `时间：${normalize(record.updatedAt)}` : '',
-      payload.mode ? `模式：${payload.mode === 'publish' ? '真实发布' : '仅填充'}` : '',
+      payload.mode ? `模式：${record.platform === 'wechat' ? '保存草稿' : payload.mode === 'publish' ? '真实发布' : '仅填充'}` : '',
+      evidence.mediaId ? `微信草稿编号：${normalize(evidence.mediaId)}` : '',
       code ? `代码：${code}` : '',
       result.stage ? `阶段：${result.stage}` : '',
       evidence.url ? `页面：${normalize(evidence.url)}` : '',

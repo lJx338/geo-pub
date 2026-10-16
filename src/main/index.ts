@@ -23,6 +23,8 @@ import { runIdleMaintenance } from './maintenance.js';
 import { diagnosticError, guardProcessOutputStreams } from './diagnostics.js';
 import { exportDistributionDiagnosticBundle } from './diagnostic-bundle.js';
 import { getLaunchAtLoginStatus, openWindowsStartupSettings, setLaunchAtLogin } from './launch-at-login.js';
+import { createElectronWechatAdapter } from './wechat/index.js';
+import { registerWechatDesktopHandlers } from './wechat/desktop.js';
 
 guardProcessOutputStreams();
 app.setName('GEO Publisher');
@@ -49,6 +51,7 @@ async function runDesktop(): Promise<void> {
   const projects = new ProjectStore();
   await projects.load();
   const content = new ContentStore();
+  const wechat = await createElectronWechatAdapter();
   const dataChanges = new DataChangeTracker();
   const cliPath = await installBundledCli(appVersion).catch((error) => {
     diagnosticError(`Failed to install bundled CLI: ${error instanceof Error ? error.stack || error.message : String(error)}`);
@@ -91,13 +94,21 @@ async function runDesktop(): Promise<void> {
     if (!window.isDestroyed()) window.webContents.send('geo:attention-required', attention);
   }, () => {
     if (!window.isDestroyed()) window.webContents.send('geo:status-changed', { ...sessions.status(), busy: sessions.isBusy() || distributionRunning, cliPath, currentProject: projects.current() });
-  });
+  }, wechat);
   if (projects.current()) await sessions.selectProject(projects.current()!.id);
   const updateManager = new UpdateManager(appVersion, () => sessions.isBusy() || distributionRunning, (status) => {
     if (status.phase === 'error') closingForUpdate = false;
     if (!window.isDestroyed()) window.webContents.send('geo:update-status-changed', status);
   });
-  window.on('resize', () => sessions.resize());
+  // Restoring a minimized window can retain its size without emitting resize.
+  const resizePlatformView = () => sessions.resize();
+  window.on('resize', resizePlatformView);
+  window.on('restore', resizePlatformView);
+  window.on('maximize', resizePlatformView);
+  window.on('unmaximize', resizePlatformView);
+  window.on('show', resizePlatformView);
+  window.on('enter-full-screen', resizePlatformView);
+  window.on('leave-full-screen', resizePlatformView);
   let shuttingDown = false;
   const tray = new Tray(nativeImage.createFromPath(join(__dirname, '..', 'renderer', 'logo.png')));
   tray.setToolTip('GEO Publisher');
@@ -163,6 +174,9 @@ async function runDesktop(): Promise<void> {
   const distribution = new DistributionService(content, sessions, (record, source) => {
     recordDataChange({ entity: 'content', action: 'saved', projectId: record.projectId, itemId: record.id, contentKind: record.kind, source });
   }, (projectId) => projects.get(projectId)?.publishingDefaults ?? null, appVersion);
+  registerWechatDesktopHandlers({ window, sessions, adapter: wechat, content, ensureIdle: ensureAppIdle, ensureProject: ensureCurrentContentProject,
+    onRecordSaved: (record) => recordDataChange({ entity: 'content', action: 'saved', projectId: record.projectId, itemId: record.id, contentKind: record.kind, source: 'desktop' }),
+  });
   const route = async (request: ControlRequest): Promise<unknown> => {
     if (request.action === 'status') return desktopStatus();
     if (request.action === 'project.list') return { projects: projects.list(), currentProject: projects.current() };

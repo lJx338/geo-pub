@@ -22,7 +22,7 @@ type DirectDistributionRequest = {
   platformOptions?: PlatformOptions;
 };
 
-const coverRequiredPlatforms = new Set<Platform>(['baijia', 'toutiao', 'netease']);
+const coverRequiredPlatforms = new Set<Platform>(['baijia', 'toutiao', 'netease', 'wechat']);
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -47,7 +47,13 @@ function errorDetails(error: unknown): Record<string, unknown> | undefined {
   return Object.keys(selected).length > 0 ? selected : undefined;
 }
 
-function resultStatus(mode: 'fill' | 'publish', result: unknown): DistributionStatus {
+function resultStatus(mode: 'fill' | 'publish', result: unknown, platform: Platform): DistributionStatus {
+  if (platform === 'wechat') {
+    const value = result && typeof result === 'object' ? result as Record<string, unknown> : {};
+    if (mode === 'fill' && value.status === 'filled' && value.saved === true && value.verified === true && typeof value.mediaId === 'string' && value.mediaId) return 'filled';
+    if (value.status === 'action_required') return 'action_required';
+    return 'result_uncertain';
+  }
   if (mode === 'fill') return 'filled';
   if (result && typeof result === 'object') {
     const status = (result as { status?: unknown }).status;
@@ -59,7 +65,7 @@ function resultStatus(mode: 'fill' | 'publish', result: unknown): DistributionSt
 function resultEvidence(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== 'object') return {};
   const value = result as Record<string, unknown>;
-  return Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked']
+  return Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked', 'operationKey', 'mediaId', 'saved', 'verified', 'reused']
     .filter((key) => value[key] !== undefined)
     .map((key) => [key, value[key]]));
 }
@@ -103,6 +109,7 @@ export class DistributionService {
     if (article.payload.quality && typeof article.payload.quality === 'object' && (article.payload.quality as { passed?: unknown }).passed === false) throw new Error('ARTICLE_QUALITY_REJECTED: 文章质量检查未通过');
     const document = articleDocumentSchema.parse(article.payload.document);
     if (input.platforms.includes('toutiao') && [...document.title].length > 30) throw new Error('TOUTIAO_TITLE_TOO_LONG: 头条号标题不能超过 30 个字符');
+    if (input.platforms.includes('wechat') && [...(input.platformOptions.wechat?.title ?? document.title)].length > 32) throw new Error('WECHAT_TITLE_TOO_LONG: 公众号标题最多 32 个字，请填写公众号专用标题');
     const contentHash = documentHash(document);
     const history = await this.content.list(input.projectId, 'distribution');
     const finalizedPlatforms = new Set<Platform>();
@@ -133,11 +140,12 @@ export class DistributionService {
     for (const platform of targetPlatforms) {
       const startedAt = new Date().toISOString();
       let record = await this.content.save(input.projectId, {
-        kind: 'distribution', title: article.title, status: 'running', platform,
+        kind: 'distribution', title: platform === 'wechat' ? options.wechat?.title ?? document.title : article.title, status: 'running', platform,
         payload: { taskId, articleId: article.id, contentHash, mode: input.mode, source: 'desktop', targetPlatforms, startedAt },
       });
       this.onRecordSaved(record, 'desktop');
       try {
+        this.executor.ensureProject(input.projectId);
         let result: unknown;
         if (input.mode === 'publish') {
           result = await this.executor.publishDraft(platform, executionDocument, input.coverPath, options);
@@ -145,12 +153,12 @@ export class DistributionService {
           try {
             result = await this.executor.fillDraft(platform, executionDocument, input.coverPath, options);
           } catch (error) {
-            if (!isRetryableFillError(error)) throw error;
+            if (platform === 'wechat' || !isRetryableFillError(error)) throw error;
             await delay(1_000);
             result = await this.executor.fillDraft(platform, executionDocument, input.coverPath, options);
           }
         }
-        const status = resultStatus(input.mode, result);
+        const status = resultStatus(input.mode, result, platform);
         record = await this.content.save(input.projectId, {
           id: record.id, kind: 'distribution', status, platform,
           payload: { ...record.payload, completedAt: new Date().toISOString(), evidence: resultEvidence(result) },
@@ -197,6 +205,7 @@ export class DistributionService {
 
   /** Records WorkBuddy/production CLI actions without changing their response contract. */
   async runDirect(rawInput: DirectDistributionRequest): Promise<unknown> {
+    if (rawInput.platform === 'wechat' && rawInput.mode === 'publish') throw new Error('WECHAT_DRAFT_ONLY: 微信公众号目前仅支持保存草稿');
     const document = articleDocumentSchema.parse(rawInput.document);
     this.executor.ensureProject(rawInput.projectId);
     const executionDocument = await this.content.resolveArticleImages(rawInput.projectId, document);
@@ -215,7 +224,7 @@ export class DistributionService {
     const startedAt = new Date().toISOString();
     let record = await this.content.save(rawInput.projectId, {
       kind: 'distribution',
-      title: document.title,
+      title: rawInput.platform === 'wechat' ? rawInput.platformOptions?.wechat?.title ?? document.title : document.title,
       status: 'running',
       platform: rawInput.platform,
       payload: {
@@ -232,10 +241,12 @@ export class DistributionService {
     this.onRecordSaved(record, 'cli');
 
     try {
+      // Local content reads above can yield; revalidate before selecting an account.
+      this.executor.ensureProject(rawInput.projectId);
       const result = rawInput.mode === 'publish'
         ? await this.executor.publishDraft(rawInput.platform, executionDocument, rawInput.coverPath, this.optionsFor(rawInput.projectId, rawInput.platformOptions))
         : await this.executor.fillDraft(rawInput.platform, executionDocument, rawInput.coverPath, this.optionsFor(rawInput.projectId, rawInput.platformOptions));
-      const status = resultStatus(rawInput.mode, result);
+      const status = resultStatus(rawInput.mode, result, rawInput.platform);
       record = await this.content.save(rawInput.projectId, {
         id: record.id,
         kind: 'distribution',
@@ -265,7 +276,7 @@ export class DistributionService {
   }
 
   private optionsFor(projectId: string, override?: PlatformOptions): PlatformOptions {
-    return { baijia: resolveBaijiaSettings(this.publishingDefaults(projectId), override?.baijia) };
+    return { baijia: resolveBaijiaSettings(this.publishingDefaults(projectId), override?.baijia), ...(override?.wechat ? { wechat: override.wechat } : {}) };
   }
 
   private async markArticlePublished(projectId: string, article: ContentItem, taskId: string, platforms: Platform[], source: 'desktop' | 'cli'): Promise<void> {

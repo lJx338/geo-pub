@@ -41,6 +41,11 @@ export type PublishingDefaults = z.infer<typeof publishingDefaultsSchema>;
 
 export const platformOptionsSchema = z.object({
   baijia: z.object(baijiaFields).partial().optional(),
+  wechat: z.object({
+    title: z.string().trim().min(2).refine((value) => [...value].length <= 32, '公众号标题最多 32 个字').optional(),
+    author: z.string().trim().refine((value) => [...value].length <= 16, '作者最多 16 个字').optional(),
+    expectedAppId: z.string().regex(/^wx[a-zA-Z0-9]{16}$/).optional(),
+  }).strict().optional(),
 }).default({});
 export type PlatformOptions = z.infer<typeof platformOptionsSchema>;
 

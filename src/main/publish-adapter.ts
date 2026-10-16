@@ -1,5 +1,8 @@
 import type { WebContents } from 'electron';
-import type { Platform } from '../shared/protocol.js';
+import type { Platform as AnyPlatform } from '../shared/protocol.js';
+
+// WeChat uses the official draft API and never enters browser publication.
+type Platform = Exclude<AnyPlatform, 'wechat'>;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 

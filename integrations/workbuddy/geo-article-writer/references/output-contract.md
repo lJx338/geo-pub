@@ -46,10 +46,10 @@ The only publishing source is `payload.document`:
 
 `tags` is required for every ready article. Use two to five concise topics or keywords that directly match the article, ideally two to eight Chinese characters each. Do not add `#` or `＃`, punctuation, contact details, broad filler such as “行业资讯”, or duplicate variants. GEO Publisher normalizes the values, adds the hash marks in the article-ending topic line, and also sends the same values to a platform-native topic field when supported.
 
-Allow only `paragraph`, `heading` level 2 or 3, `list`, `quote`, `divider`, and `image`. An image needs a real HTTP(S) URL. Never place raw Markdown or HTML inside block text.
+Allow only `paragraph`, `heading` level 2 or 3, `list`, `quote`, `divider`, and `image`. Prefer an image from the current project's indexed material library: `{ "type": "image", "materialId": "saved material id", "alt": "图片描述", "caption": "图注" }`. Other platforms may also use a real HTTP(S) `src`; WeChat requires a current-project `materialId`, so import network images before use. Never invent an ID or reuse another customer's material. Never place raw Markdown or HTML inside block text.
 
 ## Quality gate
 
 Score 0-5 on each dimension: intent coverage, scenario match, structure and logic, keyword coverage, verifiability and citation value, and natural language. A total of 25-30 passes; 20-24 requires revision; below 20 must not become `ready`.
 
-Before saving `ready`, verify that there is no placeholder, prompt residue, internal note, or generic template heading; the title and opening answer the locked question; two to five real article-specific tags exist; company facts are accurate; the schema is valid; and no existing platform article duplicates this topic.
+Before saving `ready`, verify that there is no placeholder, prompt residue, internal note, or generic template heading; the title and opening answer the locked question; two to five real article-specific tags exist; company facts are accurate; the schema is valid; and no existing article duplicates the same project/topic/platform combination. Different platforms should share the topic ID while having independently written bodies. On retry or revision update the matching article ID rather than saving a duplicate.

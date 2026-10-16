@@ -1,6 +1,6 @@
 ---
 name: geo-article-writer
-description: Write, revise, quality-check, and save structured GEO article packages for the current GEO Publisher customer project. Use when the user asks for 生成文章、写文章、今日内容、根据选题写作、六平台文章, to turn a saved topic into content, create articles for one or more supported platforms, or revise an existing article package. Selects among E-E-A-T, question, case, pitfall, recommendation, operation, seven-dimension, and B2B four-step structures. Do not use for browser filling or publishing.
+description: Write, revise, quality-check, and save structured GEO article packages for the current GEO Publisher customer project. Use when the user asks for 生成文章、写文章、今日内容、根据选题写作、七平台文章、所有平台文章、微信公众号文章, to turn a saved topic into content, create articles for one or more supported platforms, or revise an existing article package. Selects among E-E-A-T, question, case, pitfall, recommendation, operation, seven-dimension, and B2B four-step structures. Do not use for browser filling or publishing.
 ---
 
 # GEO Article Writer
@@ -14,7 +14,7 @@ Generate content inside the current GEO Publisher project. Never depend on the r
 3. Record the exact current project and read its company facts.
 4. Run `material pending <projectId> --limit 20`. If it returns images, load the sibling `geo-material-organizer` Skill and finish the one-time indexing before selecting images. Then run `content list <projectId> material --query <keywords>`, `content list <projectId> topic --auto-selectable`, and `content list <projectId> article`. Do not rescan analyzed original files. An already-used evergreen topic is not directly selectable: ask the topic planner to create an approved variant first.
 5. Select one available topic. If the user supplied a title directly, create and save a topic through the sibling `geo-topic-planner` rules before writing.
-6. Generate a unique task ID and run `topic reserve <projectId> --topic <topicId> --task <taskId>` before writing. If reservation fails, select another available topic; never bypass the reservation.
+6. Generate a unique task ID and run `topic reserve <projectId> --topic <topicId> --task <taskId>` before writing. Use this one topic and task for the whole platform batch. The reservation lasts ten minutes: renew it with the same command and task ID before each platform and before marking use. If reservation fails before starting, select another available topic; if it fails during the batch, stop and report the partial result, never switch topics midway or bypass the reservation.
 7. Read [output-contract.md](references/output-contract.md) completely.
 8. Read exactly one matching structure file from `references/structures/`.
 9. Read [platform-rules.md](references/platform-rules.md) for every requested platform.
@@ -24,11 +24,12 @@ Re-run `project current` before every save. Stop with `PROJECT_CONTEXT_CHANGED` 
 ## Choose platforms
 
 - Honor explicitly named platforms.
+- “所有平台”、“全部平台”、“七个平台” means `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`, and `wechat`. 微信公众号/公众号 maps to `wechat`.
 - “六个平台” means `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, and `netease`.
 - For an existing scheduled topic that already names platforms, follow that schedule.
-- If neither the user nor the selected topic names a platform, generate one project-level preview article and ask which platforms to prepare; do not guess and create six packages silently.
+- If neither the user nor the selected topic names a platform, default to all seven platforms, one article each. An explicit request for only a preview may still produce one project-level preview. Writing alone never authorizes filling, publishing, or creating a schedule.
 
-When generating multiple platforms, create each article independently from the selected topic and evidence. Do not write one mother draft and mechanically rewrite it six times. The locked core question and direct answer remain consistent, but opening, evidence order, examples, pacing, and section structure should fit the platform.
+When generating multiple platforms, create each article independently from the selected topic and evidence. Do not write one mother draft and mechanically rewrite it for each platform. Every package must share the same `payload.topicId`, `coreQuestion`, and `directAnswer`, but its opening, evidence order, examples, pacing, and section structure should fit the platform. Do not change factual claims merely to make versions look different. Apply the platform rules and compare the completed versions before saving; seven identical bodies with different platform labels do not satisfy the task.
 
 ## Route the structure
 
@@ -49,7 +50,7 @@ Do not load all structure files. Only load the selected structure to reduce rout
 
 ## Save an article package
 
-Save one content item per platform. A project-level preview may use an empty platform string.
+Save one content item per platform with that platform's code (including `wechat`). A project-level preview may use an empty platform string. Keep the selected topic's ID in every article; do not create seven copies of the topic. Use the platform-compliant document title as the content item's title too.
 
 ```json
 {
@@ -77,7 +78,9 @@ Save one content item per platform. A project-level preview may use an empty pla
 
 Write it through `content save <projectId> --input <article.json>`. Do not mark an article `ready` until the output contract passes. Updating an existing article must retain its content item `id`, so a revision replaces the package instead of creating an ambiguous duplicate.
 
-After every requested article package has been saved successfully, run `topic use <projectId> --topic <topicId> --article <articleId> --task <taskId>`. If generation or saving fails, run `topic release <projectId> --topic <topicId> --task <taskId>` before reporting the error. Never leave a topic reserved after a failed task.
+After every requested article package has been saved successfully, run `topic use <projectId> --topic <topicId> --article <articleId> --task <taskId>` exactly once, using one of this batch's saved article IDs. All other packages remain linked through their shared `payload.topicId`. Do not mark the topic used after only the first platform. Report the topic and the saved platform/article-ID pairs.
+
+If generation or saving fails, run `topic release <projectId> --topic <topicId> --task <taskId>` before reporting the partial result. Preserve successfully saved articles. On a resumed task, match existing packages by the same project, `payload.topicId`, and `platform`; retain their IDs when revising and create only missing packages. Never leave a topic reserved after a failed task, and never silently duplicate completed platform articles.
 
 ## Boundaries
 

@@ -1,11 +1,11 @@
 ---
 name: geo-publisher
-description: Use GEO Publisher Desktop and its local CLI to validate, fill, preview, or publish articles on Baijiahao, Toutiao, Zhihu, Tencent Content Open Platform, Sohu, and NetEase. Trigger whenever the user asks to log in to a supported platform, fill an article, inspect a draft, publish content, check publishing status, or diagnose the GEO Publisher connection.
+description: Use GEO Publisher Desktop and its local CLI to validate, fill, preview, or publish articles on Baijiahao, Toutiao, Zhihu, Tencent Content Open Platform, Sohu, and NetEase, and save WeChat Official Account drafts through the official API. Trigger whenever the user asks to log in to a supported platform, fill an article, inspect a draft, publish content, save a 公众号草稿, check publishing status, or diagnose the GEO Publisher connection.
 ---
 
 # GEO Publisher
 
-Use the desktop application as the execution engine and the current customer project's only content store. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, direct browser automation, or a separate customer workspace. `inspect`, `fill`, and `publish` run in GEO Publisher's background execution page and must not be preceded by `show` or `open`.
+Use the desktop application as the execution engine and the current customer project's only content store. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, direct browser automation, or a separate customer workspace. Browser platform operations run in GEO Publisher's background execution page and must not be preceded by `show` or `open`. WeChat `fill` uses the desktop's official API adapter and needs no browser page or website login.
 
 ## Customer project context
 
@@ -87,8 +87,8 @@ On Windows, perform one connectivity check and require a JSON response before co
 2. Run `instructions --json` and follow the current desktop version's workflow.
 3. Run `validate` with the article JSON before any browser operation.
 4. For requests such as “看看效果”, “填充”, “预览”, or “不要发布”, run `fill` only.
-5. Run `publish` only when the user explicitly asks for real publishing. Set `confirmPublish` to `true` in that request.
-6. Process multiple platforms serially in this order unless the user specifies another order: `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`.
+5. Run `publish` only when the user explicitly asks for real publishing. Set `confirmPublish` to `true` in that request. For `wechat`, always use `fill` to save a draft; formal publication and sending to followers are not supported. In a mixed authorized distribution task, publish only the requested supported platforms and report WeChat separately as a draft.
+6. Process multiple platforms serially in this order unless the user specifies another order: `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`, `wechat`. All platforms means these seven; an explicit subset still takes precedence.
 7. Report the structured result for every platform.
 
 ## Build the article input
@@ -99,8 +99,8 @@ Run `geo-publisher schema --json` before assembling the first request in a task.
 - `document.title` is the published title. `document.blocks` must use semantic blocks: `paragraph`、`heading`（only level 2 or 3）、`list`、`quote`、`divider`、`image`.
 - Keep text natural. Do not put raw Markdown markers (`##`、`-`、`>`) or raw HTML into block text.
 - `document.summary` is optional platform metadata. Every ready article must provide two to five concise, article-specific topics or keywords in `document.tags`, such as `企业AI` and `流程优化`; omit a leading `#`. GEO Publisher appends them to the article ending and also fills a platform-native topic field when supported.
-- An `image` block needs a real http(s) URL. A local image path belongs only in `coverPath`.
-- Do not rewrite an article to fit a platform after it has been produced. Let GEO Publisher render the same structured content for that platform and return a format-verification result.
+- An `image` block should use a `materialId` from the current project's indexed material library; `alt` and `caption` are optional. Other platforms may also use a real http(s) `src`, but WeChat requires material IDs. A local file path belongs only in `coverPath`, not in body text or `src`.
+- Select the saved article whose `platform` matches the destination and whose `payload.topicId` matches the requested topic. Use that package's exact `payload.document`; do not send one platform's body to every destination or rewrite it during distribution. If a platform package is missing, route writing to `geo-article-writer` before distribution. An explicit user request to distribute one existing article unchanged may still use that article.
 
 Example input for `validate` or `fill`:
 
@@ -125,6 +125,8 @@ Example input for `validate` or `fill`:
 
 ## Interpret platform status correctly
 
+These browser-status checks apply to website sessions. For WeChat API readiness, follow the WeChat section below; `login wechat` and `inspect wechat` inspect only the embedded website and do not establish API permissions.
+
 - `created` means the platform page currently has an in-memory WebView. `created=false` does not mean logged out.
 - `attached` means the platform page is currently visible in the GEO Publisher window. `runtimeState=background` means an automation page is retained without showing it. Neither state indicates whether the account is logged in.
 - The desktop keeps the current interactive page and at most one background task page. Login cookies remain stored per platform.
@@ -139,6 +141,16 @@ Use these platform mappings:
 - 企鹅号/腾讯内容开放平台: `penguin`
 - 搜狐号: `sohu`
 - 网易号: `netease`
+- 微信公众号/公众号: `wechat`
+
+## WeChat official-account drafts
+
+- The user connects their own account in GEO Publisher: 平台账号 → 微信公众号 → 连接设置 → 保存并测试连接. Credentials stay encrypted on that customer's computer. Do not ask for AppSecret in chat, article JSON, CLI arguments, or a separate configuration file. Browser scanning and API credentials are separate.
+- Writing and saving a local `wechat` article does not need credentials. Missing credentials block remote draft saving only. If the API reports missing credentials, permissions or IP whitelist issues, direct the user to the desktop connection settings and preserve the exact error; do not fall back to automating the website editor.
+- Read the saved `wechat` package, run `validate`, then `fill` only when draft saving/distribution was requested. `validate` checks local input and does not prove live API access. Use a title of 2-32 characters, a local PNG/JPEG cover under 10 MB, and PNG/JPEG body material images under 1 MB each. Network images must first be imported into the current project.
+- Normally omit `platformOptions`. If explicitly requested for this one draft, `platformOptions.wechat` may contain `title` and `author`; `expectedAppId` may bind a known target account. Never invent an author or account ID. AppID/AppSecret configuration happens in desktop settings, not here.
+- Report `草稿已保存` only when `status=filled`, `saved=true`, `verified=true`, and `mediaId` is present. Report the draft ID; the returned management URL is not a published article link. Keep the source article locally `ready`, not `published`.
+- If the result is `action_required`, keep the draft ID and ask the user to use the original distribution record's `重新核对` action. If `result_uncertain` or a control timeout occurs, inspect saved distribution records and ask for reconciliation in the account backend; never automatically resubmit, publish, or send to followers.
 
 ## Handle failures
 

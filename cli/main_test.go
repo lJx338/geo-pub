@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -106,6 +107,117 @@ func TestReadPublishConfirmation(t *testing.T) {
 	}
 	if !input.ConfirmPublish {
 		t.Fatal("expected explicit publish confirmation")
+	}
+}
+
+func TestWechatDraftInputAndValidation(t *testing.T) {
+	cover := filepath.Join(t.TempDir(), "cover.png")
+	if err := os.WriteFile(cover, []byte("cover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"wechat","document":{"title":"同一个选题的公众号版本","blocks":[{"type":"paragraph","text":"针对公众号读者的独立正文"},{"type":"image","materialId":"project-material","alt":"设备","caption":"项目图片"}]},"coverPath":%q,"platformOptions":{"wechat":{"author":"作者","expectedAppId":"wx1234567890abcdef"}}}`, cover)
+	for _, tc := range []struct{ name, input, wantError string }{
+		{"valid", base, ""},
+		{"long title", strings.Replace(base, "同一个选题的公众号版本", strings.Repeat("长", 33), 1), "2-32"},
+		{"title override", strings.Replace(base, `"wechat":{"author"`, `"wechat":{"title":"专用标题","author"`, 1), ""},
+		{"empty override", strings.Replace(base, `"wechat":{"author"`, `"wechat":{"title":"","author"`, 1), "2-32"},
+		{"author limit", strings.Replace(base, `"author":"作者"`, `"author":"`+strings.Repeat("字", 17)+`"`, 1), "16"},
+		{"account binding", strings.Replace(base, "wx1234567890abcdef", "wrong-account", 1), "expectedAppId"},
+		{"remote image", strings.Replace(base, `"materialId":"project-material"`, `"src":"https://example.com/image.png"`, 1), "materialId"},
+		{"missing cover", strings.Replace(base, string(mustJSON(cover)), `""`, 1), "coverPath"},
+		{"wrong platform options", strings.Replace(base, `"platform":"wechat"`, `"platform":"zhihu"`, 1), "只能用于微信公众号"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, err := readFillInput(nil, strings.NewReader(tc.input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = validateFill(input)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if input.Document.Blocks[1].MaterialID != "project-material" || input.Document.Blocks[1].Caption != "项目图片" {
+					t.Fatal("image fields lost")
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("expected %q, got %v", tc.wantError, err)
+			}
+		})
+	}
+}
+
+func TestWechatPublishIsRejectedBeforeContactingDesktop(t *testing.T) {
+	t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", t.TempDir())
+	path := filepath.Join(t.TempDir(), "input.json")
+	for _, confirm := range []bool{false, true} {
+		if err := os.WriteFile(path, mustJSON(fillInput{Platform: "wechat", ConfirmPublish: confirm}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := run([]string{"publish", "--input", path})
+		var typed *cliError
+		if !errors.As(err, &typed) || typed.code != "WECHAT_DRAFT_ONLY" {
+			t.Fatalf("expected draft-only rejection, got %v", err)
+		}
+	}
+}
+
+func TestWechatDiscoveryAndOfflineValidation(t *testing.T) {
+	t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", t.TempDir())
+	var workflow struct {
+		PlatformOrder      []string `json:"platformOrder"`
+		DraftOnlyPlatforms []string `json:"draftOnlyPlatforms"`
+	}
+	if err := json.Unmarshal(instructions(), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.PlatformOrder) != 7 || workflow.PlatformOrder[6] != "wechat" || len(workflow.DraftOnlyPlatforms) != 1 || workflow.DraftOnlyPlatforms[0] != "wechat" {
+		t.Fatalf("unexpected platforms: %+v", workflow)
+	}
+	var schema struct {
+		Article struct {
+			Platform []string `json:"platform"`
+		} `json:"article"`
+		Commands map[string]struct {
+			Platforms []string `json:"platforms"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(commandSchema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	if len(schema.Article.Platform) != 7 || len(schema.Commands["publish"].Platforms) != 6 {
+		t.Fatal("schema lost draft/publish distinction")
+	}
+	for _, platform := range schema.Commands["publish"].Platforms {
+		if platform == "wechat" {
+			t.Fatal("wechat must not advertise publish")
+		}
+	}
+	cover := filepath.Join(t.TempDir(), "cover.png")
+	if err := os.WriteFile(cover, []byte("cover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "article.json")
+	title := "公众号专用标题"
+	input := fillInput{ProjectID: "11111111-1111-4111-8111-111111111111", Platform: "wechat", CoverPath: cover,
+		Document: articleDocument{Title: strings.Repeat("长", 33), Blocks: []articleBlock{{Type: "paragraph", Text: "正文"}}}, PlatformOptions: platformOptions{Wechat: &wechatOptions{Title: &title}}}
+	if err := os.WriteFile(path, mustJSON(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, output, err := run([]string{"validate", "--input", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Title         string `json:"title"`
+		CoverRequired bool   `json:"coverRequired"`
+		DraftOnly     bool   `json:"draftOnly"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Title != title || !result.CoverRequired || !result.DraftOnly {
+		t.Fatalf("incorrect validation: %+v", result)
 	}
 }
 

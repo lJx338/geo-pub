@@ -2,6 +2,7 @@ import type { BetaActivationResult, DataChangeEvent, DesktopDistributionRequest,
 import type { Project, ProjectInput } from '../main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from '../main/content-store.js';
 import type { ContentRepairNotice } from '../main/content-repair.js';
+import type { WechatConnectionSettings, WechatConnectionStatus, WechatCredentials } from '../main/wechat/types.js';
 
 declare global {
   interface Window {
@@ -14,6 +15,11 @@ declare global {
       platformReload(): Promise<DesktopStatus>;
       chooseDistributionCover(): Promise<{ canceled: boolean; filePath: string }>;
       runDistribution(input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }>;
+      wechatSettings(projectId: string): Promise<WechatConnectionSettings>;
+      wechatSaveCredentials(projectId: string, credentials: WechatCredentials): Promise<WechatConnectionSettings>;
+      wechatTestConnection(projectId: string): Promise<WechatConnectionStatus>;
+      wechatClearCredentials(projectId: string): Promise<WechatConnectionSettings>;
+      wechatRecheckDraft(projectId: string, recordId: string): Promise<{ record: ContentItem }>;
       projects(): Promise<{ projects: Project[]; currentProject: Project | null }>;
       workspaceSnapshot(): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[]; contentCounts: Record<string, number>; contentRepair: ContentRepairNotice | null }>;
       dataRevision(): Promise<number>;

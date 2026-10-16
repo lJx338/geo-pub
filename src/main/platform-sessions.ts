@@ -18,6 +18,7 @@ import { fillZhihuDraft } from './zhihu-adapter.js';
 import { normalizeArticleTags, renderArticleDocument, type ArticleDocument } from '../shared/article-document.js';
 import { restorePlatformCookies, restorePlatformRendererStorage, snapshotPlatformCookies, snapshotPlatformRendererStorage, type RendererStorageSnapshot } from './cookie-vault.js';
 import type { PlatformOptions } from '../shared/platform-settings.js';
+import type { WechatAdapter } from './wechat/adapter.js';
 
 const defaultPlatformUrls: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -26,6 +27,7 @@ const defaultPlatformUrls: Record<Platform, string> = {
   penguin: 'https://om.qq.com/main/creation/article',
   sohu: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1',
   netease: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
+  wechat: 'https://mp.weixin.qq.com/',
 };
 
 const PLATFORM_URLS: Record<Platform, string> = process.env.GEO_PUBLISHER_TEST_PLATFORM_URL
@@ -225,6 +227,7 @@ export class PlatformSessions {
     private readonly version: string,
     private readonly onAttentionRequired: (attention: AttentionRequired) => void = () => undefined,
     private readonly onBusyChanged: (busy: boolean) => void = () => undefined,
+    private readonly wechat?: WechatAdapter,
   ) {
     this.executionHost = new BackgroundExecutionHost();
   }
@@ -331,8 +334,7 @@ export class PlatformSessions {
   }
 
   resize(): void {
-    if (!this.activePlatform) return;
-    const managed = this.views.get(this.activePlatform);
+    const managed = this.activeManagedView();
     if (managed) this.restoreManagedView(managed);
   }
 
@@ -387,19 +389,37 @@ export class PlatformSessions {
 
   setUiOverlayOpen(open: boolean): void {
     this.uiOverlayOpen = open;
-    if (!this.activePlatform) return;
-    const managed = this.views.get(this.activePlatform);
+    const managed = this.activeManagedView();
     if (!managed) return;
     managed.view.setVisible(!open);
-    if (!open) managed.view.setBounds(this.interactiveViewBounds());
+    if (!open) this.resizeInteractiveView(managed);
   }
 
   async fillDraft(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
-    this.ensureProject();
+    const projectId = this.ensureProject();
+    if (platform === 'wechat') {
+      return this.runWechatOperation(projectId, (adapter) => adapter.fillDraft({
+        projectId, coverPath, expectedAppId: options.wechat?.expectedAppId,
+        document: options.wechat?.title ? { ...document, title: options.wechat.title } : document,
+        options: { author: options.wechat?.author },
+      }));
+    }
     return await this.runExclusive(() => this.fillDraftInternal(platform, document, coverPath, options));
   }
 
-  private async fillDraftInternal(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
+  /** API tasks share the existing project/busy lock without starting a browser editor. */
+  async runWechatOperation<T>(projectId: string, operation: (adapter: WechatAdapter) => Promise<T>): Promise<T> {
+    this.ensureProject(projectId);
+    return this.runExclusive(async () => {
+      this.ensureProject(projectId);
+      if (!this.wechat) throw new Error('WECHAT_NOT_AVAILABLE: 微信公众号模块尚未初始化');
+      this.executingPlatform = 'wechat';
+      this.onBusyChanged(true);
+      return operation(this.wechat);
+    }, false);
+  }
+
+  private async fillDraftInternal(platform: Exclude<Platform, 'wechat'>, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
     // The previous implementation deliberately kept minimized jobs in the
     // hidden BackgroundExecutionHost. That prevents coordinate, clipboard and
     // file-input operations from reaching several Windows editors. Restore the
@@ -452,6 +472,7 @@ export class PlatformSessions {
 
   async publishDraft(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
     this.ensureProject();
+    if (platform === 'wechat') throw new Error('WECHAT_DRAFT_ONLY: 微信公众号目前仅支持保存草稿');
     return await this.runExclusive(async () => {
       const fill = await this.fillDraftInternal(platform, document, coverPath, options);
       const managed = this.background || this.views.get(platform);
@@ -547,12 +568,12 @@ export class PlatformSessions {
 
   private async createView(platform: Platform, host: ViewHost): Promise<ManagedView> {
     const projectId = this.ensureProject();
-    const useMinimalBrowserEnvironment = platform === 'toutiao' || platform === 'netease';
+    const useMinimalBrowserEnvironment = platform === 'toutiao' || platform === 'netease' || platform === 'wechat';
     const view = new WebContentsView({
       webPreferences: {
         partition: platformPartitionName(projectId, platform),
-        contextIsolation: false,
-        sandbox: false,
+        contextIsolation: platform === 'wechat',
+        sandbox: platform === 'wechat',
         nodeIntegration: false,
         backgroundThrottling: false,
         webSecurity: true,
@@ -576,10 +597,7 @@ export class PlatformSessions {
       cookieSnapshotTimer: null,
       cookieChangeListener: null,
     };
-    view.webContents.setWindowOpenHandler(({ url }) => {
-      if (!managed.loading && url !== managed.view.webContents.getURL()) void this.loadUrl(managed, url);
-      return { action: 'deny' };
-    });
+    this.configurePlatformPopups(managed, view.webContents, useMinimalBrowserEnvironment);
     view.webContents.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown' || managed.host !== 'interactive' || this.activePlatform !== platform || this.isBusy()) return;
       const modifiers = input.modifiers || [];
@@ -633,6 +651,43 @@ export class PlatformSessions {
     return managed;
   }
 
+  private configurePlatformPopups(managed: ManagedView, opener: WebContents, useMinimalBrowserEnvironment: boolean): void {
+    opener.setWindowOpenHandler(({ url }) => {
+      if (managed.cancelled || this.window.isDestroyed() || !/^(?:https?:\/\/|about:blank$)/i.test(url)) {
+        return { action: 'deny' };
+      }
+      // WeChat registration opens about:blank synchronously, then assigns the
+      // QR URL after an API request. It needs a real WindowProxy and its opener;
+      // loading the URL in the platform view destroys that handshake. Native
+      // child windows also preserve named targets, referrers and form POSTs.
+      return {
+        action: 'allow',
+        outlivesOpener: false,
+        overrideBrowserWindowOptions: {
+          parent: this.window,
+          width: 760,
+          height: 720,
+          autoHideMenuBar: true,
+          show: managed.host === 'interactive' && this.activePlatform === managed.platform
+            && this.window.isVisible() && !this.window.isMinimized() && !this.isBusy(),
+          webPreferences: {
+            session: managed.partition,
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
+          },
+        },
+      };
+    });
+    opener.on('did-create-window', (popup) => {
+      popup.setMenuBarVisibility(false);
+      this.configurePlatformPopups(managed, popup.webContents, useMinimalBrowserEnvironment);
+      if (!useMinimalBrowserEnvironment) setupStealthInjection(popup.webContents);
+    });
+  }
+
   private async openBackground(platform: Platform): Promise<ManagedView> {
     if (this.background && this.background.platform !== platform) await this.closeBackground();
     if (!this.background) {
@@ -673,7 +728,7 @@ export class PlatformSessions {
     managed.lastUsedAt = Date.now();
     managed.view.webContents.setBackgroundThrottling(false);
     managed.view.setVisible(!this.uiOverlayOpen);
-    managed.view.setBounds(this.interactiveViewBounds());
+    this.resizeInteractiveView(managed);
     this.activePlatform = managed.platform;
   }
 
@@ -684,7 +739,7 @@ export class PlatformSessions {
     managed.host = 'interactive';
     managed.view.webContents.setBackgroundThrottling(false);
     managed.view.setVisible(!this.uiOverlayOpen);
-    managed.view.setBounds(this.interactiveViewBounds());
+    this.resizeInteractiveView(managed);
     this.activePlatform = managed.platform;
   }
 
@@ -963,6 +1018,7 @@ export class PlatformSessions {
 
   private activeManagedView(): ManagedView | null {
     if (!this.activePlatform) return null;
+    if (this.background?.host === 'interactive' && this.background.platform === this.activePlatform) return this.background;
     return this.views.get(this.activePlatform) || null;
   }
 
@@ -984,20 +1040,24 @@ export class PlatformSessions {
     if (managed.host === 'background' && this.background === managed) this.executionHost.restore(managed.view);
     if (managed.host === 'interactive' && this.activePlatform === managed.platform) {
       managed.view.setVisible(!this.uiOverlayOpen);
-      managed.view.setBounds(this.interactiveViewBounds());
+      this.resizeInteractiveView(managed);
     }
   }
 
-  private interactiveViewBounds(): { x: number; y: number; width: number; height: number } {
-    const [width = 920, height = 640] = this.window.getContentSize();
+  private resizeInteractiveView(managed: ManagedView): void {
+    // Windows can report 0x0 during minimize. Keep the last usable bounds,
+    // including when a page finishes loading or an app dialog closes then.
+    if (this.window.isDestroyed() || this.window.isMinimized()) return;
+    const [width = 0, height = 0] = this.window.getContentSize();
+    if (!(width > 0 && height > 0)) return;
     const sidebarWidth = width <= 1080 ? 218 : 248;
     const toolbarHeight = 78;
-    return {
+    managed.view.setBounds({
       x: sidebarWidth,
       y: toolbarHeight,
       width: Math.max(320, width - sidebarWidth),
       height: Math.max(240, height - toolbarHeight),
-    };
+    });
   }
 
   private async captureEvidence(managed: ManagedView, stage: string): Promise<string | null> {
@@ -1058,7 +1118,7 @@ export class PlatformSessions {
     return target;
   }
 
-  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+  private async runExclusive<T>(operation: () => Promise<T>, browserDeadline = true): Promise<T> {
     this.pendingOperations += 1;
     this.onBusyChanged(true);
     const previous = this.operationTail;
@@ -1069,7 +1129,11 @@ export class PlatformSessions {
     try {
       // Closing the hidden WebContents stops a stalled renderer from acting
       // after the CLI caller has already received its timeout result.
-      return await withOperationDeadline(task, OPERATION_TIMEOUT_MS, () => this.abortTimedOutBackgroundOperation());
+      // Official API requests carry their own deadlines. A browser timeout
+      // cannot cancel an API write, so keep the project locked until it settles.
+      return browserDeadline
+        ? await withOperationDeadline(task, OPERATION_TIMEOUT_MS, () => this.abortTimedOutBackgroundOperation())
+        : await task;
     } finally {
       this.pendingOperations -= 1;
       this.executingPlatform = null;

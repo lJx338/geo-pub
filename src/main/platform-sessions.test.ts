@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { OperationTimeoutError, PlatformSessions, pickEvictionCandidate, platformPartitionName, platformRuntimeState, projectPartitionName, shouldForegroundPlatformAutomation, withOperationDeadline } from './platform-sessions.js';
 
 describe('platform view eviction', () => {
@@ -59,11 +59,11 @@ describe('platform runtime status', () => {
     const internals = sessions as unknown as {
       activePlatform: 'baijia';
       views: Map<string, typeof managed>;
-      window: { getContentSize(): [number, number] };
+      window: { getContentSize(): [number, number]; isMinimized(): boolean; isDestroyed(): boolean };
       uiOverlayOpen: boolean;
       restoreManagedView(value: typeof managed): void;
     };
-    internals.window = { getContentSize: () => [1360, 900] };
+    internals.window = { getContentSize: () => [1360, 900], isMinimized: () => false, isDestroyed: () => false };
     internals.uiOverlayOpen = false;
     internals.activePlatform = 'baijia';
     internals.views = new Map([['baijia', managed]]);
@@ -75,6 +75,65 @@ describe('platform runtime status', () => {
     sessions.setUiOverlayOpen(false);
     expect(visibility.at(-1)).toBe(true);
     expect(bounds.at(-1)).toEqual({ x: 248, y: 78, width: 1112, height: 822 });
+  });
+});
+
+describe('platform view layout', () => {
+  function setup() {
+    const window = {
+      getContentSize: vi.fn(() => [1360, 900]),
+      isMinimized: vi.fn(() => false),
+      isDestroyed: vi.fn(() => false),
+    };
+    const managed = {
+      platform: 'wechat', host: 'interactive',
+      view: { setVisible: vi.fn(), setBounds: vi.fn() },
+    };
+    const sessions = Object.create(PlatformSessions.prototype) as PlatformSessions;
+    Object.assign(sessions, {
+      window, activePlatform: 'wechat', uiOverlayOpen: false,
+      views: new Map([['wechat', managed]]), background: null,
+    });
+    return { sessions, window, managed };
+  }
+
+  it('preserves the last usable bounds while minimized and fits the restored window', () => {
+    const { sessions, window, managed } = setup();
+    sessions.resize();
+    window.isMinimized.mockReturnValue(true);
+    window.getContentSize.mockReturnValue([0, 0]);
+    sessions.resize();
+    sessions.setUiOverlayOpen(false);
+    expect(managed.view.setBounds).toHaveBeenCalledTimes(1);
+    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 248, y: 78, width: 1112, height: 822 });
+
+    window.isMinimized.mockReturnValue(false);
+    window.getContentSize.mockReturnValue([920, 640]);
+    sessions.resize();
+    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 218, y: 78, width: 702, height: 562 });
+  });
+
+  it('ignores transient zero dimensions and a destroyed window', () => {
+    const { sessions, window, managed } = setup();
+    for (const size of [[0, 0], [1360, 0], [0, 900]]) {
+      window.getContentSize.mockReturnValue(size);
+      sessions.resize();
+    }
+    window.getContentSize.mockReturnValue([1360, 900]);
+    window.isDestroyed.mockReturnValue(true);
+    sessions.resize();
+    expect(managed.view.setBounds).not.toHaveBeenCalled();
+  });
+
+  it('resizes an automation page shown in the main window, without resizing background pages', () => {
+    const { sessions, managed } = setup();
+    Object.assign(sessions, { views: new Map(), background: managed });
+    sessions.resize();
+    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 248, y: 78, width: 1112, height: 822 });
+    managed.view.setBounds.mockClear();
+    managed.host = 'background';
+    sessions.resize();
+    expect(managed.view.setBounds).not.toHaveBeenCalled();
   });
 });
 

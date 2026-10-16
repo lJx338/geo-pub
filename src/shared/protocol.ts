@@ -3,7 +3,7 @@ import { articleDocumentSchema } from './article-document.js';
 import type { ContentFilter, ContentKind } from '../main/content-store.js';
 import { platformOptionsSchema, type PlatformOptions } from './platform-settings.js';
 
-export const PLATFORMS = ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease'] as const;
+export const PLATFORMS = ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease', 'wechat'] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
 export const platformSchema = z.enum(PLATFORMS);
@@ -18,6 +18,9 @@ export const desktopDistributionRequestSchema = z.object({
   /** One-shot WorkBuddy override. Omitted means use the current project defaults. */
   platformOptions: platformOptionsSchema,
 }).superRefine((request, context) => {
+  if (request.mode === 'publish' && request.platforms.includes('wechat')) {
+    context.addIssue({ code: 'custom', path: ['mode'], message: '微信公众号目前仅支持保存草稿，请选择仅填充／存草稿' });
+  }
   if (request.mode === 'publish' && !request.confirmPublish) {
     context.addIssue({ code: 'custom', path: ['confirmPublish'], message: '真实发布需要明确确认' });
   }
@@ -32,7 +35,7 @@ const requestBase = z.object({
 });
 
 const articleRequest = {
-  platform: z.enum(['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease']),
+  platform: platformSchema,
   projectId: z.string().uuid(),
   document: articleDocumentSchema,
   coverPath: z.string().default(''),
@@ -44,7 +47,7 @@ const articleRefinements = <T extends { platform: string; document: { title: str
     context.addIssue({ code: 'custom', path: ['document', 'title'], message: '头条号标题不能超过 30 个字符' });
   }
   if (!['zhihu', 'penguin', 'sohu'].includes(request.platform) && !request.coverPath.trim()) {
-    context.addIssue({ code: 'custom', path: ['coverPath'], message: '百家号、头条号和网易号必须提供封面路径' });
+    context.addIssue({ code: 'custom', path: ['coverPath'], message: '百家号、头条号、网易号和微信公众号必须提供封面路径' });
   }
 };
 
@@ -77,6 +80,7 @@ export const controlRequestSchema = z.discriminatedUnion('action', [
   requestBase.extend({
     action: z.literal('draft.publish'),
     ...articleRequest,
+    platform: z.enum(['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease']),
     confirmPublish: z.literal(true),
   }).superRefine(articleRefinements),
 ]);

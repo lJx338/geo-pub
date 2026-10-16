@@ -1,6 +1,6 @@
 # GEO Publisher Desktop
 
-GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器保存六个平台的登录状态，通过本地 Go CLI 接收 WorkBuddy 或其他 Agent 的发布任务，不依赖 MCP、Chrome 扩展、Native Host 或固定端口。
+GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器保存七个平台的登录状态，通过本地 Go CLI 接收 WorkBuddy 或其他 Agent 的分发任务；微信公众号使用官方接口保存草稿，不依赖 MCP、Chrome 扩展、Native Host 或固定端口。
 
 ## 许可证
 
@@ -25,6 +25,9 @@ GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器�
 - 企鹅号 `penguin`
 - 搜狐号 `sohu`
 - 网易号 `netease`
+- 微信公众号 `wechat`（官方接口存草稿，不自动发表或群发）
+
+WorkBuddy 从同一个客户选题出发，按平台规则分别生成文章；“所有平台”包含以上七个平台。公众号使用前在桌面端的“平台账号 → 微信公众号 → 连接设置”配置该客户的接口凭据。详见 [公众号接入说明](docs/WECHAT-ADDON.md)。
 
 ## CLI
 

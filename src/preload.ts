@@ -3,6 +3,7 @@ import type { BetaActivationResult, DataChangeEvent, DesktopDistributionRequest,
 import type { Project, ProjectInput } from './main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from './main/content-store.js';
 import type { ContentRepairNotice } from './main/content-repair.js';
+import type { WechatConnectionSettings, WechatConnectionStatus, WechatCredentials } from './main/wechat/types.js';
 
 // 反检测：确保不暴露任何Electron相关的全局对象
 // 删除可能被注入的 process 和 require
@@ -28,6 +29,11 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   platformReload: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-reload'),
   chooseDistributionCover: (): Promise<{ canceled: boolean; filePath: string }> => ipcRenderer.invoke('geo:distribution-cover-choose'),
   runDistribution: (input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> => ipcRenderer.invoke('geo:distribution-run', input),
+  wechatSettings: (projectId: string): Promise<WechatConnectionSettings> => ipcRenderer.invoke('geo:wechat-settings', projectId),
+  wechatSaveCredentials: (projectId: string, credentials: WechatCredentials): Promise<WechatConnectionSettings> => ipcRenderer.invoke('geo:wechat-save-credentials', projectId, credentials),
+  wechatTestConnection: (projectId: string): Promise<WechatConnectionStatus> => ipcRenderer.invoke('geo:wechat-test-connection', projectId),
+  wechatClearCredentials: (projectId: string): Promise<WechatConnectionSettings> => ipcRenderer.invoke('geo:wechat-clear-credentials', projectId),
+  wechatRecheckDraft: (projectId: string, recordId: string): Promise<{ record: ContentItem }> => ipcRenderer.invoke('geo:wechat-recheck-draft', projectId, recordId),
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),
   workspaceSnapshot: (): Promise<{ revision: number; projects: Project[]; currentProject: Project | null; items: ContentItem[]; contentCounts: Record<string, number>; contentRepair: ContentRepairNotice | null }> => ipcRenderer.invoke('geo:workspace-snapshot'),
   dataRevision: (): Promise<number> => ipcRenderer.invoke('geo:data-revision'),

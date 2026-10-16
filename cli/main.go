@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -32,7 +33,7 @@ var buildMode = "production"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
-	"penguin": true, "sohu": true, "netease": true,
+	"penguin": true, "sohu": true, "netease": true, "wechat": true,
 }
 
 type controlRequest struct {
@@ -81,6 +82,13 @@ type fillInput struct {
 
 type platformOptions struct {
 	Baijia *baijiaOptions `json:"baijia,omitempty"`
+	Wechat *wechatOptions `json:"wechat,omitempty"`
+}
+
+type wechatOptions struct {
+	Title         *string `json:"title,omitempty"`
+	Author        *string `json:"author,omitempty"`
+	ExpectedAppID *string `json:"expectedAppId,omitempty"`
 }
 
 type baijiaOptions struct {
@@ -98,13 +106,15 @@ type articleDocument struct {
 }
 
 type articleBlock struct {
-	Type    string   `json:"type"`
-	Level   int      `json:"level,omitempty"`
-	Text    string   `json:"text,omitempty"`
-	Ordered bool     `json:"ordered,omitempty"`
-	Items   []string `json:"items,omitempty"`
-	Src     string   `json:"src,omitempty"`
-	Alt     string   `json:"alt,omitempty"`
+	Type       string   `json:"type"`
+	Level      int      `json:"level,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	Ordered    bool     `json:"ordered,omitempty"`
+	Items      []string `json:"items,omitempty"`
+	Src        string   `json:"src,omitempty"`
+	MaterialID string   `json:"materialId,omitempty"`
+	Alt        string   `json:"alt,omitempty"`
+	Caption    string   `json:"caption,omitempty"`
 }
 
 type cliOutput struct {
@@ -196,7 +206,7 @@ func run(args []string) (string, json.RawMessage, error) {
 		return call(command, controlRequest{Action: "app.show"}, defaultTimeout)
 	case "open", "login", "inspect":
 		if len(args) != 1 || !platforms[args[0]] {
-			return command, nil, usageError("平台必须是 baijia、toutiao、zhihu、penguin、sohu 或 netease")
+			return command, nil, usageError("平台必须是 baijia、toutiao、zhihu、penguin、sohu、netease 或 wechat")
 		}
 		action := "platform.open"
 		if command == "inspect" {
@@ -211,14 +221,18 @@ func run(args []string) (string, json.RawMessage, error) {
 		if err != nil {
 			return command, nil, err
 		}
+		if command == "publish" && input.Platform == "wechat" {
+			return command, nil, &cliError{code: "WECHAT_DRAFT_ONLY", message: "微信公众号目前仅支持保存草稿", suggestion: "使用 fill 保存并读回草稿；正式发表请在公众号后台操作"}
+		}
 		if err := validateFill(input); err != nil {
 			return command, nil, err
 		}
 		if command == "validate" {
 			return command, mustJSON(map[string]any{
-				"valid": true, "projectId": input.ProjectID, "platform": input.Platform, "title": input.Document.Title,
-				"titleLength": len([]rune(input.Document.Title)), "blockCount": len(input.Document.Blocks),
-				"coverRequired": input.Platform == "baijia" || input.Platform == "toutiao" || input.Platform == "netease",
+				"valid": true, "projectId": input.ProjectID, "platform": input.Platform, "title": effectiveTitle(input),
+				"titleLength": len([]rune(effectiveTitle(input))), "blockCount": len(input.Document.Blocks),
+				"coverRequired": requiresCover(input.Platform),
+				"draftOnly":     input.Platform == "wechat",
 			}), nil
 		}
 		if command == "publish" && !input.ConfirmPublish {
@@ -641,12 +655,34 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	return input, nil
 }
 
+func requiresCover(platform string) bool {
+	return platform == "baijia" || platform == "toutiao" || platform == "netease" || platform == "wechat"
+}
+
+func effectiveTitle(input fillInput) string {
+	if input.Platform == "wechat" && input.PlatformOptions.Wechat != nil && input.PlatformOptions.Wechat.Title != nil {
+		return strings.TrimSpace(*input.PlatformOptions.Wechat.Title)
+	}
+	return strings.TrimSpace(input.Document.Title)
+}
+
 func validateFill(input fillInput) error {
 	if len(strings.TrimSpace(input.ProjectID)) != 36 {
 		return usageError("projectId 必须来自 geo-publisher project current")
 	}
-	if input.Platform != "toutiao" && input.Platform != "baijia" && input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && input.Platform != "netease" {
-		return usageError("当前 alpha 版 fill 支持 platform=toutiao、baijia、zhihu、penguin、sohu 或 netease")
+	if !platforms[input.Platform] {
+		return usageError("fill 支持 platform=baijia、toutiao、zhihu、penguin、sohu、netease 或 wechat")
+	}
+	if options := input.PlatformOptions.Wechat; options != nil {
+		if input.Platform != "wechat" {
+			return usageError("platformOptions.wechat 只能用于微信公众号草稿")
+		}
+		if options.Author != nil && len([]rune(strings.TrimSpace(*options.Author))) > 16 {
+			return usageError("公众号作者最多 16 个字符")
+		}
+		if options.ExpectedAppID != nil && !regexp.MustCompile(`^wx[a-zA-Z0-9]{16}$`).MatchString(*options.ExpectedAppID) {
+			return usageError("platformOptions.wechat.expectedAppId 格式不正确")
+		}
 	}
 	if input.PlatformOptions.Baijia != nil {
 		if input.Platform != "baijia" {
@@ -685,7 +721,17 @@ func validateFill(input fillInput) error {
 	if err := validateDocument(input.Document); err != nil {
 		return err
 	}
-	titleLength := len([]rune(strings.TrimSpace(input.Document.Title)))
+	titleLength := len([]rune(effectiveTitle(input)))
+	if input.Platform == "wechat" {
+		if titleLength < 2 || titleLength > 32 {
+			return usageError("微信公众号标题必须为 2-32 个字符")
+		}
+		for index, block := range input.Document.Blocks {
+			if block.Type == "image" && strings.TrimSpace(block.MaterialID) == "" {
+				return usageError(fmt.Sprintf("公众号 document.blocks[%d] 图片必须引用本客户素材库的 materialId；网络图片请先导入素材库", index))
+			}
+		}
+	}
 	if input.Platform == "toutiao" && titleLength > 30 {
 		return usageError("头条号 document.title 不能超过 30 个字符")
 	}
@@ -698,10 +744,10 @@ func validateFill(input fillInput) error {
 	if input.Platform == "netease" && (titleLength < 5 || titleLength > 64) {
 		return usageError("网易号 document.title 必须为 5-64 个字符")
 	}
-	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && !filepath.IsAbs(input.CoverPath) {
+	if requiresCover(input.Platform) && !filepath.IsAbs(input.CoverPath) {
 		return usageError("coverPath 必须是绝对路径")
 	}
-	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" {
+	if requiresCover(input.Platform) {
 		info, err := os.Stat(input.CoverPath)
 		if err != nil || info.IsDir() {
 			return &cliError{code: "COVER_NOT_FOUND", message: "找不到封面文件：" + input.CoverPath, suggestion: "传入当前电脑上的封面绝对路径"}
@@ -744,8 +790,11 @@ func validateDocument(document articleDocument) error {
 			}
 		case "divider":
 		case "image":
-			if !strings.HasPrefix(block.Src, "https://") && !strings.HasPrefix(block.Src, "http://") {
-				return usageError(fmt.Sprintf("document.blocks[%d].src 必须是 http(s) 图片地址", index))
+			if strings.TrimSpace(block.MaterialID) == "" && !strings.HasPrefix(block.Src, "https://") && !strings.HasPrefix(block.Src, "http://") {
+				return usageError(fmt.Sprintf("document.blocks[%d] 必须有本客户素材库的 materialId 或 http(s) 图片地址 src", index))
+			}
+			if len([]rune(block.Alt)) > 200 || len([]rune(block.Caption)) > 200 {
+				return usageError(fmt.Sprintf("document.blocks[%d] 图片描述和图注最多 200 个字符", index))
 			}
 		default:
 			return usageError(fmt.Sprintf("document.blocks[%d].type 不支持：%s", index, block.Type))
@@ -901,19 +950,23 @@ func instructions() json.RawMessage {
 			"Run project current and use its exact project.id for every article request",
 			"Run validate with the exact article JSON",
 			"Use fill for preview or any request that says not to publish",
-			"Use publish only after explicit user authorization and confirmPublish=true",
+			"Use publish only after explicit user authorization and confirmPublish=true; WeChat always uses fill to save and read back a draft, never publish or send to followers",
 			"Process platforms serially and preserve every structured result",
 			"Never republish automatically when status=result_uncertain; reconcile first",
 			"Before generating an article, list topics with auto-selectable=true and reserve exactly one topic with a unique task id",
-			"After saving an article call topic use; if generation fails call topic release; used topics remain searchable but are not automatically selected unless evergreen",
+			"Generate each requested platform article independently from the same reserved topic and evidence, with the same topicId, coreQuestion and directAnswer; use geo-article-writer platform-rules.md",
+			"All platforms means seven including wechat; honor an explicit subset or schedule, otherwise default writing to all seven; writing alone does not authorize filling or publishing",
+			"Save one article per platform; only after every requested article is saved call topic use once, then report each platform and article id; on failure release the topic and reuse already-saved packages instead of creating duplicates",
 			"For a long-running subject create a topic variant instead of reusing the same title or body",
 			"Before using image materials, run material pending; analyze each returned local image once through material get and material analyze, then reuse the saved index",
 			"Search material summaries and facts through content list filters; do not scan the whole local content database",
+			"WeChat API credentials are configured in the desktop current project's platform account settings; browser login does not configure or prove API access; never request AppSecret in chat or article JSON",
 		},
-		"platformOrder": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
+		"platformOrder":      []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease", "wechat"},
+		"draftOnlyPlatforms": []string{"wechat"},
 		"platformNames": map[string]string{
 			"百家号": "baijia", "头条号": "toutiao", "知乎": "zhihu",
-			"企鹅号": "penguin", "搜狐号": "sohu", "网易号": "netease",
+			"企鹅号": "penguin", "搜狐号": "sohu", "网易号": "netease", "微信公众号": "wechat",
 		},
 	})
 }
@@ -926,8 +979,8 @@ func commandSchema() json.RawMessage {
 		"material": map[string]any{"input": "pending limit, material id, or validated image analysis JSON", "sideEffect": "reads pending images and saves a one-time visual index for the current customer project"},
 		"topic":    map[string]any{"input": "topic id plus task/article id or a variant JSON", "sideEffect": "reserves, releases, records use of, or creates a topic variant"},
 		"validate": map[string]any{"input": "article", "sideEffect": false},
-		"fill":     map[string]any{"input": "article", "sideEffect": "overwrites the current draft but does not publish"},
-		"publish":  map[string]any{"input": "article with confirmPublish=true", "sideEffect": "real external publication"},
+		"fill":     map[string]any{"input": "article", "sideEffect": "fills the browser editor; wechat uploads images, creates a draft and reads it back via official API; does not publish"},
+		"publish":  map[string]any{"input": "article with confirmPublish=true; wechat is not supported", "sideEffect": "real external publication", "platforms": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"}},
 	}
 	if isDevelopmentBuild() {
 		commands["projects"] = map[string]any{"input": nil, "sideEffect": false}
@@ -939,21 +992,21 @@ func commandSchema() json.RawMessage {
 		"commands": commands,
 		"article": map[string]any{
 			"projectId": "required UUID from geo-publisher project current; must match the project currently selected in GEO Publisher",
-			"platform":  []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"},
+			"platform":  []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease", "wechat"},
 			"document": map[string]any{
-				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64",
+				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64, WeChat 2-32",
 				"blocks": []map[string]any{
 					{"type": "paragraph", "text": "string"},
 					{"type": "heading", "level": "2 or 3", "text": "string"},
 					{"type": "list", "ordered": "boolean", "items": "string[]"},
 					{"type": "quote", "text": "string"},
 					{"type": "divider"},
-					{"type": "image", "src": "https:// image URL", "alt": "optional string"},
+					{"type": "image", "materialId": "current project's material id; required for wechat", "src": "optional http(s) image URL for other platforms", "alt": "optional string, max 200", "caption": "optional string, max 200"},
 				},
 				"summary": "optional string, maximum 120 characters",
 				"tags":    "optional array, maximum 9",
 			},
-			"coverPath":      "absolute local path; required for baijia, toutiao, netease",
+			"coverPath":      "absolute local path; required for baijia, toutiao, netease, wechat; WeChat requires PNG/JPEG under 10 MB and body images under 1 MB",
 			"confirmPublish": "must be true for publish",
 			"platformOptions": map[string]any{
 				"usage": "omit to use current project defaults; only send when the user explicitly requests a one-shot override",
@@ -961,6 +1014,11 @@ func commandSchema() json.RawMessage {
 					"smartCreation": "optional array: autoPodcast, convertToDynamic; empty selects none",
 					"declarations":  "optional array: aiGenerated, source; empty selects none",
 					"sourceDate":    "YYYY-MM-DD; required with source", "sourceLocation": "required with source; use province / city / district",
+				},
+				"wechat": map[string]any{
+					"title":         "optional one-shot title, 2-32 characters; prefer writing a compliant document.title",
+					"author":        "optional author, maximum 16 characters; do not invent",
+					"expectedAppId": "optional known account binding; never include AppSecret",
 				},
 			},
 		},
@@ -970,7 +1028,7 @@ func commandSchema() json.RawMessage {
 func platformOverview() json.RawMessage {
 	names := map[string]string{
 		"baijia": "百家号", "toutiao": "头条号", "zhihu": "知乎",
-		"penguin": "企鹅号", "sohu": "搜狐号", "netease": "网易号",
+		"penguin": "企鹅号", "sohu": "搜狐号", "netease": "网易号", "wechat": "微信公众号",
 	}
 	result := map[string]any{"supported": names, "desktopConnected": false}
 	if response, err := send(controlRequest{Action: "status"}, 2*time.Second); err == nil {
