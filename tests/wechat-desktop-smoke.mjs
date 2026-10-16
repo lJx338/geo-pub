@@ -12,6 +12,7 @@ const root = await mkdtemp(join(tmpdir(), 'geo-wechat-desktop-'));
 const imagePath = join(root, 'cover.png');
 await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));
 const env = { ...process.env, GEO_PUBLISHER_USER_DATA_DIR: root, GEO_DISABLE_OPEN_WORKBUDDY: '1',
+  GEO_PUBLISHER_CONTROL_ENDPOINT: process.platform === 'win32' ? `\\\\.\\pipe\\geo-publisher-wechat-test-${process.pid}` : join(root, 'control.sock'),
   GEO_PUBLISHER_TEST_PLATFORM_URL: pathToFileURL(join(process.cwd(), 'tests/fixtures/silent-platform.html')).href };
 delete env.ELECTRON_RUN_AS_NODE;
 const execute = promisify(execFile);
@@ -85,14 +86,42 @@ try {
   }, projectA); assert.equal(rejectedProject, true);
   await window.evaluate((id) => window.geoPublisher.selectProject(id), projectA);
 
-  const originalDocument = { title: '在原软件里保存公众号草稿', summary: '原有客户和文章流程的集成验证。', tags: [], blocks: [
-    { type: 'paragraph', text: '公众号稿件使用客户自己的连接设置。' }, { type: 'heading', level: 2, text: '保存与核对' },
+  const originalDocument = { title: '在原软件里保存公众号草稿', summary: '原有客户和文章流程的集成验证。', tags: ['公众号草稿'], wechatLayout: { theme: 'moyu-green', eyebrow: '内容工作台' }, blocks: [
+    { type: 'paragraph', text: '公众号稿件使用客户自己的连接设置。', card: { kind: 'intro', label: '先确认账号' }, emphasis: [{ text: '客户自己的连接设置', style: 'underline' }] },
+    { type: 'heading', level: 2, text: '保存与核对' },
+    { type: 'paragraph', text: '先在内容中心确认文章，再将正文与图片一起保存到公众号草稿箱。修改正文后，卡片与配色也应保留下来。' },
+    { type: 'quote', text: '草稿保存后再读回核对，避免把请求完成当作内容正确。', card: { kind: 'takeaway', label: '保存后看一眼' }, emphasis: [{ text: '读回核对', style: 'bold' }] },
   ] };
-  const article = await window.evaluate(async ({ projectId, imagePath, originalDocument }) => {
+  let article = await window.evaluate(async ({ projectId, imagePath, originalDocument }) => {
     const material = (await window.geoPublisher.contentImportMaterial(projectId, imagePath)).item;
     const document = { ...originalDocument, blocks: [...originalDocument.blocks, { type: 'image', materialId: material.id, caption: '项目素材库图片' }] };
     return (await window.geoPublisher.contentSave(projectId, { kind: 'article', title: document.title, platform: 'wechat', status: 'ready', payload: { document, coverPath: imagePath } })).item;
   }, { projectId: projectA, imagePath, originalDocument });
+  await window.locator('.nav-item').filter({ hasText: '内容中心' }).click();
+  await window.locator('.content-tabs button').filter({ hasText: '文章' }).click();
+  await window.locator('.article-preview-trigger').filter({ hasText: originalDocument.title }).click();
+  await window.locator('.wechat-layout-preview').waitFor();
+  assert.ok((await window.locator('.wechat-layout-preview').innerHTML()).includes('border-bottom:2px solid #A7F3D0;'));
+  await window.getByRole('button', { name: '修改文章', exact: true }).click();
+  await window.getByLabel('公众号正文字号').selectOption('17');
+  await window.locator('[data-block-index="0"] textarea').fill('公众号稿件使用客户自己的连接设置。编辑后仍保留排版。');
+  await window.locator('[data-block-index="0"] summary').click();
+  await window.getByLabel('段落卡片样式').first().selectOption('note');
+  await window.getByLabel('卡片小标签').first().fill('账号与项目对应');
+  // Blur directly into Save: this catches loss of the last emphasis edit.
+  await window.getByLabel('高亮短语').first().fill('保留排版');
+  await window.getByRole('button', { name: '保存修改', exact: true }).click();
+  await window.locator('#article-editor').waitFor({ state: 'detached' });
+  article = (await window.evaluate((id) => window.geoPublisher.contentList(id, 'article'), projectA)).items.find((item) => item.id === article.id);
+  assert.equal(article.payload.document.wechatLayout.fontSize, 17);
+  assert.equal(article.payload.document.blocks[0].card.kind, 'note');
+  assert.equal(article.payload.document.blocks[0].emphasis.find((mark) => mark.style === 'highlight').text, '保留排版');
+  await window.locator('.article-preview-trigger').filter({ hasText: originalDocument.title }).click();
+  await window.locator('.wechat-layout-preview').waitFor();
+  assert.ok((await window.locator('.wechat-layout-preview').textContent()).includes('编辑后仍保留排版'));
+  const layoutScreenshot = join(root, 'wechat-layout-preview.png');
+  await window.locator('.article-preview-sheet').screenshot({ path: layoutScreenshot });
+  await window.getByRole('button', { name: '关闭文章预览' }).click();
   await window.locator('.nav-item').filter({ hasText: '分发', exact: false }).first().click();
   const articleRow = window.locator('.distribution-article-row').filter({ hasText: originalDocument.title });
   await articleRow.getByRole('button', { name: '配置分发' }).click();
@@ -125,6 +154,9 @@ try {
   const uploadedArticle = await app.evaluate(() => globalThis.__wechatDesktopTest.drafts['test-draft-1']);
   assert.equal(uploadedArticle.title, '公众号专用短标题'); assert.equal(uploadedArticle.author, '测试作者');
   assert.ok(uploadedArticle.content.includes('https://mmbiz.qpic.cn/test.png')); assert.ok(!uploadedArticle.content.includes('data:image'));
+  assert.ok(uploadedArticle.content.includes('font-size:17px;line-height:1.9;'));
+  assert.ok(uploadedArticle.content.includes('账号与项目对应'));
+  assert.ok(uploadedArticle.content.includes('background-color:#ECFDF5;'));
 
   // A readback error remains visible in the same distribution record; recheck does not create again.
   await app.evaluate(() => { globalThis.__wechatDesktopTest.readFails = true; });
@@ -173,6 +205,10 @@ try {
       { type: 'paragraph', text: `测试平台 ${platform} 的独立内容，验证版本 ${index + 1} 不被覆盖。` },
       article.payload.document.blocks.find((block) => block.type === 'image'),
     ] };
+    if (platform === 'wechat') {
+      document.wechatLayout = { theme: 'red-white', eyebrow: '采购观察' };
+      document.blocks[0].card = { kind: 'intro', label: '先核对需求' };
+    }
     packages.push((await cli(['content', 'save', projectA], { kind: 'article', title: document.title, platform, status: 'ready',
       payload: { topicId: topic.id, ...topic.payload, document, coverPath: imagePath } })).item);
   }
@@ -199,6 +235,8 @@ try {
   assert.ok(cliUploaded.content.includes('测试平台 wechat 的独立内容'));
   assert.ok(cliUploaded.content.includes('https://mmbiz.qpic.cn/test.png'));
   assert.equal(cliUploaded.author, 'CLI 测试作者');
+  assert.ok(cliUploaded.content.includes('background-color:#FEF2F2;'));
+  assert.ok(cliUploaded.content.includes('先核对需求'));
   assert.equal((await cli(['fill'], cliInput)).mediaId, cliDraft.mediaId);
   assert.equal((await app.evaluate(() => globalThis.__wechatDesktopTest.calls)).filter((path) => path.endsWith('/draft/add')).length, callsBeforeFill + 1);
   await assert.rejects(cli(['publish'], { ...cliInput, confirmPublish: true }), (error) => JSON.parse(error.stderr).code === 'WECHAT_DRAFT_ONLY');
@@ -243,5 +281,5 @@ try {
   await assert.rejects(access(join(root, 'projects', projectA, 'wechat', 'credentials.bin')));
   const deletedCookies = await app.evaluate(async ({ session }, projectId) => session.fromPartition(`persist:geo-publisher-${projectId}-wechat`).cookies.get({ name: 'wechat-test' }), projectA);
   assert.equal(deletedCookies.length, 0);
-  console.log(JSON.stringify({ passed: true, cliSevenPlatformWorkflow: true, liveWechatRequests: 0, root, settingsScreenshot, distributionScreenshot, historyScreenshot }));
+  console.log(JSON.stringify({ passed: true, cliSevenPlatformWorkflow: true, layoutPreviewAndEdit: true, liveWechatRequests: 0, root, settingsScreenshot, layoutScreenshot, distributionScreenshot, historyScreenshot }));
 } finally { if (app) await app.close(); }

@@ -143,6 +143,17 @@ describe('WeChat local project storage', () => {
 });
 
 describe('WeChat draft workflow', () => {
+  it('includes layout in draft identity and sends styles through the API', async () => {
+    const { adapter, server, input } = await setup();
+    const plain = await adapter.fillDraft(input);
+    const styled = { ...input, document: { ...document, wechatLayout: { version: 1 as const, theme: 'moyu-green' as const, fontSize: 16, lineHeight: 1.9, paragraphSpacing: 20, header: true } } };
+    const result = await adapter.fillDraft(styled);
+    expect(result.verified).toBe(true); expect(result.operationKey).not.toBe(plain.operationKey);
+    expect(server.article!.content).toContain('background-color:#ECFDF5;');
+    expect((await adapter.fillDraft(styled)).reused).toBe(true);
+    expect(server.calls.filter((call) => call.path.endsWith('/draft/add'))).toHaveLength(2);
+  });
+
   it('uploads both image types, saves and verifies, and reuses a draft after restart', async () => {
     const { adapter, server, input, createAdapter, store } = await setup();
     const result = await adapter.fillDraft(input);

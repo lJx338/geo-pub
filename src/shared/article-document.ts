@@ -1,10 +1,11 @@
 import { z } from 'zod';
+import { articleCardSchema, articleEmphasisSchema, renderWechatLayoutHtml, wechatLayoutSchema } from './wechat-layout.js';
 
 export const articleBlockSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('paragraph'), text: z.string().trim().min(1).max(12_000) }),
+  z.object({ type: z.literal('paragraph'), text: z.string().trim().min(1).max(12_000), card: articleCardSchema, emphasis: articleEmphasisSchema }),
   z.object({ type: z.literal('heading'), level: z.union([z.literal(2), z.literal(3)]), text: z.string().trim().min(1).max(240) }),
   z.object({ type: z.literal('list'), ordered: z.boolean().default(false), items: z.array(z.string().trim().min(1).max(500)).min(1).max(30) }),
-  z.object({ type: z.literal('quote'), text: z.string().trim().min(1).max(2_000) }),
+  z.object({ type: z.literal('quote'), text: z.string().trim().min(1).max(2_000), card: articleCardSchema, emphasis: articleEmphasisSchema }),
   z.object({ type: z.literal('divider') }),
   z.object({
     type: z.literal('image'),
@@ -20,6 +21,7 @@ export const articleDocumentSchema = z.object({
   blocks: z.array(articleBlockSchema).min(1).max(120),
   summary: z.string().trim().max(120).optional(),
   tags: z.array(z.string().trim().min(1).max(30)).max(9).default([]),
+  wechatLayout: wechatLayoutSchema.optional(),
 }).superRefine((document, context) => {
   document.blocks.forEach((block, index) => {
     if (block.type === 'image' && !block.materialId && !block.src) {
@@ -31,7 +33,7 @@ export const articleDocumentSchema = z.object({
 export type ArticleBlock = z.infer<typeof articleBlockSchema>;
 export type ArticleDocument = z.infer<typeof articleDocumentSchema>;
 
-export type ArticlePlatform = 'baijia' | 'toutiao' | 'zhihu' | 'penguin' | 'sohu' | 'netease';
+export type ArticlePlatform = 'baijia' | 'toutiao' | 'zhihu' | 'penguin' | 'sohu' | 'netease' | 'wechat';
 
 export type ArticleRender = {
   html: string;
@@ -143,7 +145,10 @@ export function renderArticleDocument(document: ArticleDocument, platform?: Arti
     text.push(topicLine);
   }
 
-  return { html: html.join(''), text: text.join('\n\n').trim(), structuralExpectations: expectations };
+  return {
+    html: platform === 'wechat' && document.wechatLayout ? renderWechatLayoutHtml(document, normalizeArticleTags(document.tags)) : html.join(''),
+    text: text.join('\n\n').trim(), structuralExpectations: expectations,
+  };
 }
 
 export function articleDocumentFromLegacy(title: string, html: string, tags: string[]): ArticleDocument {

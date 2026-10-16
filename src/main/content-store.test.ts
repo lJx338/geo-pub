@@ -8,6 +8,21 @@ import { ContentStore } from './content-store.js';
 const projectId = '11111111-1111-4111-8111-111111111111';
 
 describe('content store', () => {
+  it('persists WeChat layout across edits and rejects invalid layout before overwriting', async () => {
+    const store = new ContentStore(await mkdtemp(join(tmpdir(), 'geo-layout-store-')));
+    const document = { title: '采购前核对什么', tags: ['采购'], wechatLayout: { theme: 'moyu-green' }, blocks: [
+      { type: 'paragraph', text: '先核对工况。', card: { kind: 'intro', label: '先看这里' }, emphasis: [{ text: '核对工况', style: 'bold' }] },
+    ] };
+    const item = await store.save(projectId, { kind: 'article', platform: 'wechat', payload: { document } });
+    const saved = item.payload.document as typeof document;
+    expect(saved.wechatLayout).toMatchObject({ theme: 'moyu-green', fontSize: 16 });
+    expect(saved.blocks).toEqual(document.blocks);
+    await expect(store.save(projectId, { kind: 'article', id: item.id, payload: { document: { ...saved, wechatLayout: { theme: 'invalid' } } } })).rejects.toThrow('ARTICLE_LAYOUT_INVALID');
+    expect((await store.list(projectId, 'article'))[0]!.payload.document).toEqual(saved);
+    await store.save(projectId, { kind: 'article', id: item.id, payload: { document: { ...saved, title: '修改后的标题' } } });
+    expect((await store.list(projectId, 'article'))[0]!.payload.document).toMatchObject({ title: '修改后的标题', wechatLayout: saved.wechatLayout, blocks: saved.blocks });
+  });
+
   it('repairs persisted policies on startup and reads the repaired database on later starts', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'geo-content-startup-repair-'));
     const root = join(directory, 'content');

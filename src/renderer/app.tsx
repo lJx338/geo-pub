@@ -10,6 +10,8 @@ import type { ContentRepairNotice } from '../main/content-repair.js';
 import { ContentRepairBanner } from './components/content-repair-notice.js';
 import type { LaunchAtLoginStatus } from '../shared/protocol.js';
 import { WechatSettingsDialog } from './components/wechat-settings.js';
+import { WechatArticlePreview, WechatBlockControls, WechatLayoutControls } from './components/wechat-article.js';
+import { wechatLayoutSchema, type WechatLayout } from '../shared/wechat-layout.js';
 
 const platforms = [['baijia', '百家号'], ['toutiao', '头条号'], ['zhihu', '知乎'], ['penguin', '企鹅号'], ['sohu', '搜狐号'], ['netease', '网易号'], ['wechat', '微信公众号']] as const;
 const platformLabels = Object.fromEntries(platforms) as Record<string, string>;
@@ -525,6 +527,7 @@ function ArticlePreview({ projectId, article, topicTitle, onEdit, onClose }: { p
   const dialogRef = useRef<HTMLDialogElement>(null);
   const payload = article.payload || {};
   const document = payload.document || {};
+  const styledWechat = article.platform === 'wechat' && !!document.wechatLayout;
   const blocks = Array.isArray(document.blocks) ? document.blocks : [];
   const statusLabel = contentStatusLabels[article.status] || '草稿';
   useEffect(() => {
@@ -547,7 +550,7 @@ function ArticlePreview({ projectId, article, topicTitle, onEdit, onClose }: { p
   return <dialog ref={dialogRef} className="article-preview-sheet" aria-labelledby="article-preview-title" onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <div className="article-preview-layout">
       <header className="article-preview-head"><div><p className="eyebrow">文章预览</p><h2 id="article-preview-title">{document.title || article.title || '未命名文章'}</h2><div className="article-preview-meta"><Badge tone={article.status === 'ready' ? 'success' : 'neutral'}>{statusLabel}</Badge>{payload.articleType && <span>{articleTypeLabels[payload.articleType] || '文章'}</span>}{article.platform && <span>{platformLabels[article.platform] || '目标平台'}</span>}</div></div><div className="article-preview-actions"><Button type="button" variant="outline" icon={Pencil} onClick={onEdit}>修改文章</Button><Button type="button" variant="ghost" icon={X} onClick={onClose} aria-label="关闭文章预览" /></div></header>
-      <div className="article-preview-scroll">{topicTitle && <p className="article-preview-source">来源选题：{topicTitle}</p>}{document.summary && <div className="article-preview-summary"><strong>文章摘要</strong><p>{document.summary}</p></div>}<article className="article-preview-body">{blocks.length ? blocks.map(renderBlock) : <Empty icon={FileText} title="正文尚未保存" description="当前文章只有标题，等待 WorkBuddy 保存完整正文。"/>}</article>{Array.isArray(document.tags) && document.tags.length > 0 && <footer className="article-preview-tags">{document.tags.map((tag: string) => <Badge key={tag}>{tag}</Badge>)}</footer>}</div>
+      <div className="article-preview-scroll">{topicTitle && <p className="article-preview-source">来源选题：{topicTitle}</p>}{styledWechat ? <WechatArticlePreview projectId={projectId} document={document}/> : <>{document.summary && <div className="article-preview-summary"><strong>文章摘要</strong><p>{document.summary}</p></div>}<article className="article-preview-body">{blocks.length ? blocks.map(renderBlock) : <Empty icon={FileText} title="正文尚未保存" description="当前文章只有标题，等待 WorkBuddy 保存完整正文。"/>}</article>{Array.isArray(document.tags) && document.tags.length > 0 && <footer className="article-preview-tags">{document.tags.map((tag: string) => <Badge key={tag}>{tag}</Badge>)}</footer>}</>}</div>
     </div>
   </dialog>;
 }
@@ -570,6 +573,7 @@ function ArticleEditor({ project, materials, article, onSave, onClose, notify }:
   const [summary, setSummary] = useState(String(source.summary || ''));
   const [tags, setTags] = useState(Array.isArray(source.tags) ? source.tags.join('，') : '');
   const [blocks, setBlocks] = useState<ArticleBlock[]>(Array.isArray(source.blocks) ? source.blocks : []);
+  const [wechatLayout, setWechatLayout] = useState<WechatLayout | undefined>(() => wechatLayoutSchema.safeParse(source.wechatLayout).data);
   const [saving, setSaving] = useState(false);
   const [validationError, setValidationError] = useState('');
   const [imagePickerIndex, setImagePickerIndex] = useState<number | null>(null);
@@ -605,7 +609,7 @@ function ArticleEditor({ project, materials, article, onSave, onClose, notify }:
     finally { setUploadingImage(false); }
   };
   const submit = async () => {
-    const parsed = articleDocumentSchema.safeParse({ title, summary: summary.trim() || undefined, tags: tags.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean), blocks });
+    const parsed = articleDocumentSchema.safeParse({ title, summary: summary.trim() || undefined, tags: tags.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean), blocks, wechatLayout });
     if (!parsed.success) { setValidationError(parsed.error.issues[0]?.message || '文章内容不完整'); return; }
     setSaving(true); setValidationError('');
     try { await onSave(parsed.data); } catch (error) { setValidationError((error as Error).message); setSaving(false); }
@@ -617,10 +621,12 @@ function ArticleEditor({ project, materials, article, onSave, onClose, notify }:
         <label className="article-editor-field"><span>文章标题</span><input id="article-editor-title-input" value={title} maxLength={100} onChange={(event) => setTitle(event.target.value)} /></label>
         <label className="article-editor-field"><span>文章摘要（可选）</span><textarea value={summary} maxLength={120} rows={3} onChange={(event) => setSummary(event.target.value)} /></label>
         <label className="article-editor-field"><span>话题或关键词</span><input value={tags} placeholder="使用逗号分隔，例如：人工智能，企业管理" onChange={(event) => setTags(event.target.value)} /></label>
+        {article.platform === 'wechat' && <WechatLayoutControls value={wechatLayout} onChange={setWechatLayout}/>}
         <section className="article-block-editor"><div className="article-block-editor-title"><div><strong>正文内容</strong><p>每一块都可单独修改、排序或删除。</p></div><select aria-label="添加正文块" defaultValue="" onChange={(event) => { if (event.target.value === 'image') setImagePickerIndex(blocks.length); else if (event.target.value) setBlocks((current) => [...current, emptyArticleBlock(event.target.value as ArticleBlock['type'])]); event.target.value = ''; }}><option value="" disabled>添加内容块</option><option value="paragraph">正文段落</option><option value="heading">小标题</option><option value="list">列表</option><option value="quote">引用</option><option value="divider">分隔线</option><option value="image">插入图片</option></select></div>
           {blocks.map((block, index) => <div className="article-block-row" data-block-index={index} data-block-type={block.type} key={`${block.type}-${index}`}><div className="article-block-row-head"><Badge>{block.type === 'heading' ? `${block.level === 3 ? '三级' : '二级'}小标题` : articleBlockLabels[block.type]}</Badge><div><button type="button" disabled={index === 0} onClick={() => moveBlock(index, -1)} aria-label="上移"><ArrowUp size={15}/></button><button type="button" disabled={index === blocks.length - 1} onClick={() => moveBlock(index, 1)} aria-label="下移"><ArrowDown size={15}/></button><button type="button" onClick={() => setBlocks((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label="删除内容块"><Trash2 size={15}/></button></div></div>
             {block.type === 'heading' && <><select value={block.level} onChange={(event) => replaceBlock(index, { ...block, level: Number(event.target.value) as 2 | 3 })}><option value={2}>二级小标题</option><option value={3}>三级小标题</option></select><textarea rows={2} value={block.text} onChange={(event) => replaceBlock(index, { ...block, text: event.target.value })}/></>}
             {(block.type === 'paragraph' || block.type === 'quote') && <textarea rows={block.type === 'paragraph' ? 5 : 3} value={block.text} onChange={(event) => replaceBlock(index, { ...block, text: event.target.value })}/>}
+            {article.platform === 'wechat' && wechatLayout && (block.type === 'paragraph' || block.type === 'quote') && <WechatBlockControls block={block} onChange={(value) => replaceBlock(index, value)}/>}
             {block.type === 'list' && <><label className="article-inline-check"><input type="checkbox" checked={block.ordered} onChange={(event) => replaceBlock(index, { ...block, ordered: event.target.checked })}/>显示序号</label><textarea rows={Math.max(3, block.items.length)} value={block.items.join('\n')} onChange={(event) => replaceBlock(index, { ...block, items: event.target.value.split('\n') })}/><small>每行是一条列表内容</small></>}
             {block.type === 'divider' && <p className="article-divider-preview">分隔线</p>}
             {block.type === 'image' && <div className="article-image-block">{block.materialId ? <ArticleMaterialImage projectId={project.id} materialId={block.materialId} alt={block.alt || ''}/> : block.src ? <img src={block.src} alt={block.alt || ''}/> : <div className="article-image-placeholder"><ImagePlus size={28}/><span>尚未选择图片</span></div>}<div className="article-image-fields"><div><Button type="button" variant="outline" icon={ImagePlus} onClick={() => setImagePickerIndex(index)}>{block.materialId || block.src ? '更换图片' : '选择图片'}</Button></div><input value={block.alt || ''} placeholder="图片替代文字（可选）" onChange={(event) => replaceBlock(index, { ...block, alt: event.target.value })}/><input value={block.caption || ''} placeholder="图片下方说明（可选）" onChange={(event) => replaceBlock(index, { ...block, caption: event.target.value })}/></div></div>}

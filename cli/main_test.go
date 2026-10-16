@@ -34,6 +34,49 @@ func TestReadFillInputFromStdin(t *testing.T) {
 	}
 }
 
+func TestWechatLayoutSurvivesCLITransport(t *testing.T) {
+	for _, theme := range []string{"moyu-green", "red-white", "graphite-minimal", "zen-whitespace", "moyu-ticket", "olive-journal"} {
+		request := fmt.Sprintf(`{"platform":"wechat","document":{"title":"采购检查","wechatLayout":{"version":1,"theme":%q,"fontSize":17,"lineHeight":2,"paragraphSpacing":24,"header":false,"eyebrow":"采购观察"},"blocks":[{"type":"paragraph","text":"核对工况","card":{"kind":"intro","label":"先看这里"},"emphasis":[{"text":"工况","style":"underline"}]}]}}`, theme)
+		input, err := readFillInput(nil, strings.NewReader(request))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateDocument(input.Document); err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(controlRequest{Action: "draft.fill", Document: input.Document})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var forwarded struct {
+			Document articleDocument `json:"document"`
+		}
+		if err := json.Unmarshal(data, &forwarded); err != nil {
+			t.Fatal(err)
+		}
+		layout := forwarded.Document.WechatLayout
+		if layout.Theme != theme || layout.Header == nil || *layout.Header || *layout.FontSize != 17 || forwarded.Document.Blocks[0].Card.Kind != "intro" || forwarded.Document.Blocks[0].Emphasis[0].Text != "工况" {
+			t.Fatalf("layout was lost during CLI serialization: %s", data)
+		}
+	}
+}
+
+func TestWechatLayoutRejectsInvalidFields(t *testing.T) {
+	for _, layout := range []string{`{"theme":"unknown"}`, `{"theme":"moyu-green","version":2}`, `{"theme":"moyu-green","fontSize":0}`, `{"theme":"moyu-green","lineHeight":8}`, `{"theme":"moyu-green","paragraphSpacing":1}`, `{"theme":"moyu-green","style":"color:red"}`} {
+		input, err := readFillInput(nil, strings.NewReader(`{"document":{"title":"标题","blocks":[{"type":"paragraph","text":"正文"}],"wechatLayout":`+layout+`}}`))
+		if err == nil && validateDocument(input.Document) == nil {
+			t.Fatalf("accepted invalid layout: %s", layout)
+		}
+	}
+	input, err := readFillInput(nil, strings.NewReader(`{"document":{"title":"标题","wechatLayout":{"theme":"moyu-green"},"blocks":[{"type":"paragraph","text":"正文","card":{"kind":"unknown"}}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validateDocument(input.Document) == nil {
+		t.Fatal("accepted invalid card")
+	}
+}
+
 func TestReadBaijiaOneShotPlatformOptions(t *testing.T) {
 	input, err := readFillInput(nil, strings.NewReader(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":"baijia","document":{"title":"正常文章标题","blocks":[{"type":"paragraph","text":"正文"}]},"coverPath":"/tmp/cover.jpg","platformOptions":{"baijia":{"smartCreation":["autoPodcast"],"declarations":["aiGenerated","source"],"sourceDate":"2026-08-20","sourceLocation":"河北省 / 沧州市"}}}`))
 	if err != nil {

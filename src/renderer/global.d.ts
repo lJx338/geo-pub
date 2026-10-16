@@ -16,6 +16,7 @@ declare global {
       chooseDistributionCover(): Promise<{ canceled: boolean; filePath: string }>;
       runDistribution(input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }>;
       wechatSettings(projectId: string): Promise<WechatConnectionSettings>;
+      wechatOpenDeveloperPlatform(projectId: string): Promise<{ opened: true }>;
       wechatSaveCredentials(projectId: string, credentials: WechatCredentials): Promise<WechatConnectionSettings>;
       wechatTestConnection(projectId: string): Promise<WechatConnectionStatus>;
       wechatClearCredentials(projectId: string): Promise<WechatConnectionSettings>;

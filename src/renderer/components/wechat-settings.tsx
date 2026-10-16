@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, X } from 'lucide-react';
+import { CheckCircle2, ExternalLink, X } from 'lucide-react';
 import { Button, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Field } from './ui.js';
 import type { WechatConnectionSettings } from '../../main/wechat/types.js';
 
@@ -17,6 +17,8 @@ export function WechatSettingsDialog({ projectId, projectName, busy, close, onSa
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState('正在读取连接信息…');
   const [failed, setFailed] = useState(false);
+  const [openingHelp, setOpeningHelp] = useState(false);
+  const [helpError, setHelpError] = useState('');
   useEffect(() => {
     const dialog = dialogRef.current;
     dialog?.showModal();
@@ -35,7 +37,7 @@ export function WechatSettingsDialog({ projectId, projectName, busy, close, onSa
   };
   const execute = async (action: () => Promise<void>) => {
     if (locked) return;
-    setWorking(true); setFailed(false);
+    setWorking(true); setFailed(false); setHelpError('');
     try { await action(); }
     catch (error) { setMessage((error as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, '')); setFailed(true); }
     finally { setWorking(false); }
@@ -48,6 +50,17 @@ export function WechatSettingsDialog({ projectId, projectName, busy, close, onSa
         <Field label="AppID" htmlFor="wechat-app-id"><input id="wechat-app-id" autoComplete="off" spellCheck={false} value={appId} disabled={locked} placeholder="wx 开头的公众号 AppID" onChange={(event) => setAppId(event.target.value)}/></Field>
         <Field label="AppSecret" htmlFor="wechat-app-secret"><input id="wechat-app-secret" type="password" autoComplete="new-password" value={appSecret} disabled={locked} placeholder={settings?.configured ? '密钥已保存；更换时重新填写' : '填写公众号 AppSecret'} onChange={(event) => setAppSecret(event.target.value)}/></Field>
       </fieldset><p role="status" id="wechat-connection-message" style={{ fontSize: 12, lineHeight: 1.7, overflowWrap: 'anywhere', color: failed ? '#b42318' : '#475467' }}>{message}</p>
+        {failed && message.includes('WECHAT_IP_NOT_ALLOWED:') && <div id="wechat-whitelist-help" style={{ padding: 12, border: '1px solid #b2ccff', borderRadius: 8, background: '#eff4ff', color: '#344054', fontSize: 12, lineHeight: 1.7 }}>
+          <Button id="wechat-open-developer-platform" variant="outline" icon={ExternalLink} disabled={openingHelp} onClick={async () => {
+            setOpeningHelp(true); setHelpError('');
+            try { await window.geoPublisher.wechatOpenDeveloperPlatform(projectId); }
+            catch (error) { setHelpError((error as Error).message.replace(/^Error invoking remote method '[^']+': Error: /, '')); }
+            finally { setOpeningHelp(false); }
+          }}>{openingHelp ? '正在打开…' : '打开微信开发者平台'}</Button>
+          <p style={{ margin: '8px 0 0' }}>在电脑浏览器中打开后，用公众号管理员微信扫码登录，进入：<br/>我的业务与服务 → 公众号 → 选择对应账号 → 基础信息 → 开发密钥 → API IP 白名单 → 编辑。</p>
+          <p style={{ margin: '8px 0 0' }}>添加上方提示的网络出口 IP，保留仍在使用的其他 IP；保存并完成微信要求的确认后，回到这里点击“测试连接”。</p>
+          {helpError && <p role="alert" style={{ margin: '8px 0 0', color: '#b42318', overflowWrap: 'anywhere' }}>{helpError}</p>}
+        </div>}
         <div style={{ display: 'flex', gap: 8 }}><Button id="wechat-test-connection" variant="outline" disabled={locked || dirty || !settings?.configured} onClick={() => void execute(async () => {
           setMessage('正在检查微信接口…'); const result = await window.geoPublisher.wechatTestConnection(projectId);
           setMessage(`连接正常，草稿箱有 ${result.draftCount} 篇草稿。保存一篇草稿后才能确认写入权限。`);

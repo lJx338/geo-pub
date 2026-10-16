@@ -1,6 +1,6 @@
 ---
 name: geo-article-writer
-description: Write, revise, quality-check, and save structured GEO article packages for the current GEO Publisher customer project. Use when the user asks for 生成文章、写文章、今日内容、根据选题写作、七平台文章、所有平台文章、微信公众号文章, to turn a saved topic into content, create articles for one or more supported platforms, or revise an existing article package. Selects among E-E-A-T, question, case, pitfall, recommendation, operation, seven-dimension, and B2B four-step structures. Do not use for browser filling or publishing.
+description: Write, revise, quality-check, and save structured GEO article packages for the current GEO Publisher customer project. Use when the user asks for 生成文章、写文章、今日内容、根据选题写作、七平台文章、所有平台文章、微信公众号文章、公众号排版, to turn a saved topic into content, create articles for one or more supported platforms, or revise an existing article package. Selects among E-E-A-T, question, case, pitfall, recommendation, operation, seven-dimension, and B2B four-step structures. Do not use for browser filling or publishing.
 ---
 
 # GEO Article Writer
@@ -18,6 +18,7 @@ Generate content inside the current GEO Publisher project. Never depend on the r
 7. Read [output-contract.md](references/output-contract.md) completely.
 8. Read exactly one matching structure file from `references/structures/`.
 9. Read [platform-rules.md](references/platform-rules.md) for every requested platform.
+10. When writing or revising `wechat`, also read [wechat-layout.md](references/wechat-layout.md). Choose a coherent visual theme and mark cards and emphasis using its structured fields. Keep following the output contract and the selected writing structure; layout does not replace either. Other platforms do not load this reference.
 
 Re-run `project current` before every save. Stop with `PROJECT_CONTEXT_CHANGED` if it differs from the article's project ID.
 

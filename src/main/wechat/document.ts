@@ -45,7 +45,7 @@ export function prepareDocument(value: ArticleDocument, options: WechatDraftOpti
   if ([...parsed.data.title].length > 32) throw new WechatError('WECHAT_TITLE_TOO_LONG', '微信公众号标题最多 32 个字，请缩短后再保存');
   // Replace unresolved images solely for size preflight. Real images are uploaded later.
   const placeholder = { ...parsed.data, blocks: parsed.data.blocks.map((block) => block.type === 'image' ? { ...block, src: 'https://mmbiz.qpic.cn/placeholder' } : block) };
-  validateContent(renderArticleDocument(placeholder).html);
+  validateContent(renderArticleDocument(placeholder, 'wechat').html);
   return { document: parsed.data, options: settings.data };
 }
 
@@ -81,7 +81,7 @@ export function makeWechatArticle(document: ArticleDocument, options: WechatDraf
     if (!src) throw new WechatError('WECHAT_IMAGE_UNRESOLVED', '正文图片尚未上传完成');
     return { ...block, src };
   }) };
-  const content = renderArticleDocument(resolved).html;
+  const content = renderArticleDocument(resolved, 'wechat').html;
   validateContent(content);
   return {
     article_type: 'news', title: resolved.title, author: prepared.options.author,

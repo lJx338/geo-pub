@@ -48,6 +48,8 @@ The only publishing source is `payload.document`:
 
 Allow only `paragraph`, `heading` level 2 or 3, `list`, `quote`, `divider`, and `image`. Prefer an image from the current project's indexed material library: `{ "type": "image", "materialId": "saved material id", "alt": "图片描述", "caption": "图注" }`. Other platforms may also use a real HTTP(S) `src`; WeChat requires a current-project `materialId`, so import network images before use. Never invent an ID or reuse another customer's material. Never place raw Markdown or HTML inside block text.
 
+For `wechat`, use the optional `document.wechatLayout` and the `card` / `emphasis` fields on paragraph and quote blocks defined in [wechat-layout.md](wechat-layout.md). These are presentation metadata on the same document, not a new article type or a second HTML source. Other platforms retain the basic contract above. Do not invent CSS, HTML, `style`, `html`, nested card blocks, or additional block types. Existing articles without `wechatLayout` remain valid and use basic formatting.
+
 ## Quality gate
 
 Score 0-5 on each dimension: intent coverage, scenario match, structure and logic, keyword coverage, verifiability and citation value, and natural language. A total of 25-30 passes; 20-24 requires revision; below 20 must not become `ready`.

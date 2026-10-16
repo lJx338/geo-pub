@@ -99,22 +99,45 @@ type baijiaOptions struct {
 }
 
 type articleDocument struct {
-	Title   string         `json:"title"`
-	Blocks  []articleBlock `json:"blocks"`
-	Summary string         `json:"summary,omitempty"`
-	Tags    []string       `json:"tags,omitempty"`
+	Title        string         `json:"title"`
+	Blocks       []articleBlock `json:"blocks"`
+	Summary      string         `json:"summary,omitempty"`
+	Tags         []string       `json:"tags,omitempty"`
+	WechatLayout *wechatLayout  `json:"wechatLayout,omitempty"`
+}
+
+type wechatLayout struct {
+	Version          *int     `json:"version,omitempty"`
+	Theme            string   `json:"theme"`
+	FontSize         *int     `json:"fontSize,omitempty"`
+	LineHeight       *float64 `json:"lineHeight,omitempty"`
+	ParagraphSpacing *int     `json:"paragraphSpacing,omitempty"`
+	Header           *bool    `json:"header,omitempty"`
+	Eyebrow          string   `json:"eyebrow,omitempty"`
+}
+
+type articleCard struct {
+	Kind  string `json:"kind"`
+	Label string `json:"label,omitempty"`
+}
+
+type articleEmphasis struct {
+	Text  string `json:"text"`
+	Style string `json:"style"`
 }
 
 type articleBlock struct {
-	Type       string   `json:"type"`
-	Level      int      `json:"level,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	Ordered    bool     `json:"ordered,omitempty"`
-	Items      []string `json:"items,omitempty"`
-	Src        string   `json:"src,omitempty"`
-	MaterialID string   `json:"materialId,omitempty"`
-	Alt        string   `json:"alt,omitempty"`
-	Caption    string   `json:"caption,omitempty"`
+	Type       string            `json:"type"`
+	Level      int               `json:"level,omitempty"`
+	Text       string            `json:"text,omitempty"`
+	Ordered    bool              `json:"ordered,omitempty"`
+	Items      []string          `json:"items,omitempty"`
+	Src        string            `json:"src,omitempty"`
+	MaterialID string            `json:"materialId,omitempty"`
+	Alt        string            `json:"alt,omitempty"`
+	Caption    string            `json:"caption,omitempty"`
+	Card       *articleCard      `json:"card,omitempty"`
+	Emphasis   []articleEmphasis `json:"emphasis,omitempty"`
 }
 
 type cliOutput struct {
@@ -757,6 +780,9 @@ func validateFill(input fillInput) error {
 }
 
 func validateDocument(document articleDocument) error {
+	if err := validateArticleLayout(document); err != nil {
+		return err
+	}
 	if len([]rune(strings.TrimSpace(document.Title))) < 2 || len([]rune(document.Title)) > 100 {
 		return usageError("document.title 必须为 2-100 个字符")
 	}
@@ -798,6 +824,47 @@ func validateDocument(document articleDocument) error {
 			}
 		default:
 			return usageError(fmt.Sprintf("document.blocks[%d].type 不支持：%s", index, block.Type))
+		}
+	}
+	return nil
+}
+
+func validateArticleLayout(document articleDocument) error {
+	if layout := document.WechatLayout; layout != nil {
+		themes := map[string]bool{"moyu-green": true, "red-white": true, "graphite-minimal": true, "zen-whitespace": true, "moyu-ticket": true, "olive-journal": true}
+		if !themes[layout.Theme] || (layout.Version != nil && *layout.Version != 1) {
+			return usageError("document.wechatLayout 需要有效的内置主题，version 仅支持 1")
+		}
+		if layout.FontSize != nil && (*layout.FontSize < 15 || *layout.FontSize > 18) {
+			return usageError("document.wechatLayout.fontSize 必须为 15-18")
+		}
+		if layout.LineHeight != nil && (*layout.LineHeight < 1.6 || *layout.LineHeight > 2.2) {
+			return usageError("document.wechatLayout.lineHeight 必须为 1.6-2.2")
+		}
+		if layout.ParagraphSpacing != nil && (*layout.ParagraphSpacing < 12 || *layout.ParagraphSpacing > 32) {
+			return usageError("document.wechatLayout.paragraphSpacing 必须为 12-32")
+		}
+		if len([]rune(strings.TrimSpace(layout.Eyebrow))) > 32 {
+			return usageError("document.wechatLayout.eyebrow 最多 32 字")
+		}
+	}
+	for index, block := range document.Blocks {
+		if block.Type != "paragraph" && block.Type != "quote" && (block.Card != nil || len(block.Emphasis) > 0) {
+			return usageError(fmt.Sprintf("document.blocks[%d] 仅正文和引用支持 card / emphasis", index))
+		}
+		if card := block.Card; card != nil {
+			if (card.Kind != "intro" && card.Kind != "note" && card.Kind != "takeaway") || len([]rune(strings.TrimSpace(card.Label))) > 32 {
+				return usageError(fmt.Sprintf("document.blocks[%d].card 的类型或标签不正确", index))
+			}
+		}
+		if len(block.Emphasis) > 8 {
+			return usageError(fmt.Sprintf("document.blocks[%d].emphasis 最多 8 项", index))
+		}
+		for _, mark := range block.Emphasis {
+			length := len([]rune(strings.TrimSpace(mark.Text)))
+			if length == 0 || length > 120 || (mark.Style != "bold" && mark.Style != "underline" && mark.Style != "highlight") {
+				return usageError(fmt.Sprintf("document.blocks[%d].emphasis 需要原文短语及 bold / underline / highlight 样式", index))
+			}
 		}
 	}
 	return nil

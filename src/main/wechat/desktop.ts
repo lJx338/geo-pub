@@ -1,4 +1,4 @@
-import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import type { ContentItem, ContentStore } from '../content-store.js';
 import type { PlatformSessions } from '../platform-sessions.js';
@@ -34,6 +34,14 @@ export function registerWechatDesktopHandlers(dependencies: {
     };
 
   ipcMain.handle('geo:wechat-settings', handler(false, (projectId) => adapter.connectionSettings(projectId)));
+  ipcMain.handle('geo:wechat-open-developer-platform', handler(false, async () => {
+    try {
+      await shell.openExternal('https://developers.weixin.qq.com/platform/');
+      return { opened: true };
+    } catch {
+      throw new WechatError('WECHAT_DEVELOPER_PLATFORM_OPEN_FAILED', '未能打开浏览器，请手动访问 https://developers.weixin.qq.com/platform/');
+    }
+  }));
   ipcMain.handle('geo:wechat-save-credentials', handler(true, async (projectId, input) => {
     const parsed = wechatCredentialsSchema.safeParse(input);
     if (!parsed.success) throw new WechatError('WECHAT_CREDENTIALS_INVALID', '请填写正确的 AppID 和 AppSecret');

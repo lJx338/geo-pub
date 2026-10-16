@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   chooseDistributionCover: (): Promise<{ canceled: boolean; filePath: string }> => ipcRenderer.invoke('geo:distribution-cover-choose'),
   runDistribution: (input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> => ipcRenderer.invoke('geo:distribution-run', input),
   wechatSettings: (projectId: string): Promise<WechatConnectionSettings> => ipcRenderer.invoke('geo:wechat-settings', projectId),
+  wechatOpenDeveloperPlatform: (projectId: string): Promise<{ opened: true }> => ipcRenderer.invoke('geo:wechat-open-developer-platform', projectId),
   wechatSaveCredentials: (projectId: string, credentials: WechatCredentials): Promise<WechatConnectionSettings> => ipcRenderer.invoke('geo:wechat-save-credentials', projectId, credentials),
   wechatTestConnection: (projectId: string): Promise<WechatConnectionStatus> => ipcRenderer.invoke('geo:wechat-test-connection', projectId),
   wechatClearCredentials: (projectId: string): Promise<WechatConnectionSettings> => ipcRenderer.invoke('geo:wechat-clear-credentials', projectId),

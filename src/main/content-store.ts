@@ -135,6 +135,15 @@ export class ContentStore {
       topicFamilyId: input.topicFamilyId ?? old?.topicFamilyId ?? (input.kind === 'topic' ? (input.id || crypto.randomUUID()) : ''), parentTopicId: input.parentTopicId ?? old?.parentTopicId ?? '', variantNumber: input.variantNumber ?? old?.variantNumber ?? 1,
       usageCount: input.usageCount ?? old?.usageCount ?? 0, lastUsedAt: 'lastUsedAt' in input ? input.lastUsedAt : (old?.lastUsedAt ?? null), reusePolicy: input.reusePolicy ?? old?.reusePolicy ?? 'standard', cooldownDays: input.cooldownDays ?? old?.cooldownDays ?? 0,
       reservedBy: input.reservedBy ?? old?.reservedBy ?? '', reservedUntil: 'reservedUntil' in input ? input.reservedUntil : (old?.reservedUntil ?? null), payload: input.payload ?? old?.payload ?? {}, createdAt: old?.createdAt ?? now, updatedAt: now });
+    // Validate the new layout contract at the CLI/UI save boundary so a writer
+    // gets actionable errors before an article reaches distribution. Legacy
+    // packages without layout metadata keep their existing save behavior.
+    const document = item.payload.document;
+    if (item.kind === 'article' && document && typeof document === 'object' && 'wechatLayout' in document) {
+      const parsed = articleDocumentSchema.safeParse(document);
+      if (!parsed.success) throw new Error(`ARTICLE_LAYOUT_INVALID: ${parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`);
+      item.payload = { ...item.payload, document: parsed.data };
+    }
     this.upsert(item);
     return item;
   }
