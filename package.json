@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "0.6.2",
+  "version": "1.0.14",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "description": "GEO Publisher desktop application with a built-in persistent browser",
