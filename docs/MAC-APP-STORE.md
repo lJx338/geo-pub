@@ -32,11 +32,11 @@ MAS 专用的 `scripts/sign-mas.mjs` 先用相同的发行身份签署共享库�
 
 1. 在 App Store Connect 的版本页面填写包对应的商店版本（当前 `1.0.14`），点击保存。
 2. 打开 [Upload Mac App Store](https://github.com/lJx338/geo-pub/actions/workflows/upload-mas.yml)，点击 **Run workflow**。
-3. 分支选择 `main`，`release_tag` 填本次新包对应的已发布标签（例如 `v1.0.14`），`operation` 选择 `upload`，点击绿色 **Run workflow**。不要复用旧的 `v0.6.1` 包。
-4. 工作流下载这个 GitHub Release 中唯一的 MAS `.pkg`，核对 SHA-256 和安装器签名，先执行苹果校验，再上传。使用仓库已有的 `APPLE_ID` 和 `APPLE_APP_SPECIFIC_PASSWORD` Secrets；不需要将密码填进运行表单。
+3. 本次分支选择 `v1.0.14`，`build_run_id` 填成功的 **Build Mac App Store** 运行 ID（例如 `39206263400`，对应 `1.0.14 (13.1)`），`release_tag` 留空，`operation` 选择 `upload`，点击绿色 **Run workflow**。如果使用已发布的 GitHub Release，则改填 `release_tag`，并将 `build_run_id` 留空；两者只能填写一个。
+4. 工作流验证打包运行来自本仓库且成功完成，下载其中唯一的 MAS 构建产物（或指定 Release 的包），核对 GitHub SHA-256 和安装器签名，先执行苹果校验，再上传。使用仓库已有的 `APPLE_ID` 和 `APPLE_APP_SPECIFIC_PASSWORD` Secrets；不需要将密码填进运行表单。
 5. 显示成功后，等待苹果处理，在 **Lingxi Workspace → TestFlight → macOS** 查看 `1.0.14` 下的新构建号。处理完成后，可在分发版本页面的“构建版本”中选择它。
 
-`operation=validate` 仅执行苹果校验，不创建可选构建版本。上传工作流只能从 `main` 手动运行，不会随代码推送自动上传，也不会提交审核或正式上架。若上传结果不明确，先检查 TestFlight 和苹果通知邮件，再决定是否重试；同一构建号不能作为新构建重复交付。
+`operation=validate` 仅执行苹果校验，不创建可选构建版本。上传工作流允许从 `main` 或 `v1.0.14` 手动运行，不会随代码推送自动上传，也不会提交审核或正式上架。若上传结果不明确，先检查 TestFlight 和苹果通知邮件，再决定是否重试；同一构建号不能作为新构建重复交付。
 
 ## GitHub Secrets
 
