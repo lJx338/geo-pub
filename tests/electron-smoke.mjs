@@ -18,14 +18,15 @@ const app = await electron.launch({ args: ['.'], cwd: process.cwd(), env: { ...p
 try {
   const window = await app.firstWindow();
   await window.waitForLoadState('domcontentloaded');
-  if ((await window.title()) !== 'GEO Publisher') throw new Error('unexpected window title');
+  const expectedAppName = process.platform === 'win32' ? 'Lingxi Workspace' : 'GEO Publisher';
+  if ((await window.title()) !== expectedAppName) throw new Error('unexpected window title');
   await window.evaluate(() => document.fonts.ready);
   const initial = await window.evaluate(() => ({ width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, navigation: document.querySelectorAll('.nav-item').length, connect: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height), fontLoaded: document.fonts.check('16px "Noto Sans SC Variable"') }));
   if (initial.navigation < 6 || !initial.connect || initial.scrollWidth > initial.width || !initial.fontLoaded) throw new Error(`new UI layout is incomplete: ${JSON.stringify(initial)}`);
   await window.locator('#connect-workbuddy').click();
   await window.locator('#workbuddy-state', { hasText: '已连接' }).waitFor();
   const prompt = await readFile(join(userDataDirectory, 'integrations', 'workbuddy', 'CONNECT-WORKBUDDY.txt'), 'utf8');
-  if (!prompt.includes('当前客户项目') || !prompt.includes('geo-topic-planner') || !prompt.includes('geo-article-writer') || !prompt.includes('geo-material-organizer') || !prompt.includes('GEO Publisher 安装位置') || !prompt.includes('系统与架构')) throw new Error('WorkBuddy prompt is incomplete');
+  if (!prompt.includes('当前客户项目') || !prompt.includes('geo-topic-planner') || !prompt.includes('geo-article-writer') || !prompt.includes('geo-material-organizer') || !prompt.includes(`${expectedAppName} 安装位置`) || !prompt.includes('系统与架构')) throw new Error('WorkBuddy prompt is incomplete');
 
   const cliPath = process.platform === 'win32' ? join(process.cwd(), '.dev-cli', 'geo-publisher-dev-windows-amd64.exe') : join(process.cwd(), '.dev-cli', 'geo-publisher-dev-darwin-arm64');
   const cliEnv = { ...process.env, GEO_PUBLISHER_USER_DATA_DIR: userDataDirectory, GEO_PUBLISHER_CONTROL_ENDPOINT: controlEndpoint };

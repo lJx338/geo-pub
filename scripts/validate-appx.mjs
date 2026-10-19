@@ -37,6 +37,7 @@ assertEqual(getAttribute(identity, 'Publisher'), expectedPublisher, 'Identity.Pu
 assertEqual(getAttribute(identity, 'Version'), expectedVersion, 'Identity.Version');
 assertEqual(getElementText(properties, 'PublisherDisplayName'), expectedPublisherDisplayName, 'PublisherDisplayName');
 assertEqual(getAttribute(application, 'Id'), expectedApplicationId, 'Application.Id');
+assertEqual(getAttribute(application, 'Executable'), 'app\\Lingxi Workspace.exe', 'Application.Executable');
 
 const startupExtension = manifest.match(/<desktop:Extension\b(?=[^>]*\bCategory=["']windows\.startupTask["'])[^>]*>[\s\S]*?<\/desktop:Extension>/)?.[0];
 if (!startupExtension) throw new Error('包中缺少 Windows 开机启动任务');

@@ -24,12 +24,14 @@ def signed_entitlements(path):
     return {}
 
 root = Path('release/store')
-apps = list(root.glob('mas*/GEO Publisher.app'))
+apps = list(root.glob('mas*/Lingxi Workspace.app'))
 assert len(apps) == 1, 'Expected exactly one MAS application'
 app = apps[0]
 helper = app / 'Contents/Resources/cli/geo-publisher-darwin-arm64'
 info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
 assert info['CFBundleIdentifier'] == 'com.lingxi.geo-publisher'
+assert info['CFBundleName'] == 'Lingxi Workspace'
+assert info['CFBundleDisplayName'] == 'Lingxi Workspace'
 assert info['CFBundleShortVersionString'] == os.environ['MAS_APP_VERSION']
 assert info['CFBundleVersion'] == os.environ['MAS_BUILD_NUMBER']
 assert info['ElectronTeamID'] == 'F8X7472LW9'
@@ -44,6 +46,7 @@ for path in [app, *app.rglob('*')]:
     if stat.S_ISDIR(mode) or mode & stat.S_IXUSR:
         assert mode & stat.S_IXOTH, f'App path is not executable/traversable by normal users: {path}'
 source_version = json.loads(Path('package.json').read_text())['version']
+assert info['CFBundleShortVersionString'] == source_version, 'Store and internal versions must match'
 packed_metadata = json.loads(subprocess.check_output([
     'node', '-e',
     "process.stdout.write(require('@electron/asar').extractFile(process.argv[1], 'package.json'))",

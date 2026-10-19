@@ -25,7 +25,7 @@ function run(argv) {
   var args = argv.slice(1);
   try {
     var directory = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('GEO_PUBLISHER_USER_DATA_DIR'));
-    if (!directory) throw new Error('Please copy the current connection instructions from GEO Publisher > 连接 WorkBuddy.');
+    if (!directory) throw new Error('Please copy the current connection instructions from Lingxi Workspace > 连接 WorkBuddy.');
     var files = [], seen = {}, total = 0;
     function addFile(path, json) {
       if (Object.prototype.hasOwnProperty.call(seen, path)) return;
@@ -75,7 +75,7 @@ function run(argv) {
       }
       var response = Ref(), error = Ref();
       var data = $.NSURLConnection.sendSynchronousRequestReturningResponseError(req, response, error);
-      if (data.isNil()) throw new Error('Cannot connect to GEO Publisher. Open the app and retry.');
+      if (data.isNil()) throw new Error('Cannot connect to Lingxi Workspace. Open the app and retry.');
       var result = JSON.parse(utf8(data));
       // Validate the bridge's JSON envelope. JXA can expose the response out-parameter
       // as NSURLResponse, which does not expose the HTTP subclass's statusCode accessor.
@@ -100,7 +100,7 @@ function run(argv) {
       for (var attempt = 0; attempt < 30; attempt++) {
         try { target = connection(); request(target, '/health', undefined, 1); ready = true; break; } catch (_) { $.NSThread.sleepForTimeInterval(1); }
       }
-      if (!ready) throw new Error('GEO Publisher did not become ready. Open the app and copy 连接 WorkBuddy again.');
+      if (!ready) throw new Error('Lingxi Workspace did not become ready. Open the app and copy 连接 WorkBuddy again.');
     }
     // Never retry the command automatically: a publish might already have reached the platform.
     var result = request(target, '/v1/cli', { args: args, stdin: stdin, files: files }, 300);

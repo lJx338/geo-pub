@@ -3,6 +3,7 @@ import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
 import packageJson from '../../package.json' with { type: 'json' };
+import { macMenuTemplate } from './mac-menu.js';
 import { persistSandboxFile } from './sandbox-imports.js';
 import { desktopDistributionRequestSchema, type ControlRequest, type DataChangeEvent, type Platform } from '../shared/protocol.js';
 import { loadOrCreateControlToken } from './auth.js';
@@ -26,9 +27,16 @@ import { getLaunchAtLoginStatus, openWindowsStartupSettings, setLaunchAtLogin } 
 
 guardProcessOutputStreams();
 app.setName('GEO Publisher');
-if (isMacAppStoreRuntime()) configureSandboxUserData(app.getPath('userData'));
-else app.setPath('userData', dataDirectory());
-// Product/CLI version follows the source release, independently of store package versions.
+if (isMacAppStoreRuntime()) {
+  // Keep the previous sandbox data location when changing the displayed app name.
+  const existingUserData = join(app.getPath('appData'), 'GEO Publisher');
+  app.setPath('userData', existingUserData);
+  configureSandboxUserData(existingUserData);
+  app.setName('Lingxi Workspace');
+} else app.setPath('userData', dataDirectory());
+if (process.platform === 'win32') app.setName('Lingxi Workspace');
+const appName = app.getName();
+// Product/CLI version follows the source release; MAS packaging requires the same store version.
 const appVersion = packageJson.version;
 
 // Match the browser-worker runtime used by the last working release. Sohu's
@@ -65,7 +73,7 @@ async function runDesktop(): Promise<void> {
     height: 900,
     minWidth: 920,
     minHeight: 640,
-    title: 'GEO Publisher',
+    title: appName,
     show: !startsInBackground,
     paintWhenInitiallyHidden: true,
     autoHideMenuBar: process.platform === 'win32',
@@ -73,6 +81,7 @@ async function runDesktop(): Promise<void> {
     backgroundColor: '#f5f6f8',
     webPreferences: {
       preload: join(__dirname, '..', 'preload.cjs'),
+      additionalArguments: [`--geo-app-brand=${appName === 'Lingxi Workspace' ? 'lingxi' : 'geo'}`],
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
@@ -81,10 +90,15 @@ async function runDesktop(): Promise<void> {
   });
   if (process.platform === 'win32') window.setMenuBarVisibility(false);
   const showWindow = () => {
+    if (window.isDestroyed()) return;
     if (window.isMinimized()) window.restore();
     window.show();
     window.focus();
   };
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(macMenuTemplate(appName, showWindow)));
+    app.setAboutPanelOptions({ applicationName: appName, applicationVersion: appVersion });
+  }
   let closingForUpdate = false;
   let distributionRunning = false;
   const sessions = new PlatformSessions(window, appVersion, (attention) => {
@@ -100,9 +114,9 @@ async function runDesktop(): Promise<void> {
   window.on('resize', () => sessions.resize());
   let shuttingDown = false;
   const tray = new Tray(nativeImage.createFromPath(join(__dirname, '..', 'renderer', 'logo.png')));
-  tray.setToolTip('GEO Publisher');
+  tray.setToolTip(appName);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开 GEO Publisher', click: showWindow },
+    { label: `打开 ${appName}`, click: showWindow },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
   ]));

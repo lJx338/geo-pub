@@ -52,7 +52,7 @@ jobs:
       - shell: bash
         run: npm run build:cli
       - run: node scripts/prepare-release-output.mjs release/win-x64
-      - run: npx electron-builder --win --x64 --publish never --config.directories.output=release/win-x64
+      - run: npx electron-builder --config scripts/windows-config.mjs --win --x64 --publish never --config.directories.output=release/win-x64
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}

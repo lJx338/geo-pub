@@ -4,6 +4,8 @@ import type { Project, ProjectInput } from './main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from './main/content-store.js';
 import type { ContentRepairNotice } from './main/content-repair.js';
 
+const appName = process.argv.includes('--geo-app-brand=lingxi') ? 'Lingxi Workspace' : 'GEO Publisher';
+
 // 反检测：确保不暴露任何Electron相关的全局对象
 // 删除可能被注入的 process 和 require
 if (typeof window !== 'undefined') {
@@ -20,6 +22,7 @@ if (typeof window !== 'undefined') {
 }
 
 contextBridge.exposeInMainWorld('geoPublisher', {
+  appName,
   status: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:status'),
   openPlatform: (platform: Platform): Promise<PlatformStatus> => ipcRenderer.invoke('geo:open-platform', platform),
   hidePlatform: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:hide-platform'),

@@ -6,6 +6,7 @@ import type { ContentRepairNotice } from '../main/content-repair.js';
 declare global {
   interface Window {
     geoPublisher: {
+      appName: string;
       status(): Promise<DesktopStatus>;
       openPlatform(platform: Platform): Promise<PlatformStatus>;
       hidePlatform(): Promise<DesktopStatus>;

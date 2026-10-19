@@ -1,6 +1,7 @@
 # Mac App Store 构建与验收
 
-商店名称：Lingxi Workspace；程序内部名称：GEO Publisher。
+商店名称、MAS 安装后的应用名称、界面及“关于/退出”菜单名称：Lingxi Workspace。
+内部包名、CLI 命令和原有数据目录保持不变；Windows 版也统一为 Lingxi Workspace，普通 DMG 保留原显示名称。
 Bundle ID：`com.lingxi.geo-publisher`；Apple Team ID：`F8X7472LW9`。
 当前打包目标为 Apple Silicon（arm64），与现有 Mac DMG 支持的架构一致。
 
@@ -8,7 +9,7 @@ Bundle ID：`com.lingxi.geo-publisher`；Apple Team ID：`F8X7472LW9`。
 
 Windows 负责修改代码和操作网页，GitHub 的 macOS runner 负责生成并签名 `.pkg`。
 
-1. 将 MAS 代码和 `.github/workflows/build-mas.yml` 提交到主分支。推送 `v*` 版本标签（例如 `v0.6.1`）会按 `build/store-version.json` 中的商店版本自动构建。
+1. 将 MAS 代码和 `.github/workflows/build-mas.yml` 提交到主分支。推送 `v*` 版本标签（例如 `v1.0.14`）会按 `build/store-version.json` 中的商店版本自动构建。
 2. 打开 [GitHub Actions](https://github.com/lJx338/geo-pub/actions)，选择 **Build Mac App Store**。
 3. 点击 **Run workflow**，选择代码分支，版本留空使用两家商店共用的 `build/store-version.json`。App Store Connect 的待提交版本必须与此一致。
 4. 等待全部步骤成功。脚本会检查 profile、运行测试、打包、检查应用和 CLI 的沙盒签名、检查安装器签名及安装后的文件读取权限，并调用苹果服务器校验安装包。
@@ -29,11 +30,11 @@ MAS 专用的 `scripts/sign-mas.mjs` 先用相同的发行身份签署共享库�
 
 已生成的商店包可以通过独立的手动工作流上传，不需要重新打包：
 
-1. 在 App Store Connect 的版本页面填写包对应的商店版本（当前 `1.0.13`），点击保存。
+1. 在 App Store Connect 的版本页面填写包对应的商店版本（当前 `1.0.14`），点击保存。
 2. 打开 [Upload Mac App Store](https://github.com/lJx338/geo-pub/actions/workflows/upload-mas.yml)，点击 **Run workflow**。
-3. 分支选择 `main`，`release_tag` 填 `v0.6.1`，`operation` 选择 `upload`，点击绿色 **Run workflow**。
+3. 分支选择 `main`，`release_tag` 填本次新包对应的已发布标签（例如 `v1.0.14`），`operation` 选择 `upload`，点击绿色 **Run workflow**。不要复用旧的 `v0.6.1` 包。
 4. 工作流下载这个 GitHub Release 中唯一的 MAS `.pkg`，核对 SHA-256 和安装器签名，先执行苹果校验，再上传。使用仓库已有的 `APPLE_ID` 和 `APPLE_APP_SPECIFIC_PASSWORD` Secrets；不需要将密码填进运行表单。
-5. 显示成功后，等待苹果处理，在 **Lingxi Workspace → TestFlight → macOS** 查看 `1.0.13` 下的新构建号。处理完成后，可在分发版本页面的“构建版本”中选择它。
+5. 显示成功后，等待苹果处理，在 **Lingxi Workspace → TestFlight → macOS** 查看 `1.0.14` 下的新构建号。处理完成后，可在分发版本页面的“构建版本”中选择它。
 
 `operation=validate` 仅执行苹果校验，不创建可选构建版本。上传工作流只能从 `main` 手动运行，不会随代码推送自动上传，也不会提交审核或正式上架。若上传结果不明确，先检查 TestFlight 和苹果通知邮件，再决定是否重试；同一构建号不能作为新构建重复交付。
 
@@ -95,5 +96,15 @@ App Store Connect 中的待提交版本需与苹果安装包的 `1.0.14` 匹配�
 程序界面、诊断信息和 Go CLI 都跟随项目 `package.json` 中的版本，目前为 `1.0.14`；与 Windows 的程序内部版本保持一致。苹果安装包内的 `package.json` 也保留此版本。
 苹果安装包文件名使用项目版本，例如 `Lingxi-Workspace-1.0.14-mas-7.1-arm64.pkg`。苹果构建号由 Actions 运行编号和重跑次数生成，避免同一构建号重复上传。
 升级产品版本使用 `npm run version:set -- 1.0.14` 同步应用、CLI 和 Skill；升级两家商店版本修改共用配置。云端会同时检查商店版本和内部版本，防止混用。
+
+MAS 打包会拒绝与 `package.json` 不同的商店版本覆盖值；签名后再次核对名称、Bundle ID 和版本。构建号仍由 Actions 自动递增，与 `1.0.14` 这种版本号是两个字段。
+
+## 本次审核修复验收
+
+- 安装后的应用、窗口标题、侧栏和“关于/退出”菜单均显示 `Lingxi Workspace`。
+- 设置页显示 Mac App Store 更新说明，不再显示 Microsoft Store 更新说明。
+- 关闭主窗口后，通过“窗口 → 显示主窗口”（快捷键 `⌘⇧1`）恢复；同时验证 Dock 与状态栏图标入口。
+- 在 Mac 上运行 `node tests/background-start-smoke.mjs`，验证后台启动、关闭与菜单恢复及更新文案；签名包还需人工验证升级后的客户资料和登录状态。
+- 更新 App Store Connect 各语言的截图和涉及旧名称的文案，并选择新构建提交。
 
 技术依据：[Electron MAS 指南](https://www.electronjs.org/docs/latest/tutorial/mac-app-store-submission-guide)、[Apple 沙盒 helper 指南](https://developer.apple.com/documentation/xcode/embedding-a-helper-tool-in-a-sandboxed-app)。
