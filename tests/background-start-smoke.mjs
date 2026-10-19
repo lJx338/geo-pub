@@ -21,14 +21,13 @@ const app = await electron.launch({
 });
 
 try {
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  const page = await app.firstWindow();
+  page.setDefaultTimeout(15_000);
+  await page.locator('#version').filter({ hasText: /\d+\.\d+\.\d+/ }).waitFor({ state: 'attached' });
   const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((window) => ({ visible: window.isVisible(), focused: window.isFocused() })));
   if (!windows.length || windows.some((window) => window.visible || window.focused)) {
     throw new Error(`background launch showed a window: ${JSON.stringify(windows)}`);
   }
-  const page = await app.firstWindow();
-  page.setDefaultTimeout(15_000);
-  await page.locator('#version').filter({ hasText: /\d+\.\d+\.\d+/ }).waitFor({ state: 'attached' });
   const expectedAppName = process.platform === 'win32' ? 'Lingxi Workspace' : 'GEO Publisher';
   assert.equal(await page.title(), expectedAppName);
   assert.equal(await page.locator('.app-brand strong').innerText(), expectedAppName);

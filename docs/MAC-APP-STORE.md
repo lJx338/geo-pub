@@ -9,7 +9,7 @@ Bundle ID：`com.lingxi.geo-publisher`；Apple Team ID：`F8X7472LW9`。
 
 Windows 负责修改代码和操作网页，GitHub 的 macOS runner 负责生成并签名 `.pkg`。
 
-1. 将 MAS 代码和 `.github/workflows/build-mas.yml` 提交到主分支。推送 `v*` 版本标签（例如 `v1.0.14`）会按 `build/store-version.json` 中的商店版本自动构建。
+1. 推送包含 `.github/workflows/build-mas.yml` 的分支（包括 `v1.0.14`）会自动运行苹果签名打包；推送 `v*` 标签也会触发。版本默认读取 `build/store-version.json`。
 2. 打开 [GitHub Actions](https://github.com/lJx338/geo-pub/actions)，选择 **Build Mac App Store**。
 3. 点击 **Run workflow**，选择代码分支，版本留空使用两家商店共用的 `build/store-version.json`。App Store Connect 的待提交版本必须与此一致。
 4. 等待全部步骤成功。脚本会检查 profile、运行测试、打包、检查应用和 CLI 的沙盒签名、检查安装器签名及安装后的文件读取权限，并调用苹果服务器校验安装包。
@@ -104,7 +104,7 @@ MAS 打包会拒绝与 `package.json` 不同的商店版本覆盖值；签名后
 - 安装后的应用、窗口标题、侧栏和“关于/退出”菜单均显示 `Lingxi Workspace`。
 - 设置页显示 Mac App Store 更新说明，不再显示 Microsoft Store 更新说明。
 - 关闭主窗口后，通过“窗口 → 显示主窗口”（快捷键 `⌘⇧1`）恢复；同时验证 Dock 与状态栏图标入口。
-- 在 Mac 上运行 `node tests/background-start-smoke.mjs`，验证后台启动、关闭与菜单恢复及更新文案；签名包还需人工验证升级后的客户资料和登录状态。
+- 苹果打包工作流会在签名前自动运行 `node tests/background-start-smoke.mjs`，验证后台启动、关闭与菜单恢复及更新文案；也可在本机 Mac 上运行。签名包还需人工验证升级后的客户资料和登录状态。
 - 更新 App Store Connect 各语言的截图和涉及旧名称的文案，并选择新构建提交。
 
 技术依据：[Electron MAS 指南](https://www.electronjs.org/docs/latest/tutorial/mac-app-store-submission-guide)、[Apple 沙盒 helper 指南](https://developer.apple.com/documentation/xcode/embedding-a-helper-tool-in-a-sandboxed-app)。
