@@ -463,6 +463,12 @@ async function runDesktop(): Promise<void> {
     if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
     return status;
   });
+  ipcMain.handle('geo:platform-zoom', (_event, action: 'out' | 'in' | 'reset') => {
+    sessions.zoomActivePlatform(action);
+    const status = desktopStatus();
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
+    return status;
+  });
   ipcMain.handle('geo:distribution-cover-choose', async () => {
     ensureAppIdle('平台任务运行中，暂时不能选择封面');
     const result = await dialog.showOpenDialog(window, {

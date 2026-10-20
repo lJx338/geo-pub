@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   platformBack: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-back'),
   platformForward: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-forward'),
   platformReload: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-reload'),
+  platformZoom: (action: 'out' | 'in' | 'reset'): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-zoom', action),
   chooseDistributionCover: (): Promise<{ canceled: boolean; filePath: string }> => ipcRenderer.invoke('geo:distribution-cover-choose'),
   runDistribution: (input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }> => ipcRenderer.invoke('geo:distribution-run', input),
   projects: (): Promise<{ projects: Project[]; currentProject: Project | null }> => ipcRenderer.invoke('geo:projects-list'),

@@ -127,6 +127,7 @@ export interface DesktopStatus {
   ready: boolean;
   busy: boolean;
   activePlatform: Platform | null;
+  activePlatformZoomFactor?: number;
   executingPlatform: Platform | null;
   windowState: 'visible' | 'minimized' | 'hidden';
   currentProject: ProjectSummary | null;

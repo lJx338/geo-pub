@@ -13,6 +13,7 @@ declare global {
       platformBack(): Promise<DesktopStatus>;
       platformForward(): Promise<DesktopStatus>;
       platformReload(): Promise<DesktopStatus>;
+      platformZoom(action: 'out' | 'in' | 'reset'): Promise<DesktopStatus>;
       chooseDistributionCover(): Promise<{ canceled: boolean; filePath: string }>;
       runDistribution(input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }>;
       projects(): Promise<{ projects: Project[]; currentProject: Project | null }>;
