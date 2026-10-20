@@ -49,12 +49,13 @@ export function buildWorkBuddyPrompt(options: {
   userData?: string;
 }): string {
   const platform = options.platform ?? process.platform;
+  const appName = options.mas || platform === 'win32' ? 'Lingxi Workspace' : 'GEO Publisher';
   const arch = options.arch ?? process.arch;
   const quotedCli = cliCallPrefix(options.cliPath, platform, options.mas ?? false, options.userData);
   return [
-    '请从下面五个独立目录安装并启用本机 GEO Publisher 的五个 Skill；不要把它们合并成一个 Skill。',
+    `请从下面五个独立目录安装并启用本机 ${appName} 的五个 Skill；不要把它们合并成一个 Skill。`,
     '以下路径由当前安装自动生成，仅适用于这台电脑；不要替换成其他电脑的路径：',
-    `GEO Publisher 安装位置：${options.appPath}`,
+    `${appName} 安装位置：${options.appPath}`,
     `发布与基础连接 Skill（geo-publisher）：${options.skillPath}`,
     `客户资料 Skill（geo-customer-profile）：${options.profileSkillPath}`,
     `选题规划 Skill（geo-topic-planner）：${options.topicSkillPath}`,
@@ -71,14 +72,14 @@ export function buildWorkBuddyPrompt(options: {
     '安装时分别完整读取五个目录中的 SKILL.md，并保留每个目录内的 agents 与 references；以后按用户意图调用对应 Skill。',
     '用户要求收集或修改公司资料时调用 geo-customer-profile；要求整理或识别图片素材时调用 geo-material-organizer；要求意图词、选题或选题池时调用 geo-topic-planner；要求生成或修改文章时调用 geo-article-writer；要求登录、填充、发布或对账时调用 geo-publisher。',
     '每个任务先按 geo-publisher 运行 production CLI 的 doctor 和 instructions --json；多客户任务再运行 project list，按客户名称精确匹配唯一项目，执行 project select <projectId> 后用 project current 复核。不要使用其他任务缓存的客户项目。',
-    '客户资料、素材、选题、文章包和分发记录都必须保存在 GEO Publisher 当前客户项目中；不要创建或要求客户维护单独工作空间。',
+    `客户资料、素材、选题、文章包和分发记录都必须保存在 ${appName} 当前客户项目中；不要创建或要求客户维护单独工作空间。`,
     '如果客户要求创建项目，先交互式收集资料并展示摘要；只有客户明确确认后，才按 Skill 调用 production CLI 的 project create。',
     '七个平台为百家号、头条号、知乎、企鹅号、搜狐号、网易号和微信公众号。写作时共用同一个选题，按各平台规则分别生成并保存一篇，所有文章关联同一个 topicId；指定部分平台时只生成对应版本，未指定时默认七篇。全部目标文章保存成功后只标记一次选题已使用。',
     '微信公众号文章还需读取 geo-article-writer/references/wechat-layout.md，按约定传入 document.wechatLayout、段落 card 和 emphasis，程序负责卡片、配色和间距的渲染；不要把专家生成的 HTML 塞进正文。更新技能时保留该参考文件。',
     '分发时选择该主题对应平台的文章包，不要把一篇正文自动复用到七个平台。填充与发布只按 geo-publisher Skill 执行；选题和文章 Skill 不得直接控制平台页面。',
     '微信公众号使用 wechat，通过 fill 调用官方接口保存并读回草稿，禁止 publish 或群发。客户在桌面端的公众号连接设置填写 AppID/AppSecret；扫码登录不能替代接口配置，不要在对话或文章 JSON 中收集 AppSecret。',
-    '平台发布选项默认使用 GEO Publisher 当前客户项目中保存的默认值。只有用户明确要求“这一次”修改某个选项时，才在 draft.fill 或 draft.publish 请求中传 platformOptions 作为单次覆盖；未明确提出时禁止猜测或传覆盖值。',
-    '应用更新或更换安装位置后，重新点击 GEO Publisher 的“连接 WorkBuddy”，以刷新本机路径和 Skill。',
+    `平台发布选项默认使用 ${appName} 当前客户项目中保存的默认值。只有用户明确要求“这一次”修改某个选项时，才在 draft.fill 或 draft.publish 请求中传 platformOptions 作为单次覆盖；未明确提出时禁止猜测或传覆盖值。`,
+    `应用更新或更换安装位置后，重新点击 ${appName} 的“连接 WorkBuddy”，以刷新本机路径和 Skill。`,
   ].join('\n');
 }
 
@@ -146,11 +147,12 @@ export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCl
 }
 
 export async function prepareWorkBuddyMaterialOrganization(activeCliPath: string | null = null): Promise<WorkBuddyIntegrationStatus & { prompt: string }> {
+  const appName = app.getName();
   const cliPath = activeCliPath || cliExecutablePath();
   const prepared = await prepareWorkBuddyIntegration(false, cliPath);
   const quotedCli = cliCallPrefix(cliPath, process.platform, isMacAppStoreRuntime(), dataDirectory());
   const prompt = [
-    '请使用 geo-material-organizer Skill 整理 GEO Publisher 当前客户项目中所有待整理图片。',
+    `请使用 geo-material-organizer Skill 整理 ${appName} 当前客户项目中所有待整理图片。`,
     `Skill 路径：${prepared.materialSkillPath}`,
     `production CLI 调用前缀：${quotedCli}`,
     '严格先运行 doctor、instructions --json 和 project current；只处理 material pending 返回的图片。',

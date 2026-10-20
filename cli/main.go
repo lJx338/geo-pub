@@ -28,7 +28,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "0.6.2"
+var version = "1.0.14"
 var buildMode = "production"
 
 var platforms = map[string]bool{
@@ -888,11 +888,11 @@ func startDesktop() error {
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.Command("open", "-a", "GEO Publisher")
+		command = exec.Command("open", "-b", "com.lingxi.geo-publisher")
 	case "windows":
 		path := windowsDesktopExecutable()
 		if path == "" {
-			return &cliError{code: "DESKTOP_START_FAILED", message: "找不到 GEO Publisher.exe", suggestion: "请手动打开一次 GEO Publisher，随后 CLI 会从 discovery.json 记住实际安装位置"}
+			return &cliError{code: "DESKTOP_START_FAILED", message: "找不到 Lingxi Workspace.exe", suggestion: "请手动打开一次 Lingxi Workspace，随后 CLI 会从 discovery.json 记住实际安装位置"}
 		}
 		command = exec.Command(path)
 	default:
@@ -918,6 +918,13 @@ func desktopPathFromDiscovery(path string) string {
 	if info, err := os.Stat(record.AppPath); err == nil && !info.IsDir() {
 		return record.AppPath
 	}
+	// An upgrade can rename the executable in an existing custom installation.
+	if strings.EqualFold(filepath.Base(record.AppPath), "GEO Publisher.exe") {
+		candidate := filepath.Join(filepath.Dir(record.AppPath), "Lingxi Workspace.exe")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
 	return ""
 }
 
@@ -926,10 +933,12 @@ func windowsDesktopExecutable() string {
 		return path
 	}
 	local := os.Getenv("LOCALAPPDATA")
-	for _, directory := range []string{"GEO Publisher", "geo-publisher-desktop"} {
-		candidate := filepath.Join(local, "Programs", directory, "GEO Publisher.exe")
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate
+	for _, directory := range []string{"Lingxi Workspace", "GEO Publisher", "geo-publisher-desktop"} {
+		for _, executable := range []string{"Lingxi Workspace.exe", "GEO Publisher.exe"} {
+			candidate := filepath.Join(local, "Programs", directory, executable)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
 		}
 	}
 	programs := filepath.Join(local, "Programs")
@@ -938,7 +947,7 @@ func windowsDesktopExecutable() string {
 		if err != nil || info == nil || info.IsDir() {
 			return nil
 		}
-		if strings.EqualFold(info.Name(), "GEO Publisher.exe") {
+		if strings.EqualFold(info.Name(), "Lingxi Workspace.exe") || strings.EqualFold(info.Name(), "GEO Publisher.exe") {
 			found = path
 			return filepath.SkipAll
 		}

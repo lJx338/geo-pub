@@ -2,6 +2,7 @@ name: Build Mac App Store
 
 on:
   push:
+    branches: ['**']
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -52,6 +53,9 @@ jobs:
       - run: npm run build
       - run: npm run build:cli
       - run: npm test
+      - name: Test macOS window reopen and store UI
+        timeout-minutes: 3
+        run: node tests/background-start-smoke.mjs
       - name: Build signed store package
         run: npm run package:mas
         env:

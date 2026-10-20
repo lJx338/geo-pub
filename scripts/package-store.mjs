@@ -23,6 +23,8 @@ console.log(`MSIX 包版本：${storeVersion}.0`);
 const command = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const child = spawn(command, [
   'electron-builder',
+  '--config',
+  'scripts/windows-config.mjs',
   '--win',
   'appx',
   '--x64',

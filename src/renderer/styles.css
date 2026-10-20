@@ -51,3 +51,8 @@
 .workbuddy-prompt-list > .workbuddy-connect-step { margin-bottom:0; }
 .workbuddy-connect-step .workbuddy-workspace-emphasis { color:#b42318; font-size:inherit; font-weight:700; }
 .workbuddy-automation-note.guide-usage-note { margin:0 0 12px; }
+.platform-toolbar-actions { flex:0 0 auto; }
+.platform-zoom-controls { display:flex; align-items:center; gap:2px; padding-right:8px; margin-right:4px; border-right:1px solid #eaecf0; }
+.platform-zoom-controls .ui-button { padding:7px 8px; }
+#platform-zoom-reset { min-width:52px; font-variant-numeric:tabular-nums; }
+@media(max-width:1280px) { .platform-nav-label { display:none; } .platform-toolbar { padding-left:16px; padding-right:16px; } }

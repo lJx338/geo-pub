@@ -379,6 +379,43 @@ func TestDesktopPathFromDiscovery(t *testing.T) {
 	}
 }
 
+func TestDesktopPathFromDiscoveryAfterRename(t *testing.T) {
+	directory := t.TempDir()
+	oldPath := filepath.Join(directory, "GEO Publisher.exe")
+	newPath := filepath.Join(directory, "Lingxi Workspace.exe")
+	if err := os.WriteFile(newPath, []byte("exe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery := filepath.Join(directory, "discovery.json")
+	if err := os.WriteFile(discovery, mustJSON(map[string]string{"appPath": oldPath}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := desktopPathFromDiscovery(discovery); got != newPath {
+		t.Fatalf("renamed custom installation was not found: %q", got)
+	}
+}
+
+func TestWindowsDesktopExecutableSupportsBothNames(t *testing.T) {
+	for _, executable := range []string{"Lingxi Workspace.exe", "GEO Publisher.exe"} {
+		t.Run(executable, func(t *testing.T) {
+			local := t.TempDir()
+			t.Setenv("LOCALAPPDATA", local)
+			t.Setenv("GEO_PUBLISHER_USER_DATA_DIR", t.TempDir())
+			directory := filepath.Join(local, "Programs", "Custom installation")
+			if err := os.MkdirAll(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			expected := filepath.Join(directory, executable)
+			if err := os.WriteFile(expected, []byte("exe"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := windowsDesktopExecutable(); got != expected {
+				t.Fatalf("expected %q, got %q", expected, got)
+			}
+		})
+	}
+}
+
 func TestValidateDoesNotContactDesktop(t *testing.T) {
 	directory := t.TempDir()
 	cover := filepath.Join(directory, "cover.jpg")

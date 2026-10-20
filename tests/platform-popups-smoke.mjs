@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
@@ -94,6 +94,158 @@ try {
   const platformPage = app.context().pages().find((page) => page.url() === `${platformOrigin}/register`);
   assert.ok(platformPage, 'platform view is missing');
 
+  // Model publisher dashboards that hide the viewport scrollbar even though
+  // their content is wider than the embedded browser.
+  const originalBounds = await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().startsWith('file:'));
+    const bounds = window.getBounds();
+    window.setSize(920, 700);
+    return bounds;
+  });
+  await platformPage.evaluate(() => {
+    const style = document.createElement('style');
+    style.id = 'clipped-dashboard-style';
+    style.textContent = 'html,body { overflow-x:hidden!important; } html { scrollbar-width:none!important; } html::-webkit-scrollbar { display:none!important; }';
+    document.head.append(style);
+    const wide = document.createElement('div');
+    wide.id = 'wide-dashboard';
+    wide.style.cssText = 'width:1300px;display:flex;justify-content:flex-end';
+    wide.innerHTML = '<button id="far-right">右侧操作</button>';
+    wide.querySelector('button').onclick = () => { wide.dataset.clicked = 'true'; };
+    document.body.prepend(wide);
+    const tall = document.createElement('div');
+    tall.id = 'tall-dashboard';
+    tall.style.height = '2000px';
+    document.body.append(tall);
+  });
+  assert.equal(await platformPage.evaluate(() => document.querySelector('#far-right').getBoundingClientRect().right > innerWidth), true);
+  await platformPage.waitForFunction(() => document.documentElement.clientHeight < innerHeight);
+  assert.equal(await main.evaluate(async () => (await window.geoPublisher.status()).activePlatformZoomFactor), 1, 'horizontal scrolling must keep text at 100%');
+  // Drag the real Chromium scrollbar rather than using scrollIntoView(), which
+  // would mask a missing or hidden scrollbar.
+  const scrollbar = await platformPage.evaluate(() => ({
+    width: document.documentElement.clientWidth,
+    height: innerHeight,
+    thumbWidth: document.documentElement.clientWidth ** 2 / document.documentElement.scrollWidth,
+  }));
+  const dragScrollbar = async (scrollbar) => app.evaluate(async ({ webContents }, { url, scrollbar }) => {
+    const contents = webContents.getAllWebContents().find(wc => wc.getURL() === url);
+    contents.focus();
+    const start = Math.round(scrollbar.thumbWidth / 2);
+    const end = scrollbar.width - 20;
+    const y = scrollbar.height - 7;
+    contents.sendInputEvent({ type: 'mouseMove', x: start, y });
+    contents.sendInputEvent({ type: 'mouseDown', x: start, y, button: 'left', clickCount: 1 });
+    for (let i = 1; i <= 10; i++) {
+      contents.sendInputEvent({ type: 'mouseMove', x: Math.round(start + (end - start) * i / 10), y, modifiers: ['leftButtonDown'] });
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    contents.sendInputEvent({ type: 'mouseUp', x: end, y, button: 'left', clickCount: 1 });
+  }, { url: `${platformOrigin}/register`, scrollbar });
+  await dragScrollbar(scrollbar);
+  await mkdir(join(process.cwd(), 'release', 'test-evidence'), { recursive: true });
+  await platformPage.screenshot({ path: join(process.cwd(), 'release', 'test-evidence', 'platform-horizontal-scroll.png') });
+  await platformPage.waitForFunction(() => scrollX > 0 && document.querySelector('#far-right').getBoundingClientRect().right <= innerWidth + 1);
+  await platformPage.locator('#far-right').click();
+  assert.equal(await platformPage.locator('#wide-dashboard').getAttribute('data-clicked'), 'true');
+  await platformPage.evaluate(() => { window.scrollTo(0, 0); document.querySelector('#wide-dashboard').removeAttribute('data-clicked'); });
+  // Sohu's real homepage sets body overflow-y:scroll and scrollbar-width:none.
+  // That creates a tall BODY scroller; fixing HTML alone cannot expose it.
+  await platformPage.evaluate(() => {
+    document.querySelector('#clipped-dashboard-style').textContent = 'body { overflow-y:scroll; scrollbar-width:none; }';
+  });
+  const fallback = platformPage.locator('#geo-platform-horizontal-scroll .bar');
+  await fallback.waitFor({ state: 'visible' });
+  assert.equal(await platformPage.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), true);
+  const fallbackMetrics = () => platformPage.evaluate(() => {
+    const bar = document.querySelector('#geo-platform-horizontal-scroll').shadowRoot.querySelector('.bar');
+    const rect = bar.getBoundingClientRect();
+    return { width: bar.clientWidth, height: rect.bottom, thumbWidth: bar.clientWidth ** 2 / bar.scrollWidth };
+  });
+  await dragScrollbar(await fallbackMetrics());
+  await platformPage.waitForFunction(() => document.body.scrollLeft > 0 && document.querySelector('#far-right').getBoundingClientRect().right <= innerWidth + 1);
+  await platformPage.locator('#far-right').click();
+  assert.equal(await platformPage.locator('#wide-dashboard').getAttribute('data-clicked'), 'true');
+  assert.equal(await platformPage.evaluate(() => scrollY), 0, 'the scrollbar must be reachable without scrolling to the page bottom');
+  await platformPage.screenshot({ path: join(process.cwd(), 'release', 'test-evidence', 'platform-body-horizontal-scroll.png') });
+
+  // Also cover a clipped inner application pane and SPA content replacement.
+  await platformPage.evaluate(() => {
+    document.body.scrollLeft = 0;
+    document.querySelector('#wide-dashboard').removeAttribute('data-clicked');
+    const pane = document.createElement('main');
+    pane.id = 'nested-dashboard';
+    pane.style.cssText = 'height:400px;width:100%;overflow:hidden';
+    document.body.prepend(pane);
+    pane.append(document.querySelector('#wide-dashboard'), document.querySelector('#tall-dashboard'));
+  });
+  await platformPage.waitForFunction(() => {
+    const bar = document.querySelector('#geo-platform-horizontal-scroll').shadowRoot.querySelector('.bar');
+    return bar.scrollLeft === 0 && bar.scrollWidth > bar.clientWidth;
+  });
+  await dragScrollbar(await fallbackMetrics());
+  await platformPage.waitForFunction(() => document.querySelector('#nested-dashboard').scrollLeft > 0 && document.querySelector('#far-right').getBoundingClientRect().right <= innerWidth + 1);
+  await platformPage.locator('#far-right').click();
+  assert.equal(await platformPage.locator('#wide-dashboard').getAttribute('data-clicked'), 'true');
+  await platformPage.evaluate(() => {
+    document.querySelector('#nested-dashboard').remove();
+  });
+  await fallback.waitFor({ state: 'hidden' });
+  // Restore the original root-overflow fixture for zoom coverage below.
+  await platformPage.evaluate(() => {
+    document.querySelector('#clipped-dashboard-style').textContent = 'html,body { overflow-x:hidden!important; }';
+    const wide = document.createElement('div');
+    wide.id = 'wide-dashboard';
+    wide.style.cssText = 'width:1300px;display:flex;justify-content:flex-end';
+    wide.innerHTML = '<button id="far-right">右侧操作</button>';
+    wide.querySelector('button').onclick = () => { wide.dataset.clicked = 'true'; };
+    const tall = document.createElement('div');
+    tall.id = 'tall-dashboard';
+    tall.style.height = '2000px';
+    document.body.prepend(wide);
+    document.body.append(tall);
+  });
+  for (let i = 0; i < 5; i++) await main.locator('#platform-zoom-out').click();
+  await main.locator('#platform-zoom-reset', { hasText: '50%' }).waitFor();
+  assert.equal(await main.locator('#platform-zoom-out').isDisabled(), true);
+  await platformPage.waitForFunction(() => document.querySelector('#far-right').getBoundingClientRect().right <= innerWidth);
+  await platformPage.locator('#far-right').click();
+  assert.equal(await platformPage.locator('#wide-dashboard').getAttribute('data-clicked'), 'true');
+  const toolbarFits = await main.evaluate(() => {
+    const title = document.querySelector('.platform-toolbar-title').getBoundingClientRect();
+    const actions = document.querySelector('.platform-toolbar-actions').getBoundingClientRect();
+    return title.right <= actions.left && actions.right <= innerWidth;
+  });
+  assert.equal(toolbarFits, true, 'platform controls must fit the minimum window width');
+  await main.locator('#platform-zoom-reset').click();
+  await main.locator('#platform-zoom-reset', { hasText: '100%' }).waitFor();
+  await platformPage.locator('h1').click();
+  await app.evaluate(({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find(wc => wc.getURL() === url);
+    contents.focus();
+    const modifiers = [process.platform === 'darwin' ? 'meta' : 'control'];
+    contents.sendInputEvent({ type: 'keyDown', keyCode: '-', modifiers });
+    contents.sendInputEvent({ type: 'keyUp', keyCode: '-', modifiers });
+  }, `${platformOrigin}/register`);
+  await main.locator('#platform-zoom-reset', { hasText: '90%' }).waitFor();
+  await main.locator('#platform-zoom-in').click();
+  await main.locator('#platform-zoom-reset', { hasText: '100%' }).waitFor();
+  await platformPage.evaluate(() => {
+    document.querySelector('#wide-dashboard').remove();
+    document.querySelector('#tall-dashboard').remove();
+    document.querySelector('#clipped-dashboard-style').remove();
+  });
+  await platformPage.waitForFunction(() => document.documentElement.scrollWidth === document.documentElement.clientWidth);
+  await platformPage.waitForFunction(() => document.documentElement.clientHeight === innerHeight);
+  await app.evaluate(({ BrowserWindow }, bounds) => {
+    BrowserWindow.getAllWindows().find(w => w.webContents.getURL().startsWith('file:')).setBounds(bounds);
+  }, originalBounds);
+  await platformPage.reload();
+  await platformPage.evaluate(() => {
+    document.documentElement.style.setProperty('overflow-x', 'hidden', 'important');
+  });
+  await platformPage.waitForFunction(() => getComputedStyle(document.documentElement).overflowX === 'auto');
+
   const wechatPromise = platformPage.waitForEvent('popup');
   await platformPage.locator('#wechat').click();
   const wechat = await wechatPromise;
@@ -140,7 +292,7 @@ try {
   const secondPlatformPage = app.context().pages().find(page => page.url() === `${platformOrigin}/register`);
   assert.ok(secondPlatformPage);
   assert.doesNotMatch(await secondPlatformPage.evaluate(() => document.cookie), /platform_auth/, 'login must remain isolated between customer projects');
-  process.stdout.write('Platform popup smoke passed: blank window, authorization callback, shared session, POST, loading page, nested windows, project isolation.\n');
+  process.stdout.write('Platform popup smoke passed: native and fixed horizontal scrollbar drag at 100%, Sohu body overflow, nested pane replacement, clipped dashboard zoom, narrow toolbar, zoom keyboard shortcut, blank window, authorization callback, shared session, POST, loading page, nested windows, project isolation.\n');
 } finally {
   if (app) await app.close();
   for (const server of [platformServer, authServer]) {

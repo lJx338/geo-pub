@@ -34,7 +34,7 @@ try {
   const window = await app.firstWindow();
   const errors = []; window.on('pageerror', (error) => errors.push(error.message));
   await window.locator('.app-sidebar').waitFor();
-  assert.equal(await window.title(), 'GEO Publisher');
+  assert.equal(await window.title(), process.platform === 'win32' ? 'Lingxi Workspace' : 'GEO Publisher');
   await app.evaluate(({ dialog }, imagePath) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [imagePath] });
     globalThis.__wechatDesktopTest = { calls: [], drafts: {}, nextId: 1, hold: false, release: null, readFails: false, timeout: false };

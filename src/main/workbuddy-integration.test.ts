@@ -21,7 +21,7 @@ describe('WorkBuddy connection prompt', () => {
       platform: 'win32',
       arch: 'x64',
     });
-    expect(prompt).toContain('GEO Publisher 安装位置：D:\\Apps\\GEO Publisher\\GEO Publisher.exe');
+    expect(prompt).toContain('Lingxi Workspace 安装位置：D:\\Apps\\GEO Publisher\\GEO Publisher.exe');
     expect(prompt).toContain('系统与架构：win32 / x64');
     expect(prompt).toContain("CLI 调用前缀：& 'C:\\Users\\demo\\AppData\\Local\\GEO Publisher Desktop\\bin\\versions\\0.5.0\\geo-publisher.exe'");
     expect(prompt).toContain('Windows PowerShell 必须保留开头的 & 和引号');

@@ -19,6 +19,7 @@ import { normalizeArticleTags, renderArticleDocument, type ArticleDocument } fro
 import { restorePlatformCookies, restorePlatformRendererStorage, snapshotPlatformCookies, snapshotPlatformRendererStorage, type RendererStorageSnapshot } from './cookie-vault.js';
 import type { PlatformOptions } from '../shared/platform-settings.js';
 import type { WechatAdapter } from './wechat/adapter.js';
+import { PLATFORM_HORIZONTAL_SCROLLBAR_THEME, PLATFORM_SCROLLBAR_CSS, installPlatformHorizontalScrollbar } from './platform-scrollbars.js';
 
 const defaultPlatformUrls: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -387,6 +388,17 @@ export class PlatformSessions {
     return this.status();
   }
 
+  zoomActivePlatform(action: 'out' | 'in' | 'reset'): DesktopStatus {
+    if (!['out', 'in', 'reset'].includes(action)) throw new Error('INVALID_ZOOM_ACTION');
+    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 平台任务正在执行，暂时不能调整缩放');
+    const managed = this.activeManagedView();
+    if (!managed) return this.status();
+    const contents = managed.view.webContents;
+    const factor = action === 'reset' ? 1 : Math.round((contents.getZoomFactor() + (action === 'out' ? -0.1 : 0.1)) * 10) / 10;
+    contents.setZoomFactor(Math.max(0.5, Math.min(1.5, factor)));
+    return this.status();
+  }
+
   setUiOverlayOpen(open: boolean): void {
     this.uiOverlayOpen = open;
     const managed = this.activeManagedView();
@@ -539,6 +551,7 @@ export class PlatformSessions {
       ready: true,
       busy: this.isBusy(),
       activePlatform: this.activePlatform,
+      activePlatformZoomFactor: this.activeManagedView()?.view.webContents.getZoomFactor() ?? 1,
       executingPlatform: this.executingPlatform,
       windowState: this.window.isMinimized() ? 'minimized' : this.window.isVisible() ? 'visible' : 'hidden',
       currentProject: null,
@@ -601,7 +614,13 @@ export class PlatformSessions {
     view.webContents.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown' || managed.host !== 'interactive' || this.activePlatform !== platform || this.isBusy()) return;
       const modifiers = input.modifiers || [];
-      if (modifiers.includes('alt') && input.key === 'Left' && view.webContents.canGoBack()) {
+      const zoomModifier = process.platform === 'darwin' ? input.meta : input.control;
+      if (zoomModifier && !input.alt && ['-', '_', '+', '=', '0'].includes(input.key)) {
+        event.preventDefault();
+        const action = input.key === '0' ? 'reset' : ['-', '_'].includes(input.key) ? 'out' : 'in';
+        const status = this.zoomActivePlatform(action);
+        if (!this.window.isDestroyed()) this.window.webContents.send('geo:status-changed', status);
+      } else if (modifiers.includes('alt') && input.key === 'Left' && view.webContents.canGoBack()) {
         event.preventDefault();
         view.webContents.goBack();
       } else if (modifiers.includes('alt') && input.key === 'Right' && view.webContents.canGoForward()) {
@@ -624,7 +643,16 @@ export class PlatformSessions {
       const retained = this.background === managed || this.views.get(platform) === managed;
       if (retained && !view.webContents.isDestroyed()) setTimeout(() => void this.loadUrl(managed, view.webContents.getURL() || PLATFORM_URLS[platform]), 800);
     });
-    view.webContents.on('dom-ready', () => this.restoreManagedView(managed));
+    view.webContents.on('dom-ready', () => {
+      this.restoreManagedView(managed);
+      // User-origin CSS also wins over a platform's overflow-x:hidden!important.
+      // A fresh navigation drops inserted CSS, so install it for each document.
+      void view.webContents.insertCSS(PLATFORM_SCROLLBAR_CSS, { cssOrigin: 'user' })
+        .then(() => view.webContents.executeJavaScript(`(${installPlatformHorizontalScrollbar.toString()})(${JSON.stringify(PLATFORM_HORIZONTAL_SCROLLBAR_THEME)})`))
+        .catch((error) => {
+          if (!view.webContents.isDestroyed()) diagnosticError(`[${platform}] scrollbar styling failed: ${String(error)}`);
+        });
+    });
     view.webContents.on('did-stop-loading', () => {
       managed.loading = false;
       this.restoreManagedView(managed);

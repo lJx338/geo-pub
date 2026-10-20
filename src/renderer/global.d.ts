@@ -7,12 +7,14 @@ import type { WechatConnectionSettings, WechatConnectionStatus, WechatCredential
 declare global {
   interface Window {
     geoPublisher: {
+      appName: string;
       status(): Promise<DesktopStatus>;
       openPlatform(platform: Platform): Promise<PlatformStatus>;
       hidePlatform(): Promise<DesktopStatus>;
       platformBack(): Promise<DesktopStatus>;
       platformForward(): Promise<DesktopStatus>;
       platformReload(): Promise<DesktopStatus>;
+      platformZoom(action: 'out' | 'in' | 'reset'): Promise<DesktopStatus>;
       chooseDistributionCover(): Promise<{ canceled: boolean; filePath: string }>;
       runDistribution(input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }>;
       wechatSettings(projectId: string): Promise<WechatConnectionSettings>;

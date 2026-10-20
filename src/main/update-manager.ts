@@ -26,7 +26,7 @@ export function isStoreManagedRuntime(platform = process.platform, windowsStore 
 }
 
 function storeUpdateMessage(): string {
-  return process.mas === true ? '苹果商店版由 App Store 管理更新' : '微软商店版由 Microsoft Store 管理更新';
+  return process.mas === true ? '此版本由 Mac App Store 管理更新，请前往 App Store 查看和安装更新。' : '微软商店版由 Microsoft Store 管理更新';
 }
 
 export function updateFeedUrl(

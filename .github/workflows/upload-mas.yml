@@ -1,13 +1,18 @@
 name: Upload Mac App Store
-run-name: Mac App Store ${{ inputs.operation }} - ${{ inputs.release_tag }}
+run-name: Mac App Store ${{ inputs.operation }} - ${{ inputs.build_run_id || inputs.release_tag }}
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: '要上传的 GitHub Release 标签'
-        required: true
-        default: 'v0.6.1'
+        description: 'GitHub Release 标签；与 build_run_id 二选一'
+        required: false
+        default: ''
+        type: string
+      build_run_id:
+        description: '成功的 Build Mac App Store 运行 ID；与 release_tag 二选一'
+        required: false
+        default: ''
         type: string
       operation:
         description: 'upload 上传至苹果；validate 只执行苹果校验'
@@ -20,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: mac-app-store-upload
@@ -27,15 +33,18 @@ concurrency:
 
 jobs:
   upload:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1.0.14'
     runs-on: macos-14
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Download and verify release package
+      - name: Test package source validation
+        run: python3 -B -m unittest discover -s scripts -p 'test_mas_download.py'
+      - name: Download and verify package
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
         run: python3 scripts/download-mas-release.py
       - name: Verify installer signature
         run: |

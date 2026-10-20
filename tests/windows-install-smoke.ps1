@@ -15,7 +15,7 @@ if (-not $installer) {
 $dataDirectory = Join-Path $env:LOCALAPPDATA 'GEO Publisher Desktop'
 $discoveryPath = Join-Path $dataDirectory 'discovery.json'
 $installDirectory = Join-Path $env:RUNNER_TEMP 'geo-publisher-custom-install'
-$appPath = Join-Path $installDirectory 'GEO Publisher.exe'
+$appPath = Join-Path $installDirectory 'Lingxi Workspace.exe'
 
 try {
   $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$installDirectory") -Wait -PassThru
@@ -84,7 +84,7 @@ try {
   }
 
   if ($installDirectory) {
-    $uninstaller = Join-Path $installDirectory 'Uninstall GEO Publisher.exe'
+    $uninstaller = Join-Path $installDirectory 'Uninstall Lingxi Workspace.exe'
     if (Test-Path $uninstaller) {
       Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait | Out-Null
     }
