@@ -33,7 +33,7 @@ export const articleDocumentSchema = z.object({
 export type ArticleBlock = z.infer<typeof articleBlockSchema>;
 export type ArticleDocument = z.infer<typeof articleDocumentSchema>;
 
-export type ArticlePlatform = 'baijia' | 'toutiao' | 'zhihu' | 'penguin' | 'sohu' | 'netease' | 'wechat';
+export type ArticlePlatform = 'baijia' | 'toutiao' | 'zhihu' | 'penguin' | 'sohu' | 'netease' | 'wechat' | 'lieju';
 
 export type ArticleRender = {
   html: string;

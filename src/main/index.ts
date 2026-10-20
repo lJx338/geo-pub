@@ -26,6 +26,7 @@ import { exportDistributionDiagnosticBundle } from './diagnostic-bundle.js';
 import { getLaunchAtLoginStatus, openWindowsStartupSettings, setLaunchAtLogin } from './launch-at-login.js';
 import { createElectronWechatAdapter } from './wechat/index.js';
 import { registerWechatDesktopHandlers } from './wechat/desktop.js';
+import { loadLiejuFormOptions } from './lieju-form.js';
 
 guardProcessOutputStreams();
 app.setName('GEO Publisher');
@@ -454,6 +455,12 @@ async function runDesktop(): Promise<void> {
   ipcMain.handle('geo:open-platform', async (_event, platform: Platform) => {
     const result = await sessions.open(platform);
     if (!window.isDestroyed()) window.webContents.send('geo:status-changed', desktopStatus());
+    return result;
+  });
+  ipcMain.handle('geo:lieju-form-options', async (_event, projectId: string, cityId: string, categoryId: string) => {
+    sessions.ensureProject(projectId);
+    const result = await loadLiejuFormOptions(cityId, categoryId);
+    sessions.ensureProject(projectId);
     return result;
   });
   ipcMain.handle('geo:hide-platform', () => {

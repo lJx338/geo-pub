@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>列举网发布流程测试</title>
+<style>body{font:16px sans-serif;background:#fff;padding:20px}.in{display:flex;gap:16px;margin:12px}.m1{width:120px}input,select,textarea{padding:8px}textarea{width:450px;height:140px}#captcha{border:2px solid #286df1;padding:24px}#atc_street_id{display:none}</style></head><body>
+<form id="form" class="registerform" onsubmit="window.submitCount++; event.preventDefault();">
+<div class="in"><div class="m1">* 区域：</div><div class="m2"><select id="atc_zone_id" name="postdb[zone_id]" datatype="*"><option value="">请选择</option><option value="295">莞城</option><option value="296">南城</option></select><select id="atc_street_id"></select></div></div>
+<div class="in"><div class="m1">* 标题：</div><div class="m2"><input type="text" id="atc_title" name="postdb[title]" maxlength="30" datatype="*5-30"></div></div>
+<div class="in"><div class="m1">* 类别：</div><div class="m2"><select id="atc_leibie" name="postdb[leibie]" datatype="*"><option value="">请选择</option><option value="2">轴承</option><option value="20">其他五金配件</option></select></div></div>
+<div class="in"><div class="m1">* 单价：</div><div class="m2"><input type="text" id="atc_danjia" name="postdb[danjia]" datatype="/^[0-9]*[1-9][0-9]*$/"></div></div>
+<div class="in"><div class="m1">* 公司：</div><div class="m2"><input type="text" id="atc_gongsi" name="postdb[gongsi]" datatype="*"></div></div>
+<div class="in"><div class="m1">* 描述：</div><div class="m2"><textarea id="atc_content" name="postdb[content]" datatype="*10-15000"></textarea></div></div>
+<div class="in"><div class="m1">上传图片：</div><div class="m2" id="images"><input type="file" name="images[]"><a href="#" onclick="event.preventDefault();const input=document.createElement('input');input.type='file';input.name='images[]';this.before(input)">上传更多</a></div></div>
+<div class="in"><div class="m1">* 联系电话：</div><div class="m2"><input type="text" id="atc_mobphone" maxlength="20"></div></div>
+<div class="in"><div class="m1">QQ：</div><div class="m2"><input type="text" id="atc_oicq" value="12345"></div></div>
+<div class="in"><div class="m1">微信号：</div><div class="m2"><input type="text" id="atc_wechat" value="old_contact"></div></div>
+<div class="in"><div class="m1">* 联系人：</div><div class="m2"><input type="text" id="atc_linkman" maxlength="25"></div></div>
+<div class="in"><div class="m1">付费推广：</div><div class="m2"><input type="checkbox" id="paid" checked>置顶推广</div></div>
+<div class="in"><div class="m1">* 验证码：</div><div class="m2"><a id="captcha-trigger" href="#" onclick="event.preventDefault();window.captchaCount++;document.querySelector('#captcha').hidden=false">点击显示验证码</a><div id="captcha" hidden>请手动完成滑块验证<button type="button" id="verify" onclick="window.verified=true;this.parentNode.hidden=true">模拟用户完成验证</button></div></div></div>
+<div class="in"><div class="m1">下条同类信息：</div><div class="m2"><select id="atc_autofill"><option value="0">不引用</option><option value="1" selected>引用</option></select></div></div>
+<input type="submit" id="sub" value="提交发布">
+</form><script>window.submitCount=0;window.captchaCount=0;window.verified=false;</script></body></html>

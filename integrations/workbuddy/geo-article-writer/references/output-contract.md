@@ -19,6 +19,8 @@
 
 ## Body quality
 
+For `lieju`, the complete description must be 200–300 characters including headings, punctuation and rendered topic tags, excluding the title and whitespace. Verify this before saving `ready`. Its platform-specific short-description rule overrides the generic opening length, company-name repetition, follow-up concern counts and structure-file expansion requirements; preserve the core answer, factual accuracy and useful actions.
+
 - Cover three to five natural follow-up concerns that support the same core question.
 - Provide at least two of: concrete actions, criteria, causal mechanisms, scenarios, examples, boundaries, or reusable checklists.
 - Write headings for this exact topic. Never output generic headings such as “核心判断、常见误区、适合谁/不适合谁、总结与行动建议、边界与结论”.

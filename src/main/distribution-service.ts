@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { articleDocumentSchema, type ArticleDocument } from '../shared/article-document.js';
 import { desktopDistributionRequestSchema, type DesktopDistributionRequest, type Platform } from '../shared/protocol.js';
 import { ContentStore, type ContentItem } from './content-store.js';
-import { resolveBaijiaSettings, type PlatformOptions, type PublishingDefaults } from '../shared/platform-settings.js';
+import { resolveBaijiaSettings, resolveLiejuSettings, type PlatformOptions, type PublishingDefaults } from '../shared/platform-settings.js';
 import { writeDistributionDiagnostic } from './diagnostic-bundle.js';
 
 type DistributionExecutor = {
@@ -11,7 +11,7 @@ type DistributionExecutor = {
   publishDraft(platform: Platform, document: ArticleDocument, coverPath: string, options?: PlatformOptions): Promise<unknown>;
 };
 
-type DistributionStatus = 'running' | 'filled' | 'success' | 'failed' | 'action_required' | 'result_uncertain';
+type DistributionStatus = 'running' | 'filled' | 'success' | 'failed' | 'action_required' | 'result_uncertain' | 'pending_manual';
 
 type DirectDistributionRequest = {
   projectId: string;
@@ -48,6 +48,9 @@ function errorDetails(error: unknown): Record<string, unknown> | undefined {
 }
 
 function resultStatus(mode: 'fill' | 'publish', result: unknown, platform: Platform): DistributionStatus {
+  if (platform === 'lieju') {
+    return mode === 'fill' && result && typeof result === 'object' && (result as { status?: string }).status === 'pending_manual' ? 'pending_manual' : 'action_required';
+  }
   if (platform === 'wechat') {
     const value = result && typeof result === 'object' ? result as Record<string, unknown> : {};
     if (mode === 'fill' && value.status === 'filled' && value.saved === true && value.verified === true && typeof value.mediaId === 'string' && value.mediaId) return 'filled';
@@ -84,7 +87,7 @@ export class DistributionService {
   ) {}
 
   private async attachDiagnostic(record: ContentItem): Promise<ContentItem> {
-    if (record.status === 'success' || record.status === 'filled' || record.status === 'running') return record;
+    if (record.status === 'success' || record.status === 'filled' || record.status === 'running' || record.status === 'pending_manual') return record;
     try {
       const diagnosticPath = await writeDistributionDiagnostic(record, this.version);
       return await this.content.save(record.projectId, {
@@ -153,7 +156,7 @@ export class DistributionService {
           try {
             result = await this.executor.fillDraft(platform, executionDocument, input.coverPath, options);
           } catch (error) {
-            if (platform === 'wechat' || !isRetryableFillError(error)) throw error;
+            if (platform === 'wechat' || platform === 'lieju' || !isRetryableFillError(error)) throw error;
             await delay(1_000);
             result = await this.executor.fillDraft(platform, executionDocument, input.coverPath, options);
           }
@@ -205,6 +208,7 @@ export class DistributionService {
 
   /** Records WorkBuddy/production CLI actions without changing their response contract. */
   async runDirect(rawInput: DirectDistributionRequest): Promise<unknown> {
+    if (rawInput.platform === 'lieju' && rawInput.mode === 'publish') throw new Error('LIEJU_MANUAL_ONLY: 列举网仅支持自动填充，验证和提交发布由用户手动完成');
     if (rawInput.platform === 'wechat' && rawInput.mode === 'publish') throw new Error('WECHAT_DRAFT_ONLY: 微信公众号目前仅支持保存草稿');
     const document = articleDocumentSchema.parse(rawInput.document);
     this.executor.ensureProject(rawInput.projectId);
@@ -276,7 +280,8 @@ export class DistributionService {
   }
 
   private optionsFor(projectId: string, override?: PlatformOptions): PlatformOptions {
-    return { baijia: resolveBaijiaSettings(this.publishingDefaults(projectId), override?.baijia), ...(override?.wechat ? { wechat: override.wechat } : {}) };
+    const defaults = this.publishingDefaults(projectId);
+    return { baijia: resolveBaijiaSettings(defaults, override?.baijia), ...(defaults?.lieju || override?.lieju ? { lieju: resolveLiejuSettings(defaults, override?.lieju) } : {}), ...(override?.wechat ? { wechat: override.wechat } : {}) };
   }
 
   private async markArticlePublished(projectId: string, article: ContentItem, taskId: string, platforms: Platform[], source: 'desktop' | 'cli'): Promise<void> {

@@ -34,12 +34,38 @@ export const baijiaSettingsSchema = z.object({
 });
 export type BaijiaSettings = z.infer<typeof baijiaSettingsSchema>;
 
+export const liejuSettingsSchema = z.object({
+  cityId: z.string().regex(/^\d*$/).default(''),
+  categoryId: z.string().regex(/^\d*$/).default(''),
+  districtId: z.string().regex(/^\d*$/).default(''),
+  subcategoryId: z.string().trim().max(100).default(''),
+  company: z.string().trim().max(100).default(''),
+  phone: z.string().trim().max(20).default(''),
+  contact: z.string().trim().max(25).default(''),
+  price: z.string().regex(/^[1-9]\d*$/, '单价必须是正整数').max(12).default('1'),
+  extraFields: z.record(z.string().regex(/^atc_[a-zA-Z0-9_]+$/), z.string().trim().max(500)).default({}),
+});
+export type LiejuSettings = z.infer<typeof liejuSettingsSchema>;
+export const defaultLiejuSettings = liejuSettingsSchema.parse({});
+
+export type LiejuFormField = {
+  id: string; label: string; required: boolean; kind: 'select' | 'text';
+  options: Array<{ value: string; label: string }>; maxLength?: number;
+};
+export type LiejuFormOptions = { fields: LiejuFormField[] };
+
+export function resolveLiejuSettings(defaults: PublishingDefaults | null | undefined, override?: PlatformOptions['lieju']): LiejuSettings {
+  return liejuSettingsSchema.parse({ ...defaultLiejuSettings, ...defaults?.lieju, ...override });
+}
+
 export const publishingDefaultsSchema = z.object({
   baijia: baijiaSettingsSchema,
+  lieju: liejuSettingsSchema.optional(),
 }).default({ baijia: defaultBaijiaSettings });
 export type PublishingDefaults = z.infer<typeof publishingDefaultsSchema>;
 
 export const platformOptionsSchema = z.object({
+  lieju: liejuSettingsSchema.partial().optional(),
   baijia: z.object(baijiaFields).partial().optional(),
   wechat: z.object({
     title: z.string().trim().min(2).refine((value) => [...value].length <= 32, '公众号标题最多 32 个字').optional(),

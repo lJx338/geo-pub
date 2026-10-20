@@ -1,6 +1,6 @@
 interface:
   display_name: "GEO Publisher"
-  short_description: "通过桌面发布器分发七个平台文章，微信公众号仅存草稿"
+  short_description: "通过桌面发布器分发八个平台文章，微信公众号仅存草稿"
   default_prompt: "Use $geo-publisher to publish this article to the requested content platform."
 
 policy:

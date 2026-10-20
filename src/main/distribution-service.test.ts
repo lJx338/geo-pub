@@ -203,3 +203,25 @@ describe('desktop distribution service', () => {
     expect(record?.payload.articleId).toBeUndefined();
   });
 });
+
+
+describe('Lieju manual handoff', () => {
+  it('records pending_manual and never marks the article published', async () => {
+    const { content, article, executor, calls } = await setup();
+    executor.fillDraft = async (platform: Platform) => { calls.push({ mode: 'fill', platform }); return { status: 'pending_manual', stage: 'manual_handoff', message: '请手动验证并提交', primaryClicked: false }; };
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['lieju'], mode: 'fill' });
+    expect(result.records[0]?.status).toBe('pending_manual');
+    expect(calls).toEqual([{ mode: 'fill', platform: 'lieju' }]);
+    expect((await content.list(projectId, 'article'))[0]?.status).toBe('ready');
+  });
+  it('blocks direct publication and does not retry partial filling', async () => {
+    const { content, article, executor, calls } = await setup();
+    const service = new DistributionService(content, executor);
+    await expect(service.runDirect({ projectId, platform: 'lieju', document, coverPath: '', mode: 'publish' })).rejects.toThrow('LIEJU_MANUAL_ONLY');
+    expect(calls).toEqual([]);
+    executor.fillDraft = async (platform: Platform) => { calls.push({ mode: 'fill', platform }); throw new Error('TIMEOUT: partial fill'); };
+    const result = await service.run({ projectId, articleId: article.id, platforms: ['lieju'], mode: 'fill' });
+    expect(calls).toHaveLength(1);
+    expect(result.records[0]?.status).toBe('failed');
+  });
+});

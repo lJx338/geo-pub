@@ -4,6 +4,7 @@ import type { Project, ProjectInput } from './main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from './main/content-store.js';
 import type { ContentRepairNotice } from './main/content-repair.js';
 import type { WechatConnectionSettings, WechatConnectionStatus, WechatCredentials } from './main/wechat/types.js';
+import type { LiejuFormOptions } from './shared/platform-settings.js';
 
 const appName = process.argv.includes('--geo-app-brand=lingxi') ? 'Lingxi Workspace' : 'GEO Publisher';
 
@@ -26,6 +27,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   appName,
   status: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:status'),
   openPlatform: (platform: Platform): Promise<PlatformStatus> => ipcRenderer.invoke('geo:open-platform', platform),
+  liejuFormOptions: (projectId: string, cityId: string, categoryId: string): Promise<LiejuFormOptions> => ipcRenderer.invoke('geo:lieju-form-options', projectId, cityId, categoryId),
   hidePlatform: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:hide-platform'),
   platformBack: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-back'),
   platformForward: (): Promise<DesktopStatus> => ipcRenderer.invoke('geo:platform-forward'),

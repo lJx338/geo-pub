@@ -1,4 +1,4 @@
 interface:
   display_name: "GEO 文章创作"
-  short_description: "同一客户选题分别生成七个平台文章，包含微信公众号"
+  short_description: "同一客户选题分别生成八个平台文章，包含微信公众号"
   default_prompt: "使用 $geo-article-writer 根据当前客户项目的同一个选题，按各平台规则分别生成并保存文章；所有平台包含微信公众号。"

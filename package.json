@@ -15,6 +15,7 @@
     "pretest": "node node_modules/electron/install.js",
     "test": "vitest run",
     "test:e2e": "npm run build && npm run build:cli && npm run build:cli:dev && node tests/electron-smoke.mjs && node tests/platform-resize-smoke.mjs && node tests/platform-popups-smoke.mjs && node tests/background-start-smoke.mjs && node tests/launch-at-login-smoke.mjs",
+    "test:lieju": "npm run build && npm run build:cli && node tests/lieju-desktop-smoke.mjs",
     "test:resize": "npm run build && npm run build:cli && node tests/platform-resize-smoke.mjs",
     "test:popups": "npm run build && node tests/platform-popups-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -56,3 +56,7 @@
 .platform-zoom-controls .ui-button { padding:7px 8px; }
 #platform-zoom-reset { min-width:52px; font-variant-numeric:tabular-nums; }
 @media(max-width:1280px) { .platform-nav-label { display:none; } .platform-toolbar { padding-left:16px; padding-right:16px; } }
+
+/* Lieju uses the same compact platform-settings layout with cascading selects. */
+.lieju-city-search{position:relative;min-width:0}.lieju-city-search>input{width:100%;height:34px;box-sizing:border-box;padding:0 9px;border:1px solid #d0d5dd;border-radius:6px;outline:0;background:#fff;color:#344054;font:inherit;font-size:11px}.lieju-city-search>input:focus{border-color:#84adff;box-shadow:0 0 0 3px #eff8ff}.lieju-city-search>ul{position:absolute;top:100%;left:0;right:0;z-index:5;max-height:180px;overflow-y:auto;overscroll-behavior:contain;margin:4px 0 0;padding:4px;list-style:none;border:1px solid #d0d5dd;border-radius:6px;background:#fff;box-shadow:0 4px 12px #1018281a}.lieju-city-search li{padding:7px 8px;border-radius:4px;color:#344054;font-size:11px;cursor:pointer}.lieju-city-search li[aria-selected="true"],.lieju-city-search li[role="option"]:hover{background:#eff8ff;color:#175cd3}.lieju-city-search li[role="presentation"]{color:#667085;cursor:default}
+.platform-setting-group .ui-field>select{width:100%;min-width:0;height:34px;box-sizing:border-box;padding:0 9px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#344054;font:inherit;font-size:11px}.platform-setting-group .ui-field>select:focus{outline:0;border-color:#84adff;box-shadow:0 0 0 3px #eff8ff}

@@ -1,6 +1,6 @@
 # GEO Publisher Desktop
 
-GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器保存七个平台的登录状态，通过本地 Go CLI 接收 WorkBuddy 或其他 Agent 的分发任务；微信公众号使用官方接口保存草稿，不依赖 MCP、Chrome 扩展、Native Host 或固定端口。
+GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器保存八个平台的登录状态，通过本地 Go CLI 接收 WorkBuddy 或其他 Agent 的分发任务；微信公众号使用官方接口保存草稿，不依赖 MCP、Chrome 扩展、Native Host 或固定端口。
 
 ## 许可证
 
@@ -26,8 +26,9 @@ GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器�
 - 搜狐号 `sohu`
 - 网易号 `netease`
 - 微信公众号 `wechat`（官方接口存草稿，不自动发表或群发）
+- 列举网 `lieju`（自动填写并打开验证码，用户手动验证和提交）
 
-WorkBuddy 从同一个客户选题出发，按平台规则分别生成文章；“所有平台”包含以上七个平台。公众号使用前在桌面端的“平台账号 → 微信公众号 → 连接设置”配置该客户的接口凭据。详见 [公众号接入说明](docs/WECHAT-ADDON.md)。
+WorkBuddy 从同一个客户选题出发，按平台规则分别生成文章；“所有平台”包含以上八个平台。公众号使用前在桌面端的“平台账号 → 微信公众号 → 连接设置”配置该客户的接口凭据。详见 [公众号接入说明](docs/WECHAT-ADDON.md)。
 
 ## CLI
 
@@ -83,3 +84,5 @@ Beta 灰度发布见 [`docs/BETA-ROLLOUT.md`](docs/BETA-ROLLOUT.md)。正式版�
 5. 在开发机执行 `./scripts/publish-cos-local.sh <Run ID> beta`；正式版使用 `stable`。
 
 腾讯云密钥只能保存在被 Git 忽略的 `.env.cos`，禁止写入源码、日志或安装包。
+
+列举网使用前在“平台账号 → 列举网 → 发布设置”保存当前客户的城市、区域、分类、公司、电话、联系人和默认单价（默认 1 元，可修改）。只支持 `fill`，返回 `pending_manual`（已填充，待手动发布）；不能调用 `publish`。写作要求：标题 5～30 字、描述 200～300 字（含小标题、标点及末尾话题，不含文章标题和空白字符），保存前检查字数；填充适配器按网站表单的 10～15000 字范围校验。图片使用客户素材库，自动转成小于 1 MB 的 JPEG 附件。

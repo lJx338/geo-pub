@@ -23,7 +23,7 @@ Re-run `project current` immediately before saving. If the project changed, stop
 - Honor an explicit number from the user.
 - “本周选题” means the next seven days, five primary topics per day, 35 in total.
 - A request that only says “生成一些选题” means five primary topics.
-- Save one primary topic, not a separate topic for each platform. The writer can produce seven independently written platform article packages from this same topic, including `wechat`; all packages retain the primary topic ID.
+- Save one primary topic, not a separate topic for each platform. The writer can produce eight independently written platform article packages from this same topic, including `wechat` and `lieju`; all packages retain the primary topic ID.
 
 ## Build topics
 

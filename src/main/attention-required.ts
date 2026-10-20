@@ -1,6 +1,6 @@
 import type { Platform } from '../shared/protocol.js';
 
-export type AttentionCode = 'LOGIN_REQUIRED' | 'VERIFICATION_REQUIRED' | 'RISK_CONTROL_REQUIRED';
+export type AttentionCode = 'LOGIN_REQUIRED' | 'VERIFICATION_REQUIRED' | 'RISK_CONTROL_REQUIRED' | 'MANUAL_SUBMISSION_REQUIRED';
 
 export interface AttentionRequired {
   platform: Platform;

@@ -33,7 +33,7 @@ var buildMode = "production"
 
 var platforms = map[string]bool{
 	"baijia": true, "toutiao": true, "zhihu": true,
-	"penguin": true, "sohu": true, "netease": true, "wechat": true,
+	"penguin": true, "sohu": true, "netease": true, "wechat": true, "lieju": true,
 }
 
 type controlRequest struct {
@@ -81,8 +81,21 @@ type fillInput struct {
 }
 
 type platformOptions struct {
+	Lieju  *liejuOptions  `json:"lieju,omitempty"`
 	Baijia *baijiaOptions `json:"baijia,omitempty"`
 	Wechat *wechatOptions `json:"wechat,omitempty"`
+}
+
+type liejuOptions struct {
+	CityID        *string           `json:"cityId,omitempty"`
+	CategoryID    *string           `json:"categoryId,omitempty"`
+	DistrictID    *string           `json:"districtId,omitempty"`
+	SubcategoryID *string           `json:"subcategoryId,omitempty"`
+	Company       *string           `json:"company,omitempty"`
+	Phone         *string           `json:"phone,omitempty"`
+	Contact       *string           `json:"contact,omitempty"`
+	Price         *string           `json:"price,omitempty"`
+	ExtraFields   map[string]string `json:"extraFields,omitempty"`
 }
 
 type wechatOptions struct {
@@ -229,7 +242,7 @@ func run(args []string) (string, json.RawMessage, error) {
 		return call(command, controlRequest{Action: "app.show"}, defaultTimeout)
 	case "open", "login", "inspect":
 		if len(args) != 1 || !platforms[args[0]] {
-			return command, nil, usageError("平台必须是 baijia、toutiao、zhihu、penguin、sohu、netease 或 wechat")
+			return command, nil, usageError("平台必须是 baijia、toutiao、zhihu、penguin、sohu、netease、wechat 或 lieju")
 		}
 		action := "platform.open"
 		if command == "inspect" {
@@ -244,6 +257,9 @@ func run(args []string) (string, json.RawMessage, error) {
 		if err != nil {
 			return command, nil, err
 		}
+		if command == "publish" && input.Platform == "lieju" {
+			return command, nil, &cliError{code: "LIEJU_MANUAL_ONLY", message: "列举网仅支持自动填充", suggestion: "使用 fill；滑块验证和提交发布必须由用户手动完成"}
+		}
 		if command == "publish" && input.Platform == "wechat" {
 			return command, nil, &cliError{code: "WECHAT_DRAFT_ONLY", message: "微信公众号目前仅支持保存草稿", suggestion: "使用 fill 保存并读回草稿；正式发表请在公众号后台操作"}
 		}
@@ -254,8 +270,9 @@ func run(args []string) (string, json.RawMessage, error) {
 			return command, mustJSON(map[string]any{
 				"valid": true, "projectId": input.ProjectID, "platform": input.Platform, "title": effectiveTitle(input),
 				"titleLength": len([]rune(effectiveTitle(input))), "blockCount": len(input.Document.Blocks),
-				"coverRequired": requiresCover(input.Platform),
-				"draftOnly":     input.Platform == "wechat",
+				"coverRequired":    requiresCover(input.Platform),
+				"draftOnly":        input.Platform == "wechat",
+				"manualSubmitOnly": input.Platform == "lieju",
 			}), nil
 		}
 		if command == "publish" && !input.ConfirmPublish {
@@ -694,7 +711,23 @@ func validateFill(input fillInput) error {
 		return usageError("projectId 必须来自 geo-publisher project current")
 	}
 	if !platforms[input.Platform] {
-		return usageError("fill 支持 platform=baijia、toutiao、zhihu、penguin、sohu、netease 或 wechat")
+		return usageError("fill 支持 platform=baijia、toutiao、zhihu、penguin、sohu、netease、wechat 或 lieju")
+	}
+	if input.Platform == "lieju" && (len([]rune(input.Document.Title)) < 5 || len([]rune(input.Document.Title)) > 30) {
+		return usageError("列举网标题必须为 5～30 字")
+	}
+	if options := input.PlatformOptions.Lieju; options != nil {
+		if input.Platform != "lieju" {
+			return usageError("platformOptions.lieju 只能用于列举网")
+		}
+		if options.Price != nil && !regexp.MustCompile(`^[1-9][0-9]{0,11}$`).MatchString(*options.Price) {
+			return usageError("列举网单价必须为正整数")
+		}
+		for _, id := range []*string{options.CityID, options.CategoryID, options.DistrictID} {
+			if id != nil && !regexp.MustCompile(`^[0-9]*$`).MatchString(*id) {
+				return usageError("列举网地区和分类 ID 必须为数字")
+			}
+		}
 	}
 	if options := input.PlatformOptions.Wechat; options != nil {
 		if input.Platform != "wechat" {
@@ -1028,21 +1061,23 @@ func instructions() json.RawMessage {
 			"Use fill for preview or any request that says not to publish",
 			"Use publish only after explicit user authorization and confirmPublish=true; WeChat always uses fill to save and read back a draft, never publish or send to followers",
 			"Process platforms serially and preserve every structured result",
+			"Lieju always uses fill and returns pending_manual after filling and requesting captcha; the USER completes verification and submits; never automate captcha or click submit even if the user asks for all-platform publishing",
 			"Never republish automatically when status=result_uncertain; reconcile first",
 			"Before generating an article, list topics with auto-selectable=true and reserve exactly one topic with a unique task id",
 			"Generate each requested platform article independently from the same reserved topic and evidence, with the same topicId, coreQuestion and directAnswer; use geo-article-writer platform-rules.md",
-			"All platforms means seven including wechat; honor an explicit subset or schedule, otherwise default writing to all seven; writing alone does not authorize filling or publishing",
+			"All platforms means eight including wechat and lieju; honor an explicit subset or schedule, otherwise default writing to all eight; writing alone does not authorize filling or publishing",
 			"Save one article per platform; only after every requested article is saved call topic use once, then report each platform and article id; on failure release the topic and reuse already-saved packages instead of creating duplicates",
 			"For a long-running subject create a topic variant instead of reusing the same title or body",
 			"Before using image materials, run material pending; analyze each returned local image once through material get and material analyze, then reuse the saved index",
 			"Search material summaries and facts through content list filters; do not scan the whole local content database",
 			"WeChat API credentials are configured in the desktop current project's platform account settings; browser login does not configure or prove API access; never request AppSecret in chat or article JSON",
 		},
-		"platformOrder":      []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease", "wechat"},
-		"draftOnlyPlatforms": []string{"wechat"},
+		"platformOrder":             []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease", "wechat", "lieju"},
+		"draftOnlyPlatforms":        []string{"wechat"},
+		"manualSubmitOnlyPlatforms": []string{"lieju"},
 		"platformNames": map[string]string{
 			"百家号": "baijia", "头条号": "toutiao", "知乎": "zhihu",
-			"企鹅号": "penguin", "搜狐号": "sohu", "网易号": "netease", "微信公众号": "wechat",
+			"企鹅号": "penguin", "搜狐号": "sohu", "网易号": "netease", "微信公众号": "wechat", "列举网": "lieju",
 		},
 	})
 }
@@ -1055,8 +1090,8 @@ func commandSchema() json.RawMessage {
 		"material": map[string]any{"input": "pending limit, material id, or validated image analysis JSON", "sideEffect": "reads pending images and saves a one-time visual index for the current customer project"},
 		"topic":    map[string]any{"input": "topic id plus task/article id or a variant JSON", "sideEffect": "reserves, releases, records use of, or creates a topic variant"},
 		"validate": map[string]any{"input": "article", "sideEffect": false},
-		"fill":     map[string]any{"input": "article", "sideEffect": "fills the browser editor; wechat uploads images, creates a draft and reads it back via official API; does not publish"},
-		"publish":  map[string]any{"input": "article with confirmPublish=true; wechat is not supported", "sideEffect": "real external publication", "platforms": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"}},
+		"fill":     map[string]any{"input": "article", "sideEffect": "fills the browser editor; wechat uploads images, creates a draft and reads it back via official API; lieju fills until captcha and hands off to the user; does not publish"},
+		"publish":  map[string]any{"input": "article with confirmPublish=true; wechat and lieju are not supported", "sideEffect": "real external publication", "platforms": []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease"}},
 	}
 	if isDevelopmentBuild() {
 		commands["projects"] = map[string]any{"input": nil, "sideEffect": false}
@@ -1068,16 +1103,16 @@ func commandSchema() json.RawMessage {
 		"commands": commands,
 		"article": map[string]any{
 			"projectId": "required UUID from geo-publisher project current; must match the project currently selected in GEO Publisher",
-			"platform":  []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease", "wechat"},
+			"platform":  []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease", "wechat", "lieju"},
 			"document": map[string]any{
-				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64, WeChat 2-32",
+				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64, WeChat 2-32, Lieju 5-30",
 				"blocks": []map[string]any{
 					{"type": "paragraph", "text": "string"},
 					{"type": "heading", "level": "2 or 3", "text": "string"},
 					{"type": "list", "ordered": "boolean", "items": "string[]"},
 					{"type": "quote", "text": "string"},
 					{"type": "divider"},
-					{"type": "image", "materialId": "current project's material id; required for wechat", "src": "optional http(s) image URL for other platforms", "alt": "optional string, max 200", "caption": "optional string, max 200"},
+					{"type": "image", "materialId": "current project's material id; required for wechat and lieju", "src": "optional http(s) image URL for other platforms", "alt": "optional string, max 200", "caption": "optional string, max 200"},
 				},
 				"summary": "optional string, maximum 120 characters",
 				"tags":    "optional array, maximum 9",
@@ -1085,6 +1120,7 @@ func commandSchema() json.RawMessage {
 			"coverPath":      "absolute local path; required for baijia, toutiao, netease, wechat; WeChat requires PNG/JPEG under 10 MB and body images under 1 MB",
 			"confirmPublish": "must be true for publish",
 			"platformOptions": map[string]any{
+				"lieju": map[string]any{"defaults": "uses current project publishingDefaults.lieju", "price": "positive integer string, defaults to 1", "manualSubmitOnly": true},
 				"usage": "omit to use current project defaults; only send when the user explicitly requests a one-shot override",
 				"baijia": map[string]any{
 					"smartCreation": "optional array: autoPodcast, convertToDynamic; empty selects none",
@@ -1104,7 +1140,7 @@ func commandSchema() json.RawMessage {
 func platformOverview() json.RawMessage {
 	names := map[string]string{
 		"baijia": "百家号", "toutiao": "头条号", "zhihu": "知乎",
-		"penguin": "企鹅号", "sohu": "搜狐号", "netease": "网易号", "wechat": "微信公众号",
+		"penguin": "企鹅号", "sohu": "搜狐号", "netease": "网易号", "wechat": "微信公众号", "lieju": "列举网",
 	}
 	result := map[string]any{"supported": names, "desktopConnected": false}
 	if response, err := send(controlRequest{Action: "status"}, 2*time.Second); err == nil {

@@ -88,7 +88,7 @@ On Windows, perform one connectivity check and require a JSON response before co
 3. Run `validate` with the article JSON before any browser operation.
 4. For requests such as “看看效果”, “填充”, “预览”, or “不要发布”, run `fill` only.
 5. Run `publish` only when the user explicitly asks for real publishing. Set `confirmPublish` to `true` in that request. For `wechat`, always use `fill` to save a draft; formal publication and sending to followers are not supported. In a mixed authorized distribution task, publish only the requested supported platforms and report WeChat separately as a draft.
-6. Process multiple platforms serially in this order unless the user specifies another order: `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`, `wechat`. All platforms means these seven; an explicit subset still takes precedence.
+6. Process multiple platforms serially in this order unless the user specifies another order: `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`, `wechat`, `lieju`. All platforms means these eight; an explicit subset still takes precedence.
 7. Report the structured result for every platform.
 
 ## Build the article input
@@ -160,3 +160,11 @@ Use these platform mappings:
 - For `ZHIHU_FORMAT_DEGRADED` or `NETEASE_FORMAT_DEGRADED`, do not publish. The desktop has detected that the editor removed required article structure; preserve the complete error and ask for an adapter update.
 - Never weaken required input validation to force a task through.
 - Preserve complete JSON errors when asking WorkBuddy or technical support for help.
+
+## Lieju manual submission
+
+- `lieju` is part of all eight platforms. Always use `fill`, even in an authorized all-platform publishing request. `publish` is unsupported.
+- Read current-project `publishingDefaults.lieju`; direct users to Platform Accounts → Lieju settings if city/category/contact fields are missing. Never guess category IDs. Default price is the user-configured string `1`, not AI-generated pricing.
+- Filling writes the title and plain-text body, configured required fields and image attachments, then requests the captcha. A successful handoff returns `pending_manual`: report “已填充，待手动发布”. The USER completes the slider, checks the content and submits. Do not solve captcha, click submit, continue automatically after verification, or report publication success.
+- A pending page stays open during other platform tasks. Never refill it automatically; ask the user to finish or explicitly discard it by refreshing.
+- Use current-project material IDs for body images. The adapter converts images to JPEG under 1 MB. The optional cover is uploaded as another attachment.

@@ -63,7 +63,7 @@ try {
     return bounds;
   }
 
-  const platforms = ['wechat', 'baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease'];
+  const platforms = ['wechat', 'baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease', 'lieju'];
   for (const platform of platforms) {
     await main.evaluate((window) => window.minimize());
     await eventually(async () => assert.equal(await main.evaluate((window) => window.isMinimized()), true));
@@ -120,7 +120,7 @@ try {
   await page.locator('#platform-back').click();
   await page.locator('#platform-back').waitFor({ state: 'detached' });
   assert.equal(await main.evaluate((window) => window.contentView.children.filter((child) => child.webContents).length), 0);
-  console.log('All seven platforms passed; returning to the workspace removes the embedded view.');
+  console.log('All eight platforms passed; returning to the workspace removes the embedded view.');
 } finally {
   await app.close();
 }

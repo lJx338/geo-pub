@@ -214,7 +214,7 @@ func TestWechatDiscoveryAndOfflineValidation(t *testing.T) {
 	if err := json.Unmarshal(instructions(), &workflow); err != nil {
 		t.Fatal(err)
 	}
-	if len(workflow.PlatformOrder) != 7 || workflow.PlatformOrder[6] != "wechat" || len(workflow.DraftOnlyPlatforms) != 1 || workflow.DraftOnlyPlatforms[0] != "wechat" {
+	if len(workflow.PlatformOrder) != 8 || workflow.PlatformOrder[6] != "wechat" || len(workflow.DraftOnlyPlatforms) != 1 || workflow.DraftOnlyPlatforms[0] != "wechat" {
 		t.Fatalf("unexpected platforms: %+v", workflow)
 	}
 	var schema struct {
@@ -228,7 +228,7 @@ func TestWechatDiscoveryAndOfflineValidation(t *testing.T) {
 	if err := json.Unmarshal(commandSchema(), &schema); err != nil {
 		t.Fatal(err)
 	}
-	if len(schema.Article.Platform) != 7 || len(schema.Commands["publish"].Platforms) != 6 {
+	if len(schema.Article.Platform) != 8 || len(schema.Commands["publish"].Platforms) != 6 {
 		t.Fatal("schema lost draft/publish distinction")
 	}
 	for _, platform := range schema.Commands["publish"].Platforms {
@@ -480,5 +480,26 @@ func TestDiscoveredEndpointValidationCoversWindowsPipe(t *testing.T) {
 	}
 	if validDiscoveredControlEndpointForOS(`\\.\pipe\geo-publisher-invalid`, "windows") {
 		t.Fatal("invalid Windows discovery pipe was accepted")
+	}
+}
+
+func TestLiejuManualOnly(t *testing.T) {
+	for _, confirm := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "lieju.json")
+		if err := os.WriteFile(path, mustJSON(fillInput{Platform: "lieju", ConfirmPublish: confirm}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := run([]string{"publish", "--input", path})
+		if err == nil || !strings.Contains(err.Error(), "列举网") {
+			t.Fatalf("must reject Lieju publish: %v", err)
+		}
+	}
+	input := fillInput{ProjectID: "11111111-1111-4111-8111-111111111111", Platform: "lieju", Document: articleDocument{Title: "如何选择合适的配件", Blocks: []articleBlock{{Type: "paragraph", Text: "先核对规格和环境，再确认产品的使用条件。"}}}}
+	if err := validateFill(input); err != nil {
+		t.Fatal(err)
+	}
+	input.Document.Title = "太短"
+	if err := validateFill(input); err == nil {
+		t.Fatal("must reject short title")
 	}
 }

@@ -65,7 +65,7 @@ try {
   await window.locator('#project-switch').filter({ hasText: '公众号客户 A' }).waitFor();
   await window.locator('.nav-item').filter({ hasText: '平台账号' }).click();
   await window.locator('.account-grid > section').first().waitFor();
-  assert.equal(await window.locator('.account-grid > section').count(), 7);
+  assert.equal(await window.locator('.account-grid > section').count(), 8);
   await window.getByRole('button', { name: '设置微信公众号连接' }).click();
   await window.locator('#wechat-app-id').fill('wx1234567890abcdef');
   await window.locator('#wechat-app-secret').fill('a'.repeat(32));

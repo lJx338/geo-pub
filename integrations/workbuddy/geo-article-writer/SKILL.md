@@ -1,6 +1,6 @@
 ---
 name: geo-article-writer
-description: Write, revise, quality-check, and save structured GEO article packages for the current GEO Publisher customer project. Use when the user asks for 生成文章、写文章、今日内容、根据选题写作、七平台文章、所有平台文章、微信公众号文章、公众号排版, to turn a saved topic into content, create articles for one or more supported platforms, or revise an existing article package. Selects among E-E-A-T, question, case, pitfall, recommendation, operation, seven-dimension, and B2B four-step structures. Do not use for browser filling or publishing.
+description: Write, revise, quality-check, and save structured GEO article packages for the current GEO Publisher customer project. Use when the user asks for 生成文章、写文章、今日内容、根据选题写作、八平台文章、所有平台文章、微信公众号文章、公众号排版, to turn a saved topic into content, create articles for one or more supported platforms, or revise an existing article package. Selects among E-E-A-T, question, case, pitfall, recommendation, operation, seven-dimension, and B2B four-step structures. Do not use for browser filling or publishing.
 ---
 
 # GEO Article Writer
@@ -25,12 +25,12 @@ Re-run `project current` before every save. Stop with `PROJECT_CONTEXT_CHANGED` 
 ## Choose platforms
 
 - Honor explicitly named platforms.
-- “所有平台”、“全部平台”、“七个平台” means `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`, and `wechat`. 微信公众号/公众号 maps to `wechat`.
+- “所有平台”、“全部平台”、“八个平台” means `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, `netease`, `wechat`, and `lieju`. 微信公众号/公众号 maps to `wechat`; 列举网 maps to `lieju`.
 - “六个平台” means `baijia`, `toutiao`, `zhihu`, `penguin`, `sohu`, and `netease`.
 - For an existing scheduled topic that already names platforms, follow that schedule.
-- If neither the user nor the selected topic names a platform, default to all seven platforms, one article each. An explicit request for only a preview may still produce one project-level preview. Writing alone never authorizes filling, publishing, or creating a schedule.
+- If neither the user nor the selected topic names a platform, default to all eight platforms, one article each. An explicit request for only a preview may still produce one project-level preview. Writing alone never authorizes filling, publishing, or creating a schedule.
 
-When generating multiple platforms, create each article independently from the selected topic and evidence. Do not write one mother draft and mechanically rewrite it for each platform. Every package must share the same `payload.topicId`, `coreQuestion`, and `directAnswer`, but its opening, evidence order, examples, pacing, and section structure should fit the platform. Do not change factual claims merely to make versions look different. Apply the platform rules and compare the completed versions before saving; seven identical bodies with different platform labels do not satisfy the task.
+When generating multiple platforms, create each article independently from the selected topic and evidence. Do not write one mother draft and mechanically rewrite it for each platform. Every package must share the same `payload.topicId`, `coreQuestion`, and `directAnswer`, but its opening, evidence order, examples, pacing, and section structure should fit the platform. Do not change factual claims merely to make versions look different. Apply the platform rules and compare the completed versions before saving; eight identical bodies with different platform labels do not satisfy the task.
 
 ## Route the structure
 
@@ -51,7 +51,7 @@ Do not load all structure files. Only load the selected structure to reduce rout
 
 ## Save an article package
 
-Save one content item per platform with that platform's code (including `wechat`). A project-level preview may use an empty platform string. Keep the selected topic's ID in every article; do not create seven copies of the topic. Use the platform-compliant document title as the content item's title too.
+Save one content item per platform with that platform's code (including `wechat` and `lieju`). A project-level preview may use an empty platform string. Keep the selected topic's ID in every article; do not create seven copies of the topic. Use the platform-compliant document title as the content item's title too.
 
 ```json
 {
@@ -92,3 +92,5 @@ If generation or saving fails, run `topic release <projectId> --topic <topicId> 
 - Do not place website URLs, phone numbers, email addresses, WeChat IDs, QR-code instructions, or other contact and traffic-diversion details in the title, summary, body, tags, or images.
 - Never invent company facts, named customers, completed project results, credentials, rankings, policies, or external statistics. You may create clearly framed common scenarios, professional reasoning, checklists, and hypothetical examples.
 - Do not alter an approved topic into an abstract headline during writing.
+
+For `lieju`, use the same topic workflow and save a separate platform article. Title: 5–30 characters; complete plain-text description: 200–300 characters including headings, punctuation and rendered topic tags, excluding the title and whitespace. Count and revise before saving `ready`; follow the short-description exception in the platform rules instead of expanding the long-form structure. Use current-project material IDs for images. The publisher fills the configured default price and contact/category fields; never invent these in article content. Distribution stops for manual verification and submission.

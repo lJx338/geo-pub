@@ -3,6 +3,7 @@ import type { Project, ProjectInput } from '../main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from '../main/content-store.js';
 import type { ContentRepairNotice } from '../main/content-repair.js';
 import type { WechatConnectionSettings, WechatConnectionStatus, WechatCredentials } from '../main/wechat/types.js';
+import type { LiejuFormOptions } from '../shared/platform-settings.js';
 
 declare global {
   interface Window {
@@ -17,6 +18,7 @@ declare global {
       platformZoom(action: 'out' | 'in' | 'reset'): Promise<DesktopStatus>;
       chooseDistributionCover(): Promise<{ canceled: boolean; filePath: string }>;
       runDistribution(input: DesktopDistributionRequest): Promise<{ records: ContentItem[] }>;
+      liejuFormOptions(projectId: string, cityId: string, categoryId: string): Promise<LiejuFormOptions>;
       wechatSettings(projectId: string): Promise<WechatConnectionSettings>;
       wechatOpenDeveloperPlatform(projectId: string): Promise<{ opened: true }>;
       wechatSaveCredentials(projectId: string, credentials: WechatCredentials): Promise<WechatConnectionSettings>;

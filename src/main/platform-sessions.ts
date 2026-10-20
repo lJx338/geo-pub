@@ -15,6 +15,7 @@ import { evidenceDirectory } from './runtime-paths.js';
 import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } from './stealth.js';
 import { fillToutiaoDraft } from './toutiao-adapter.js';
 import { fillZhihuDraft } from './zhihu-adapter.js';
+import { fillLiejuDraft } from './lieju-adapter.js';
 import { normalizeArticleTags, renderArticleDocument, type ArticleDocument } from '../shared/article-document.js';
 import { restorePlatformCookies, restorePlatformRendererStorage, snapshotPlatformCookies, snapshotPlatformRendererStorage, type RendererStorageSnapshot } from './cookie-vault.js';
 import type { PlatformOptions } from '../shared/platform-settings.js';
@@ -29,6 +30,7 @@ const defaultPlatformUrls: Record<Platform, string> = {
   sohu: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1',
   netease: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
   wechat: 'https://mp.weixin.qq.com/',
+  lieju: 'https://www.lieju.com/login/',
 };
 
 const PLATFORM_URLS: Record<Platform, string> = process.env.GEO_PUBLISHER_TEST_PLATFORM_URL
@@ -457,7 +459,9 @@ export class PlatformSessions {
     }
     const rendered = renderArticleDocument(document, platform);
     try {
-      const result = platform === 'baijia'
+      const result = platform === 'lieju'
+        ? await fillLiejuDraft(managed.view.webContents, document, coverPath, options.lieju)
+        : platform === 'baijia'
         ? await fillBaijiaDraft(managed.view.webContents, document.title, rendered.html, coverPath, options.baijia)
         : platform === 'toutiao'
           ? await fillToutiaoDraft(managed.view.webContents, document.title, rendered.html, coverPath)
@@ -468,11 +472,18 @@ export class PlatformSessions {
               : platform === 'sohu'
                 ? await fillSohuDraft(managed.view.webContents, document.title, rendered.html)
                 : await fillNeteaseDraft(managed.view.webContents, document.title, rendered.html, coverPath);
+      if (platform === 'lieju') {
+        // Retain the exact page (including the captcha and in-memory files) for
+        // manual submission, even if another platform is opened afterwards.
+        await this.promoteBackground(platform);
+        this.recordAttention({ platform, code: 'MANUAL_SUBMISSION_REQUIRED', message: result.message, url: managed.view.webContents.getURL() });
+      }
       return await this.captureFillEvidence(managed, { ...result, structure: rendered.structuralExpectations });
     } catch (error) {
       const details = await this.captureFailureDetails(managed, 'fill-failure');
       const enrichedError = this.attachErrorDetails(error, details);
-      const attention = await this.promoteForAttention(managed, error);
+      const attention = platform === 'lieju' && /^LIEJU_/.test(error instanceof Error ? error.message : String(error))
+        ? null : await this.promoteForAttention(managed, error);
       if (attention) {
         const wrapped = new AttentionRequiredError(attention, originalErrorCode(enrichedError));
         Object.assign(wrapped.details as unknown as Record<string, unknown>, details);
@@ -484,6 +495,7 @@ export class PlatformSessions {
 
   async publishDraft(platform: Platform, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
     this.ensureProject();
+    if (platform === 'lieju') throw new Error('LIEJU_MANUAL_ONLY: 列举网仅支持自动填充，验证和提交发布由用户手动完成');
     if (platform === 'wechat') throw new Error('WECHAT_DRAFT_ONLY: 微信公众号目前仅支持保存草稿');
     return await this.runExclusive(async () => {
       const fill = await this.fillDraftInternal(platform, document, coverPath, options);
@@ -909,7 +921,7 @@ export class PlatformSessions {
 
   private async evictIdleInteractiveView(requestedPlatform: Platform): Promise<void> {
     if (this.views.size < MAX_RESIDENT_INTERACTIVE_VIEWS) return;
-    const candidate = pickEvictionCandidate([...this.views.values()].map(({ platform, lastUsedAt }) => ({ platform, lastUsedAt })), this.activePlatform, requestedPlatform);
+    const candidate = pickEvictionCandidate([...this.views.values()].filter(({ platform }) => platform !== 'lieju').map(({ platform, lastUsedAt }) => ({ platform, lastUsedAt })), this.activePlatform, requestedPlatform);
     if (!candidate) return;
     const managed = this.views.get(candidate);
     if (managed) {

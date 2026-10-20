@@ -12,6 +12,7 @@ const PLATFORM_DOMAINS: Record<Platform, string[]> = {
   sohu: ['sohu.com'],
   netease: ['163.com', '126.net'],
   wechat: ['weixin.qq.com'],
+  lieju: ['lieju.com'],
 };
 
 interface StoredCookie {
