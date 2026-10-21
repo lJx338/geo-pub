@@ -53,3 +53,10 @@ jobs:
       - shell: pwsh
         run: ./tests/windows-install-smoke.ps1 -ReleaseDirectory release/win-smoke
       - run: node tests/launch-at-login-smoke.mjs
+      - name: Upload Windows EXE installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lingxi-Workspace-Windows-EXE-${{ github.run_number }}
+          path: release/win-smoke/*.exe
+          if-no-files-found: error
+          retention-days: 14

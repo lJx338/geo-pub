@@ -10,6 +10,8 @@ Mac App Store 使用独立的 `Build Mac App Store` 工作流；操作和沙盒�
 
 Windows CI 在构建 CLI 后验证路径解析、普通安装包隔离，以及从外部 PowerShell 调用 production CLI 读取实际连接数据；测试使用 junction 模拟目录重定向。真实 MSIX 包发布前仍需在 Windows 上从包外验证连接指令，不能把该模拟测试当作商店安装验收。
 
+CI 的 `windows-install` 在安装与开机启动界面测试通过后，将普通 Windows EXE 安装包保存到运行页面底部的 Artifacts，名称为 `Lingxi-Workspace-Windows-EXE-<运行编号>`，保留 14 天。该附件仅包含 `release/win-smoke/*.exe`，当前沿用 CI 构建配置，未配置 Windows 代码签名；不自动发布到商店或下载站。
+
 以后每次发布都使用同一个版本标签。GitHub Actions 并行构建 Windows 和 macOS，开发者电脑负责上传腾讯云 COS。禁止从 GitHub Runner 直接上传大文件到 COS。
 
 ## 对象存储结构
