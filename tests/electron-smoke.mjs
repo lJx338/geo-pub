@@ -18,7 +18,7 @@ const app = await electron.launch({ args: ['.'], cwd: process.cwd(), env: { ...p
 try {
   const window = await app.firstWindow();
   await window.waitForLoadState('domcontentloaded');
-  const expectedAppName = process.platform === 'win32' ? 'Lingxi Workspace' : 'GEO Publisher';
+  const expectedAppName = 'Lingxi Workspace';
   if ((await window.title()) !== expectedAppName) throw new Error('unexpected window title');
   await window.evaluate(() => document.fonts.ready);
   const initial = await window.evaluate(() => ({ width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, navigation: document.querySelectorAll('.nav-item').length, connect: Boolean(document.querySelector('#connect-workbuddy')?.getBoundingClientRect().height), fontLoaded: document.fonts.check('16px "Noto Sans SC Variable"') }));
@@ -27,6 +27,15 @@ try {
   await window.locator('#workbuddy-state', { hasText: '已连接' }).waitFor();
   const prompt = await readFile(join(userDataDirectory, 'integrations', 'workbuddy', 'CONNECT-WORKBUDDY.txt'), 'utf8');
   if (!prompt.includes('当前客户项目') || !prompt.includes('geo-topic-planner') || !prompt.includes('geo-article-writer') || !prompt.includes('geo-material-organizer') || !prompt.includes(`${expectedAppName} 安装位置`) || !prompt.includes('系统与架构')) throw new Error('WorkBuddy prompt is incomplete');
+
+  const discovery = JSON.parse(await readFile(join(userDataDirectory, 'discovery.json'), 'utf8'));
+  if (!discovery.cliPath?.endsWith(process.platform === 'win32' ? 'geo-publisher.exe' : 'geo-publisher')) throw new Error('installed production CLI name is incorrect');
+  const skill = await readFile(join(userDataDirectory, 'integrations', 'workbuddy', 'geo-publisher', 'SKILL.md'), 'utf8');
+  if (!skill.includes('name: geo-publisher') || !prompt.includes(discovery.cliPath)) throw new Error('WorkBuddy integration identifiers or CLI path changed');
+  const production = JSON.parse((await execFileAsync(discovery.cliPath, ['status'], {
+    env: { ...process.env, GEO_PUBLISHER_USER_DATA_DIR: userDataDirectory, GEO_PUBLISHER_CONTROL_ENDPOINT: controlEndpoint },
+  })).stdout);
+  if (!production.ok) throw new Error('installed production CLI could not connect');
 
   const cliPath = process.platform === 'win32' ? join(process.cwd(), '.dev-cli', 'geo-publisher-dev-windows-amd64.exe') : join(process.cwd(), '.dev-cli', 'geo-publisher-dev-darwin-arm64');
   const cliEnv = { ...process.env, GEO_PUBLISHER_USER_DATA_DIR: userDataDirectory, GEO_PUBLISHER_CONTROL_ENDPOINT: controlEndpoint };
@@ -152,16 +161,16 @@ try {
   await window.getByText('搭配 WorkBuddy，从平台登录到自动发布', { exact: true }).waitFor();
   if (await window.locator('.guide-steps').count()) throw new Error('duplicated first-use steps are still visible');
   const promptCards = window.locator('.workbuddy-prompt');
-  if (await promptCards.count() !== 7) throw new Error('WorkBuddy tutorial does not contain all seven steps');
-  await promptCards.nth(1).getByRole('button', { name: '复制提示词' }).click();
+  if (await window.locator('.workbuddy-prompt-list .guide-step-number').count() !== 9) throw new Error('WorkBuddy tutorial does not contain all nine steps');
+  await promptCards.filter({ has: window.getByRole('heading', { name: '配置公司资料', exact: true }) }).getByRole('button', { name: '复制提示词' }).click();
   const copiedPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
-  if (!copiedPrompt.includes('配置 GEO Publisher 当前客户项目的公司资料') || !copiedPrompt.includes('确认写入')) throw new Error('company profile prompt was not copied');
-  await promptCards.nth(2).getByRole('button', { name: '前往上传图片' }).click();
+  if (!copiedPrompt.includes('配置 Lingxi Workspace 当前客户项目的公司资料') || !copiedPrompt.includes('确认写入')) throw new Error('company profile prompt was not copied');
+  await promptCards.filter({ has: window.getByRole('heading', { name: '上传并整理图片', exact: true }) }).getByRole('button', { name: '前往上传图片' }).click();
   await window.locator('.content-tabs button.active', { hasText: /素材 1/ }).waitFor();
   await window.getByRole('button', { name: '添加图片' }).waitFor();
   await window.getByText('使用指南', { exact: true }).click();
   await window.getByText('搭配 WorkBuddy，从平台登录到自动发布', { exact: true }).waitFor();
-  await window.locator('.workbuddy-prompt').nth(2).getByRole('button', { name: '复制整理提示词' }).click();
+  await window.locator('.workbuddy-prompt').filter({ has: window.getByRole('heading', { name: '上传并整理图片', exact: true }) }).getByRole('button', { name: '复制整理提示词' }).click();
   const materialPrompt = await app.evaluate(({ clipboard }) => clipboard.readText());
   if (!materialPrompt.includes('所有待整理的图片素材') || !materialPrompt.includes('不要重新识别已经整理过的图片')) throw new Error('material organizer prompt was not copied');
   await window.locator('#multi-customer-guide').waitFor();

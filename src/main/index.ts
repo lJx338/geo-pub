@@ -2,6 +2,7 @@ import { copyFile, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
+import { APP_NAME } from '../shared/branding.js';
 import packageJson from '../../package.json' with { type: 'json' };
 import { macMenuTemplate } from './mac-menu.js';
 import { persistSandboxFile } from './sandbox-imports.js';
@@ -26,15 +27,13 @@ import { exportDistributionDiagnosticBundle } from './diagnostic-bundle.js';
 import { getLaunchAtLoginStatus, openWindowsStartupSettings, setLaunchAtLogin } from './launch-at-login.js';
 
 guardProcessOutputStreams();
-app.setName('GEO Publisher');
+app.setName(APP_NAME);
 if (isMacAppStoreRuntime()) {
-  // Keep the previous sandbox data location when changing the displayed app name.
+  // The display name can change; the existing sandbox profile must stay in place.
   const existingUserData = join(app.getPath('appData'), 'GEO Publisher');
   app.setPath('userData', existingUserData);
   configureSandboxUserData(existingUserData);
-  app.setName('Lingxi Workspace');
 } else app.setPath('userData', dataDirectory());
-if (process.platform === 'win32') app.setName('Lingxi Workspace');
 const appName = app.getName();
 // Product/CLI version follows the source release; MAS packaging requires the same store version.
 const appVersion = packageJson.version;
@@ -81,7 +80,6 @@ async function runDesktop(): Promise<void> {
     backgroundColor: '#f5f6f8',
     webPreferences: {
       preload: join(__dirname, '..', 'preload.cjs'),
-      additionalArguments: [`--geo-app-brand=${appName === 'Lingxi Workspace' ? 'lingxi' : 'geo'}`],
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
@@ -549,7 +547,7 @@ async function runDesktop(): Promise<void> {
     window.focus();
     const choice = await dialog.showSaveDialog(window, {
       title: '导出诊断包',
-      defaultPath: join(app.getPath('downloads'), `GEO-Publisher-${record.platform}-diagnostic.zip`),
+      defaultPath: join(app.getPath('downloads'), `Lingxi-Workspace-${record.platform}-diagnostic.zip`),
       filters: [{ name: 'ZIP 诊断包', extensions: ['zip'] }],
       properties: ['createDirectory', 'showOverwriteConfirmation'],
     });
@@ -611,7 +609,7 @@ async function runDesktop(): Promise<void> {
 }
 
 runDesktop().catch((error) => {
-  diagnosticError(`GEO Publisher failed to start: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+  diagnosticError(`Lingxi Workspace failed to start: ${error instanceof Error ? error.stack || error.message : String(error)}`);
   process.exitCode = 1;
   app.quit();
 });

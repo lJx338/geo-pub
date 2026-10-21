@@ -1,9 +1,9 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "license": "AGPL-3.0-or-later",
   "private": true,
-  "description": "GEO Publisher desktop application with a built-in persistent browser",
+  "description": "Lingxi Workspace desktop application with a built-in persistent browser",
   "author": "Lingxi",
   "main": "dist/main/index.cjs",
   "type": "module",
@@ -53,7 +53,7 @@
   },
   "build": {
     "appId": "com.lingxi.geo-publisher",
-    "productName": "GEO Publisher",
+    "productName": "Lingxi Workspace",
     "asar": true,
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
@@ -137,7 +137,7 @@
       "displayLanguageSelector": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "GEO Publisher",
+      "shortcutName": "Lingxi Workspace",
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false
     }

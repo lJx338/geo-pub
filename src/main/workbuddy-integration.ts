@@ -1,11 +1,22 @@
 import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { app, clipboard, shell } from 'electron';
+import { APP_NAME } from '../shared/branding.js';
 import type { WorkBuddyIntegrationStatus } from '../shared/protocol.js';
-import { cliExecutablePath, dataDirectory, integrationsDirectory, isMacAppStoreRuntime } from './runtime-paths.js';
+import { cliExecutablePath, integrationsDirectory, isMacAppStoreRuntime, isWindowsStoreRuntime } from './runtime-paths.js';
+import { externalDataDirectory, externalFilePath, externalSkillDirectory } from './windows-store-paths.js';
 
-export function cliCallPrefix(cliPath: string, platform = process.platform, mas = isMacAppStoreRuntime(), userData = ''): string {
-  if (platform === 'win32') return `& '${cliPath.replaceAll("'", "''")}'`;
+function powerShellQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function cliCallPrefix(cliPath: string, platform = process.platform, mas = isMacAppStoreRuntime(), userData = '', windowsStore = isWindowsStoreRuntime()): string {
+  if (platform === 'win32') {
+    const call = `& ${powerShellQuote(cliPath)}`;
+    if (!windowsStore) return call;
+    if (!userData) throw new Error('Missing Microsoft Store user data directory');
+    return `$env:GEO_PUBLISHER_USER_DATA_DIR=${powerShellQuote(userData)}; ${call}`;
+  }
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   if (mas) {
     if (!userData) throw new Error('Missing Mac App Store user data directory');
@@ -46,12 +57,17 @@ export function buildWorkBuddyPrompt(options: {
   platform?: NodeJS.Platform;
   arch?: string;
   mas?: boolean;
+  windowsStore?: boolean;
   userData?: string;
 }): string {
   const platform = options.platform ?? process.platform;
-  const appName = options.mas || platform === 'win32' ? 'Lingxi Workspace' : 'GEO Publisher';
+  const appName = APP_NAME;
   const arch = options.arch ?? process.arch;
-  const quotedCli = cliCallPrefix(options.cliPath, platform, options.mas ?? false, options.userData);
+  const windowsStore = platform === 'win32' && (options.windowsStore ?? isWindowsStoreRuntime());
+  const quotedCli = cliCallPrefix(options.cliPath, platform, options.mas ?? false, options.userData, windowsStore);
+  const windowsCheck = windowsStore
+    ? `微软商店版每条命令都必须保留完整调用前缀（包括 GEO_PUBLISHER_USER_DATA_DIR），例如：${quotedCli} doctor --json。必须看到 JSON 且包含 ok 或 command 字段后才能继续。若 PowerShell 工具只回显 powershell 路径、没有 JSON 输出，不要重复执行同一条命令，也不要判定 CLI 损坏；备用检查也必须先设置同一环境变量：$env:GEO_PUBLISHER_USER_DATA_DIR=${powerShellQuote(options.userData!)}; cmd.exe /d /s /c ${powerShellQuote(`""${options.cliPath}" doctor --json"`)}。捕获并核对 JSON 返回，不要省略数据目录设置或改用普通安装版路径。`
+    : 'Windows 首次调用请只做一次连通性检查：& \'<CLI 位置>\' doctor --json；必须看到 JSON 且包含 ok 或 command 字段后才能继续。若 PowerShell 工具只回显 powershell 路径、没有 JSON 输出，不要重复执行同一条命令，也不要判定 CLI 损坏；改用 cmd.exe /d /s /c \'"<CLI 位置>" doctor --json\'，或使用 Git Bash 调用同一个完整 CLI 路径，并继续核对 JSON 返回。';
   return [
     `请从下面五个独立目录安装并启用本机 ${appName} 的五个 Skill；不要把它们合并成一个 Skill。`,
     '以下路径由当前安装自动生成，仅适用于这台电脑；不要替换成其他电脑的路径：',
@@ -67,7 +83,7 @@ export function buildWorkBuddyPrompt(options: {
     '只允许使用上述 production CLI；不要查找或调用 geo-publisher-dev、.dev-cli 或开发诊断命令。',
     '必须原样使用完整 CLI 调用前缀，再追加命令；不要省略前缀中的环境变量、/bin/sh、& 或引号，不要改为直接执行安装包里的 Go 二进制文件。',
     'Windows PowerShell 必须保留开头的 & 和引号。',
-    'Windows 首次调用请只做一次连通性检查：& \'<CLI 位置>\' doctor --json；必须看到 JSON 且包含 ok 或 command 字段后才能继续。若 PowerShell 工具只回显 powershell 路径、没有 JSON 输出，不要重复执行同一条命令，也不要判定 CLI 损坏；改用 cmd.exe /d /s /c \'"<CLI 位置>" doctor --json\'，或使用 Git Bash 调用同一个完整 CLI 路径，并继续核对 JSON 返回。',
+    windowsCheck,
     '不要把 CLI 路径拆成多个参数，不要用 Start-Process 丢失标准输出，也不要把 PowerShell 路径本身当作 CLI 返回。每条命令都必须捕获 stdout、stderr 和退出码；退出码非 0 或无效 JSON 才报告 CLI_EXECUTION_ERROR。',
     '安装时分别完整读取五个目录中的 SKILL.md，并保留每个目录内的 agents 与 references；以后按用户意图调用对应 Skill。',
     '用户要求收集或修改公司资料时调用 geo-customer-profile；要求整理或识别图片素材时调用 geo-material-organizer；要求意图词、选题或选题池时调用 geo-topic-planner；要求生成或修改文章时调用 geo-article-writer；要求登录、填充、发布或对账时调用 geo-publisher。',
@@ -94,19 +110,27 @@ export async function workBuddyIntegrationStatus(): Promise<WorkBuddyIntegration
   const sourceStates = await Promise.all(WORKBUDDY_SKILLS.map((name) => exists(join(sources[name], 'SKILL.md'))));
   const targetStates = await Promise.all(WORKBUDDY_SKILLS.map((name) => exists(join(targets[name], 'SKILL.md'))));
   const targetPrepared = Object.fromEntries(WORKBUDDY_SKILLS.map((name, index) => [name, targetStates[index]])) as Record<typeof WORKBUDDY_SKILLS[number], boolean>;
+  const externalTargets = Object.fromEntries(await Promise.all(WORKBUDDY_SKILLS.map(async (name) => [
+    name, targetPrepared[name] ? await externalSkillDirectory(targets[name]) : null,
+  ]))) as Record<typeof WORKBUDDY_SKILLS[number], string | null>;
   return {
     available: sourceStates.every(Boolean),
     prepared: targetStates.every(Boolean),
-    skillPath: targetPrepared['geo-publisher'] ? targets['geo-publisher'] : null,
-    profileSkillPath: targetPrepared['geo-customer-profile'] ? targets['geo-customer-profile'] : null,
-    topicSkillPath: targetPrepared['geo-topic-planner'] ? targets['geo-topic-planner'] : null,
-    articleSkillPath: targetPrepared['geo-article-writer'] ? targets['geo-article-writer'] : null,
-    materialSkillPath: targetPrepared['geo-material-organizer'] ? targets['geo-material-organizer'] : null,
-    promptPath: await exists(promptPath) ? promptPath : null,
+    skillPath: externalTargets['geo-publisher'],
+    profileSkillPath: externalTargets['geo-customer-profile'],
+    topicSkillPath: externalTargets['geo-topic-planner'],
+    articleSkillPath: externalTargets['geo-article-writer'],
+    materialSkillPath: externalTargets['geo-material-organizer'],
+    promptPath: await exists(promptPath) ? await externalFilePath(promptPath) : null,
   };
 }
 
 export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCliPath: string | null = null): Promise<WorkBuddyIntegrationStatus & { prompt: string }> {
+  if (isWindowsStoreRuntime() && !activeCliPath) {
+    throw new Error('微软商店版 CLI 未安装成功，请完全退出并重新启动应用后再连接 WorkBuddy。');
+  }
+  const cliPath = await externalFilePath(activeCliPath || cliExecutablePath());
+  const userData = await externalDataDirectory();
   const sources = Object.fromEntries(WORKBUDDY_SKILLS.map((name) => [name, sourceSkillPath(name)])) as Record<typeof WORKBUDDY_SKILLS[number], string>;
   const targets = Object.fromEntries(WORKBUDDY_SKILLS.map((name) => [name, preparedSkillPath(name)])) as Record<typeof WORKBUDDY_SKILLS[number], string>;
   const missing = [] as string[];
@@ -122,16 +146,20 @@ export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCl
     await cp(sources[name], targets[name], { recursive: true });
   }
 
+  const externalTargets = Object.fromEntries(await Promise.all(WORKBUDDY_SKILLS.map(async (name) => [
+    name, await externalSkillDirectory(targets[name]),
+  ]))) as Record<typeof WORKBUDDY_SKILLS[number], string>;
   const prompt = buildWorkBuddyPrompt({
     appPath: currentApplicationPath(),
-    cliPath: activeCliPath || cliExecutablePath(),
-    skillPath: targets['geo-publisher'],
-    profileSkillPath: targets['geo-customer-profile'],
-    topicSkillPath: targets['geo-topic-planner'],
-    articleSkillPath: targets['geo-article-writer'],
-    materialSkillPath: targets['geo-material-organizer'],
+    cliPath,
+    skillPath: externalTargets['geo-publisher'],
+    profileSkillPath: externalTargets['geo-customer-profile'],
+    topicSkillPath: externalTargets['geo-topic-planner'],
+    articleSkillPath: externalTargets['geo-article-writer'],
+    materialSkillPath: externalTargets['geo-material-organizer'],
     mas: isMacAppStoreRuntime(),
-    userData: dataDirectory(),
+    windowsStore: isWindowsStoreRuntime(),
+    userData,
   });
   const promptPath = join(directory, 'CONNECT-WORKBUDDY.txt');
   await writeFile(promptPath, `${prompt}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -145,9 +173,9 @@ export async function prepareWorkBuddyIntegration(openWorkBuddy = true, activeCl
 
 export async function prepareWorkBuddyMaterialOrganization(activeCliPath: string | null = null): Promise<WorkBuddyIntegrationStatus & { prompt: string }> {
   const appName = app.getName();
-  const cliPath = activeCliPath || cliExecutablePath();
-  const prepared = await prepareWorkBuddyIntegration(false, cliPath);
-  const quotedCli = cliCallPrefix(cliPath, process.platform, isMacAppStoreRuntime(), dataDirectory());
+  const prepared = await prepareWorkBuddyIntegration(false, activeCliPath);
+  const cliPath = await externalFilePath(activeCliPath || cliExecutablePath());
+  const quotedCli = cliCallPrefix(cliPath, process.platform, isMacAppStoreRuntime(), await externalDataDirectory());
   const prompt = [
     `请使用 geo-material-organizer Skill 整理 ${appName} 当前客户项目中所有待整理图片。`,
     `Skill 路径：${prepared.materialSkillPath}`,

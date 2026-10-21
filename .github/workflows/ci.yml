@@ -46,6 +46,8 @@ jobs:
       - run: npm run build
       - shell: bash
         run: npm run build:cli
+      - name: Verify Store paths and ordinary installer compatibility
+        run: npx vitest run src/main/windows-store-paths.test.ts src/main/workbuddy-store.test.ts src/main/workbuddy-integration.test.ts src/main/cli-installer.test.ts
       - run: node scripts/prepare-release-output.mjs release/win-smoke
       - run: npx electron-builder --config scripts/windows-config.mjs --win --x64 --publish never --config.directories.output=release/win-smoke
       - shell: pwsh

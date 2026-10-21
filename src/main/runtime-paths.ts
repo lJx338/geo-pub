@@ -9,6 +9,10 @@ export function isMacAppStoreRuntime(): boolean {
   return process.platform === 'darwin' && process.mas === true;
 }
 
+export function isWindowsStoreRuntime(): boolean {
+  return process.platform === 'win32' && process.windowsStore === true;
+}
+
 /** Call before constructing stores. The path must come from Electron, not a guessed container name. */
 export function configureSandboxUserData(path: string): void {
   sandboxUserData = path;
@@ -18,6 +22,7 @@ export function setActiveControlEndpoint(endpoint: string | undefined): void {
   activeControlEndpoint = endpoint;
 }
 
+// Compatibility identifiers are independent of the display name in shared/branding.ts.
 export function dataDirectory(): string {
   if (isMacAppStoreRuntime()) {
     if (!sandboxUserData) throw new Error('Mac App Store data directory has not been initialized');

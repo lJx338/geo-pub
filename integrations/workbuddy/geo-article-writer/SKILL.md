@@ -1,11 +1,11 @@
 ---
 name: geo-article-writer
-description: Write, revise, quality-check, and save structured GEO article packages for the current GEO Publisher customer project. Use when the user asks for 生成文章、写文章、今日内容、根据选题写作、六平台文章, to turn a saved topic into content, create articles for one or more supported platforms, or revise an existing article package. Selects among E-E-A-T, question, case, pitfall, recommendation, operation, seven-dimension, and B2B four-step structures. Do not use for browser filling or publishing.
+description: Write, revise, quality-check, and save structured GEO article packages for the current Lingxi Workspace customer project. Use when the user asks for 生成文章、写文章、今日内容、根据选题写作、六平台文章, to turn a saved topic into content, create articles for one or more supported platforms, or revise an existing article package. Selects among E-E-A-T, question, case, pitfall, recommendation, operation, seven-dimension, and B2B four-step structures. Do not use for browser filling or publishing.
 ---
 
 # GEO Article Writer
 
-Generate content inside the current GEO Publisher project. Never depend on the retired template workspace, `.geo-system`, CSV schedules, or company-information Markdown files.
+Generate content inside the current Lingxi Workspace project. Never depend on the retired template workspace, `.geo-system`, CSV schedules, or company-information Markdown files.
 
 ## Start
 
@@ -83,7 +83,7 @@ After every requested article package has been saved successfully, run `topic us
 
 - Do not call `fill` or `publish`; hand ready packages to the sibling `geo-publisher` Skill.
 - Do not insert Markdown markers or HTML into block text.
-- Always provide two to five concise, article-specific industry topics in `document.tags`. Prefer two to eight Chinese characters per topic and omit a leading `#`; GEO Publisher appends them to the article ending and also fills a platform-native tag field when one exists.
+- Always provide two to five concise, article-specific industry topics in `document.tags`. Prefer two to eight Chinese characters per topic and omit a leading `#`; Lingxi Workspace appends them to the article ending and also fills a platform-native tag field when one exists.
 - Do not expose quality scores, evidence notes, prompts, missing-data notes, cover instructions, or platform operations inside published body blocks.
 - Do not place website URLs, phone numbers, email addresses, WeChat IDs, QR-code instructions, or other contact and traffic-diversion details in the title, summary, body, tags, or images.
 - Never invent company facts, named customers, completed project results, credentials, rankings, policies, or external statistics. You may create clearly framed common scenarios, professional reasoning, checklists, and hypothetical examples.

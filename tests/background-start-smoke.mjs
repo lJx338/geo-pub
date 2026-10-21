@@ -28,10 +28,19 @@ try {
   if (!windows.length || windows.some((window) => window.visible || window.focused)) {
     throw new Error(`background launch showed a window: ${JSON.stringify(windows)}`);
   }
-  const expectedAppName = process.platform === 'win32' ? 'Lingxi Workspace' : 'GEO Publisher';
+  const expectedAppName = 'Lingxi Workspace';
   assert.equal(await page.title(), expectedAppName);
   assert.equal(await page.locator('.app-brand strong').innerText(), expectedAppName);
   assert.equal(await app.evaluate(({ app }) => app.getName()), expectedAppName);
+  if (process.platform === 'darwin') {
+    const menu = await app.evaluate(({ Menu }) => {
+      const application = Menu.getApplicationMenu()?.items[0];
+      return { name: application?.label, labels: application?.submenu?.items.map(item => item.label) };
+    });
+    assert.equal(menu.name, expectedAppName);
+    assert.ok(menu.labels.includes(`关于 ${expectedAppName}`));
+    assert.ok(menu.labels.includes(`退出 ${expectedAppName}`));
+  }
   await app.evaluate(({ app }) => app.emit('activate'));
   assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).isVisible()), true);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/index.html')).close());
@@ -67,7 +76,6 @@ try {
       width: 1360, height: 900, show: false,
       webPreferences: {
         preload: preloadPath,
-        additionalArguments: ['--geo-app-brand=lingxi'],
         contextIsolation: true, sandbox: true,
       },
     });

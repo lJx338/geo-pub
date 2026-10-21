@@ -51,6 +51,8 @@ def main():
             require(len(apps) == 1, 'Expected exactly one application in DMG')
             app = apps[0]
             info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+            require(app.name == 'Lingxi Workspace.app', 'Unexpected application name in DMG')
+            require(info['CFBundleName'] == 'Lingxi Workspace', 'Unexpected application display name')
             require(info['CFBundleIdentifier'] == package['build']['appId'], 'Unexpected Bundle ID')
             require(info['CFBundleShortVersionString'] == package['version'], 'Application version mismatch')
             executable = app / 'Contents/MacOS' / info['CFBundleExecutable']

@@ -2,6 +2,7 @@ import { chmod, copyFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/pro
 import { join } from 'node:path';
 import { app } from 'electron';
 import { cliExecutablePath, isMacAppStoreRuntime } from './runtime-paths.js';
+import { externalFilePath } from './windows-store-paths.js';
 
 function bundledCliName(): string | null {
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'geo-publisher-darwin-arm64';
@@ -40,17 +41,19 @@ export async function installBundledCli(version: string): Promise<string | null>
   // rebuilds the CLI; reusing the existing file would make WorkBuddy continue
   // calling the old `start` implementation.
   if (process.platform === 'win32' && app.isPackaged) {
+    let installed = false;
     try {
       await stat(destination);
-      return destination;
+      installed = true;
     } catch {
       // A new app version installs beside a running old CLI, avoiding Windows file locks.
     }
+    if (installed) return await externalFilePath(destination);
   }
   await rm(temporary, { force: true });
   await copyFile(source, temporary);
   if (process.platform !== 'win32') await chmod(temporary, 0o755);
   await rename(temporary, destination);
   await writeFile(join(directory, 'version.json'), JSON.stringify({ version, installedAt: new Date().toISOString() }, null, 2));
-  return destination;
+  return await externalFilePath(destination);
 }

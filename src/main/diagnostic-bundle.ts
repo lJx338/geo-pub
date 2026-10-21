@@ -176,7 +176,7 @@ export async function exportDistributionDiagnosticBundle(record: ContentItem, ve
   }
 
   await mkdir(diagnosticExportDirectory, { recursive: true });
-  const fileName = `GEO-Publisher-${record.platform}-${record.id.slice(0, 8)}-diagnostic.zip`;
+  const fileName = `Lingxi-Workspace-${record.platform}-${record.id.slice(0, 8)}-diagnostic.zip`;
   const path = join(diagnosticExportDirectory, `${Date.now()}-${fileName}`);
   await new Promise<void>((resolveWrite, rejectWrite) => zip.writeZip(path, (error) => error ? rejectWrite(error) : resolveWrite()));
   return { path, fileName };

@@ -6,6 +6,10 @@ Mac App Store 使用独立的 `Build Mac App Store` 工作流；操作和沙盒�
 
 微软商店版通过 `build/appx-startup.xml` 声明 Windows 启动任务，默认关闭。安装并启动应用至少一次后，在应用「设置 → 开机启动 → 打开 Windows 启动设置」中开启 `Lingxi Workspace`；也可以在 Windows「设置 → 应用 → 启动」中修改。支持启动参数的 Windows 版本会以 `--background` 启动。普通 EXE 安装版继续使用应用内开关。
 
+微软商店版的 WorkBuddy 连接会解析 CLI、Skill 文件及连接数据的真实路径，兼容 MSIX 对 AppData 的重定向。内部目录仍为 `GEO Publisher Desktop`，CLI 和发布 Skill 标识仍为 `geo-publisher`；不搬移客户数据。每条 Windows Store CLI 调用须保留连接指令中的 `GEO_PUBLISHER_USER_DATA_DIR` 设置，包括备用的 `cmd.exe` 调用。升级后重新点击“连接 WorkBuddy”刷新本机路径和已安装 Skill。普通 EXE、DMG 和 MAS 使用各自原有的连接方式。
+
+Windows CI 在构建 CLI 后验证路径解析、普通安装包隔离，以及从外部 PowerShell 调用 production CLI 读取实际连接数据；测试使用 junction 模拟目录重定向。真实 MSIX 包发布前仍需在 Windows 上从包外验证连接指令，不能把该模拟测试当作商店安装验收。
+
 以后每次发布都使用同一个版本标签。GitHub Actions 并行构建 Windows 和 macOS，开发者电脑负责上传腾讯云 COS。禁止从 GitHub Runner 直接上传大文件到 COS。
 
 ## 对象存储结构

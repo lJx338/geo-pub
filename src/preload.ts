@@ -1,10 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import { APP_NAME } from './shared/branding.js';
 import type { BetaActivationResult, DataChangeEvent, DesktopDistributionRequest, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
 import type { Project, ProjectInput } from './main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from './main/content-store.js';
 import type { ContentRepairNotice } from './main/content-repair.js';
 
-const appName = process.argv.includes('--geo-app-brand=lingxi') ? 'Lingxi Workspace' : 'GEO Publisher';
+const appName = APP_NAME;
 
 // 反检测：确保不暴露任何Electron相关的全局对象
 // 删除可能被注入的 process 和 require

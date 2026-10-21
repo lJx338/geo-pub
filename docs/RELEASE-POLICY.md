@@ -1,4 +1,4 @@
-# GEO Publisher 发版规则
+# Lingxi Workspace 发版规则
 
 ## 版本命名
 

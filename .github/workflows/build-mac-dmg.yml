@@ -74,7 +74,7 @@ jobs:
         id: artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GEO-Publisher-${{ steps.version.outputs.version }}-mac-arm64-dmg-${{ github.run_number }}-${{ github.run_attempt }}
+          name: Lingxi-Workspace-${{ steps.version.outputs.version }}-mac-arm64-dmg-${{ github.run_number }}-${{ github.run_attempt }}
           path: |
             release/mac-dmg/*.dmg
             release/mac-dmg/SHA256SUMS.txt

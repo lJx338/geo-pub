@@ -277,7 +277,7 @@ export class PlatformSessions {
   }
 
   ensureProject(projectId?: string): string {
-    if (!this.projectId) throw new Error('PROJECT_REQUIRED: 请先在 GEO Publisher 中新建并选择客户项目');
+    if (!this.projectId) throw new Error('PROJECT_REQUIRED: 请先在 Lingxi Workspace 中新建并选择客户项目');
     if (projectId && projectId !== this.projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新生成文章后再发布');
     return this.projectId;
   }
@@ -914,7 +914,7 @@ export class PlatformSessions {
   private recordAttention(attention: AttentionRequired): void {
     // Background jobs must never activate the app. WorkBuddy receives the
     // structured error immediately; the user can later open the platform
-    // page from GEO Publisher to complete any required login or verification.
+    // page from Lingxi Workspace to complete any required login or verification.
     this.attentionRequired = attention;
     this.onAttentionRequired(attention);
   }
