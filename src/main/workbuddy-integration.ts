@@ -65,8 +65,10 @@ export function buildWorkBuddyPrompt(options: {
   const arch = options.arch ?? process.arch;
   const windowsStore = platform === 'win32' && (options.windowsStore ?? isWindowsStoreRuntime());
   const quotedCli = cliCallPrefix(options.cliPath, platform, options.mas ?? false, options.userData, windowsStore);
+  // Preserve cmd's nested quotes across PowerShell 5.1 and 7 native argument
+  // handling. Disable delayed expansion so an exclamation mark in a path is literal.
   const windowsCheck = windowsStore
-    ? `微软商店版每条命令都必须保留完整调用前缀（包括 GEO_PUBLISHER_USER_DATA_DIR），例如：${quotedCli} doctor --json。必须看到 JSON 且包含 ok 或 command 字段后才能继续。若 PowerShell 工具只回显 powershell 路径、没有 JSON 输出，不要重复执行同一条命令，也不要判定 CLI 损坏；备用检查也必须先设置同一环境变量：$env:GEO_PUBLISHER_USER_DATA_DIR=${powerShellQuote(options.userData!)}; cmd.exe /d /s /c ${powerShellQuote(`""${options.cliPath}" doctor --json"`)}。捕获并核对 JSON 返回，不要省略数据目录设置或改用普通安装版路径。`
+    ? `微软商店版每条命令都必须保留完整调用前缀（包括 GEO_PUBLISHER_USER_DATA_DIR），例如：${quotedCli} doctor --json。必须看到 JSON 且包含 ok 或 command 字段后才能继续。若 PowerShell 工具只回显 powershell 路径、没有 JSON 输出，不要重复执行同一条命令，也不要判定 CLI 损坏；备用检查也必须先设置同一环境变量：$env:GEO_PUBLISHER_USER_DATA_DIR=${powerShellQuote(options.userData!)}; cmd.exe --% /d /v:off /s /c ""${options.cliPath}" doctor --json"。捕获并核对 JSON 返回，不要省略数据目录设置或改用普通安装版路径。`
     : 'Windows 首次调用请只做一次连通性检查：& \'<CLI 位置>\' doctor --json；必须看到 JSON 且包含 ok 或 command 字段后才能继续。若 PowerShell 工具只回显 powershell 路径、没有 JSON 输出，不要重复执行同一条命令，也不要判定 CLI 损坏；改用 cmd.exe /d /s /c \'"<CLI 位置>" doctor --json\'，或使用 Git Bash 调用同一个完整 CLI 路径，并继续核对 JSON 返回。';
   return [
     `请从下面五个独立目录安装并启用本机 ${appName} 的五个 Skill；不要把它们合并成一个 Skill。`,

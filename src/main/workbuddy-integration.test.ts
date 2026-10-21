@@ -67,8 +67,8 @@ describe('WorkBuddy connection prompt', () => {
     });
     const env = `$env:GEO_PUBLISHER_USER_DATA_DIR='${root.replaceAll("'", "''")}'; `;
     expect(prompt).toContain(`CLI 调用前缀：${env}& '${cli.replaceAll("'", "''")}'`);
-    expect(prompt).toContain(`${env}cmd.exe /d /s /c`);
-    expect(prompt).toContain(`cmd.exe /d /s /c '\"\"${cli.replaceAll("'", "''")}\" doctor --json\"'`);
+    expect(prompt).toContain(`${env}cmd.exe --% /d /v:off /s /c`);
+    expect(prompt).toContain(`cmd.exe --% /d /v:off /s /c ""${cli}" doctor --json"`);
     expect(prompt).not.toContain("& '<CLI 位置>' doctor");
     expect(() => cliCallPrefix(cli, 'win32', false, '', true)).toThrow('Microsoft Store user data directory');
     // A Store-like pathname alone must not alter ordinary EXE or macOS launches.
