@@ -2,6 +2,8 @@ name: Build macOS DMG
 run-name: Build macOS DMG - ${{ github.ref_name }}
 
 on:
+  push:
+    branches: ['codex/build-dmg-1.0.15-20261021']
   workflow_dispatch:
 
 permissions:
