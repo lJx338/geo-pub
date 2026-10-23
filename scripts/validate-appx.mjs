@@ -68,9 +68,10 @@ try {
   const metadata = JSON.parse(extractFile(archive, 'package.json').toString('utf8'));
   assertEqual(metadata.main, 'dist/main/index.cjs', 'package.json.main');
   for (const file of ['dist/main/index.cjs', 'dist/preload.cjs', 'dist/renderer/index.html', 'dist/renderer/renderer.js', 'dist/renderer/styles.css', 'dist/renderer/logo.png']) {
-    if (!extractFile(archive, file).length) throw new Error(`商店包缺少或包含空的启动资源：${file}`);
+    // ASAR traverses entries using the host separator, including on Windows.
+    if (!extractFile(archive, path.normalize(file)).length) throw new Error(`商店包缺少或包含空的启动资源：${file}`);
   }
-  const html = extractFile(archive, 'dist/renderer/index.html').toString('utf8');
+  const html = extractFile(archive, path.join('dist', 'renderer', 'index.html')).toString('utf8');
   if (!html.includes('id="startup-screen"') || !html.includes('window.lingxiStartup')) throw new Error('商店包缺少独立启动错误提示');
 } finally { await rm(temporary, { recursive: true, force: true }); }
 
