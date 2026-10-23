@@ -1,4 +1,4 @@
-import { access, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,7 +6,7 @@ import { inspectDirectory, inspectDirectoryChain, recordMaterialSaveFailure, rec
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, access: vi.fn(actual.access), lstat: vi.fn(actual.lstat) };
+  return { ...actual, access: vi.fn(actual.access), lstat: vi.fn(actual.lstat), stat: vi.fn(actual.stat) };
 });
 
 const roots: string[] = [];
@@ -26,8 +26,8 @@ describe('material failure diagnostics', () => {
     const file = join(root, 'conflict');
     await writeFile(file, 'private image content');
     expect(await inspectDirectory(root)).toMatchObject({ exists: true, isDirectory: true, isLink: false, writable: true, errorCode: null });
-    expect(await inspectDirectory(file)).toMatchObject({ exists: true, isDirectory: false, isLink: false });
-    expect(await inspectDirectory(join(root, 'missing'))).toMatchObject({ exists: false, writable: null, errorCode: 'ENOENT' });
+    expect(await inspectDirectory(file)).toMatchObject({ exists: true, isDirectory: false, isLink: false, writable: false });
+    expect(await inspectDirectory(join(root, 'missing'))).toMatchObject({ exists: false, writable: false, errorCode: 'ENOENT' });
   });
 
   it('records a broken link and its target instead of claiming the link is missing', async () => {
@@ -37,6 +37,26 @@ describe('material failure diagnostics', () => {
     await symlink(target, link, 'junction');
     expect(await inspectDirectory(link)).toMatchObject({ exists: true, isLink: true, targetExists: false, targetErrorCode: 'ENOENT', writable: false });
     expect((await inspectDirectory(link)).linkTarget).toContain('missing-target');
+    expect(access).not.toHaveBeenCalled();
+  });
+
+  it('checks write access for an existing directory target', async () => {
+    const root = await temporaryDirectory();
+    const target = join(root, 'target');
+    const link = join(root, 'link');
+    await mkdir(target);
+    await symlink(target, link, 'junction');
+    expect(await inspectDirectory(link)).toMatchObject({ exists: true, isLink: true, targetExists: true, isDirectory: true, writable: true });
+    expect(access).toHaveBeenCalled();
+  });
+
+  it('leaves writability unknown when target inspection or access fails unexpectedly', async () => {
+    const root = await temporaryDirectory();
+    vi.mocked(stat).mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }));
+    expect(await inspectDirectory(root)).toMatchObject({ exists: true, targetExists: null, writable: null, targetErrorCode: 'EACCES' });
+    expect(access).not.toHaveBeenCalled();
+    vi.mocked(access).mockRejectedValueOnce(Object.assign(new Error('I/O failure'), { code: 'EIO' }));
+    expect(await inspectDirectory(root)).toMatchObject({ exists: true, writable: null, writeAccessErrorCode: 'EIO' });
   });
 
   it('keeps inaccessible paths unknown and records denied write checks', async () => {

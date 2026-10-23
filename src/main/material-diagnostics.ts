@@ -46,16 +46,22 @@ export async function inspectDirectory(path: string) {
       result.targetErrorCode = codeOf(error);
       result.targetExists = ['ENOENT', 'ENOTDIR'].includes(result.targetErrorCode) ? false : null;
     }
-    try {
-      await access(path, constants.W_OK);
-      result.writable = true;
-    } catch (error) {
+    // Windows can allow W_OK on a dangling junction. Check the target first.
+    if (result.targetExists === false || result.isDirectory === false) {
       result.writable = false;
-      result.writeAccessErrorCode = codeOf(error);
+    } else if (result.targetExists === true && result.isDirectory === true) {
+      try {
+        await access(path, constants.W_OK);
+        result.writable = true;
+      } catch (error) {
+        result.writeAccessErrorCode = codeOf(error);
+        result.writable = ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EROFS'].includes(result.writeAccessErrorCode) ? false : null;
+      }
     }
   } catch (error) {
     result.errorCode = codeOf(error);
     result.exists = ['ENOENT', 'ENOTDIR'].includes(result.errorCode) ? false : null;
+    if (result.exists === false) result.writable = false;
   }
   return result;
 }
@@ -93,7 +99,7 @@ export async function writeMaterialDiagnosticReport(destination: string, root: s
     app: runtime,
     storage: { contentDirectory: root, directories: await inspectDirectoryChain(root) },
     recentLog: logFor(root).report('Lingxi Workspace 素材诊断'),
-    notes: '包含本机保存路径和近期素材保存诊断，不包含图片内容、文章正文、Cookie 或 Token。writable 是系统写权限检查结果，不保证实际写入成功；null 表示无法判断。目录检查发生在失败之后。',
+    notes: '包含本机保存路径和近期素材保存诊断，不包含图片内容、文章正文、Cookie 或 Token。writable 为 true 表示目标是已存在的目录且系统写权限检查通过，不保证实际写入成功；false 表示路径或目标不存在、不是目录或写权限检查被拒绝；null 表示无法判断。目录检查发生在失败之后。',
   };
   await writeFile(destination, JSON.stringify(report, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
 }

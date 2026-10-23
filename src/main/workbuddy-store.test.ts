@@ -115,13 +115,14 @@ describe('WorkBuddy Store connection preparation', () => {
         `${prepared.prompt.split('\n').find(line => line.startsWith('CLI 调用前缀：'))!.slice('CLI 调用前缀：'.length)} doctor --json`,
         prepared.prompt.match(/备用检查也必须先设置同一环境变量：(.+)。捕获并核对/)![1]!,
       ] : ['native'];
-      for (const call of calls) {
+      for (const [index, call] of calls.entries()) {
+        const stage = `external CLI check ${index + 1}/${calls.length}`;
         const output = originalPlatform.value === 'win32'
-          ? await runFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', call], { env: environment, timeout: 15_000 })
-          : await runFile(join(physical, 'bin', 'versions', '1.0.14', 'geo-publisher.exe'), ['doctor', '--json'], { env: { ...environment, GEO_PUBLISHER_USER_DATA_DIR: physical }, timeout: 15_000 });
-        expect(output.stderr).toBe('');
-        expect(JSON.parse(output.stdout)).toMatchObject({ ok: true, data: { discoveryReadable: true, versionMatch: true, desktopConnected: true } });
+          ? await runFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', call], { env: environment, timeout: 15_000 }).catch(error => { throw new Error(`${stage} failed`, { cause: error }); })
+          : await runFile(join(physical, 'bin', 'versions', '1.0.14', 'geo-publisher.exe'), ['doctor', '--json'], { env: { ...environment, GEO_PUBLISHER_USER_DATA_DIR: physical }, timeout: 15_000 }).catch(error => { throw new Error(`${stage} failed`, { cause: error }); });
+        expect(output.stderr, stage).toBe('');
+        expect(JSON.parse(output.stdout), stage).toMatchObject({ ok: true, data: { discoveryReadable: true, versionMatch: true, desktopConnected: true } });
       }
     } finally { await server.stop(); }
-  });
+  }, 45_000); // Two commands can each take 15 seconds, plus setup and cleanup.
 });
