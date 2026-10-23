@@ -1,4 +1,4 @@
-import { access, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -183,6 +183,57 @@ describe('content store', () => {
     });
     expect(analyzed).toMatchObject({ category: 'equipment', status: 'active', payload: { analysisStatus: 'analyzed', analysisVersion: 1, uses: ['cover', 'body'] } });
     expect(await store.pendingImageMaterials(projectId)).toHaveLength(0);
+  });
+
+  it('imports and reads images around a broken project directory link without replacing it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-material-broken-link-'));
+    const root = join(directory, 'content');
+    const store = new ContentStore(root);
+    const source = join(directory, '现场图片.jpg');
+    const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    await writeFile(source, bytes);
+    await symlink(join(directory, 'missing-target'), join(root, projectId), 'junction');
+
+    const material = await store.importMaterial(projectId, source);
+    expect(await readFile(String(material.payload.sourcePath))).toEqual(bytes);
+    expect((await store.importMaterial(projectId, source)).id).toBe(material.id);
+    const restarted = new ContentStore(root);
+    expect(await restarted.imageMaterial(projectId, material.id)).toEqual(material);
+    const document = await restarted.resolveArticleImages(projectId, { title: '图片', tags: [], blocks: [{ type: 'image', materialId: material.id, alt: '图片' }] });
+    expect(document.blocks[0]).toMatchObject({ src: 'data:image/jpeg;base64,' + bytes.toString('base64') });
+    await restarted.delete(projectId, material.id);
+    await expect(access(String(material.payload.sourcePath))).rejects.toThrow();
+    expect((await lstat(join(root, projectId))).isSymbolicLink()).toBe(true);
+  });
+
+  it('preserves a conflicting file and removes fallback images when deleting the project', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-material-conflict-'));
+    const root = join(directory, 'content');
+    const store = new ContentStore(root);
+    const source = join(directory, '产品.png');
+    await writeFile(source, 'image');
+    await writeFile(join(root, projectId), 'existing data');
+    const material = await store.importMaterial(projectId, source);
+    expect(await readFile(join(root, projectId), 'utf8')).toBe('existing data');
+    expect(await readFile(String(material.payload.sourcePath), 'utf8')).toBe('image');
+    await store.deleteProject(projectId);
+    await expect(access(String(material.payload.sourcePath))).rejects.toThrow();
+    expect(await store.list(projectId)).toEqual([]);
+  });
+
+  it('does not create a material record when both storage paths are blocked', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'geo-material-unavailable-'));
+    const root = join(directory, 'content');
+    const store = new ContentStore(root);
+    const source = join(directory, '产品.png');
+    await writeFile(source, 'image');
+    await writeFile(join(root, projectId), 'primary blocked');
+    await writeFile(join(root, 'material-storage'), 'fallback blocked');
+    await expect(store.importMaterial(projectId, source)).rejects.toThrow('MATERIAL_STORAGE_UNAVAILABLE');
+    expect(await store.list(projectId, 'material')).toEqual([]);
+    expect(await readFile(join(root, 'material-storage'), 'utf8')).toBe('fallback blocked');
+    await store.deleteProject(projectId);
+    expect(await readFile(join(root, 'material-storage'), 'utf8')).toBe('fallback blocked');
   });
 
   it('rejects invalid or cross-project image analysis', async () => {

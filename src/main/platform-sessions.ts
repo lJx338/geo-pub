@@ -615,7 +615,7 @@ export class PlatformSessions {
     // them only during explicit adapter debugging; a desktop app must not
     // depend on the terminal that happened to launch it remaining attached.
     if (process.env.GEO_PUBLISHER_DEBUG_CONSOLE === '1') {
-      view.webContents.on('console-message', (_event, level, message) => { if (level >= 2) diagnosticError(`[${platform}] renderer: ${message}`); });
+      view.webContents.on('console-message', (_event, level, message) => { if (level >= 2) diagnosticError(`[${platform}] renderer: ${message}`, false); });
     }
     view.webContents.on('render-process-gone', (_event, details) => {
       diagnosticError(`[${platform}] renderer process gone: ${details.reason}`);

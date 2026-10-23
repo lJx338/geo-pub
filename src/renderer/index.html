@@ -3,9 +3,99 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title></title>
+    <title>Lingxi Workspace</title>
+    <style>
+      #startup-screen { position:fixed; inset:0; z-index:2147483647; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box; background:#f5f6f8; color:#344054; font:15px/1.7 system-ui,"Microsoft YaHei",sans-serif; }
+      #startup-screen[hidden], #startup-actions[hidden], #startup-details[hidden] { display:none; }
+      #startup-card { width:100%; max-width:520px; padding:32px; border:1px solid #e4e7ec; border-radius:12px; background:white; box-shadow:0 8px 30px #1018280a; }
+      #startup-card h1 { font-size:22px; margin:0 0 12px; color:#101828; }
+      #startup-card p { margin:8px 0; }
+      #startup-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }
+      #startup-card button { border:1px solid #d0d5dd; border-radius:7px; padding:9px 15px; background:white; color:#344054; font:inherit; cursor:pointer; }
+      #startup-card button:first-child { border-color:#175cd3; background:#175cd3; color:white; }
+      #startup-details { width:100%; box-sizing:border-box; height:130px; margin-top:15px; font:12px/1.5 monospace; }
+      #startup-code { color:#667085; font-size:12px; }
+    </style>
     <link rel="stylesheet" href="noto-sans-sc.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body><div id="root"></div><script src="renderer.js"></script></body>
+  <body>
+    <!-- This shell must work even when renderer.js, React or the preload is missing. -->
+    <section id="startup-screen" aria-live="polite">
+      <div id="startup-card">
+        <h1 id="startup-title">正在打开 Lingxi Workspace</h1>
+        <p id="startup-message">正在准备工作台，请稍候…</p>
+        <p id="startup-code"></p>
+        <div id="startup-actions" hidden>
+          <button id="startup-copy" type="button">复制诊断信息</button>
+          <button id="startup-retry" type="button">重新加载界面</button>
+        </div>
+        <textarea id="startup-details" aria-label="启动诊断信息" readonly hidden></textarea>
+      </div>
+    </section>
+    <div id="root"></div>
+    <script>
+      (() => {
+        const screen = document.getElementById('startup-screen');
+        let ready = false;
+        let failure = '';
+        let diagnostic = '';
+        const timer = setTimeout(() => fail('STARTUP_TIMEOUT', '界面在 30 秒内未完成启动'), 30000);
+        function fail(code, error) {
+          if (failure) return;
+          failure = code;
+          clearTimeout(timer);
+          const message = error && (error.stack || error.message) || String(error);
+          diagnostic = 'Lingxi Workspace\n' + new Date().toISOString() + '\n' + code + '\n' + message;
+          screen.hidden = false;
+          document.getElementById('startup-title').textContent = '工作台未能正常显示';
+          document.getElementById('startup-message').textContent = '请点击“复制诊断信息”，将内容发给技术支持。也可以尝试重新加载界面。';
+          document.getElementById('startup-code').textContent = '错误编号：' + code;
+          document.getElementById('startup-actions').hidden = false;
+          window.lingxiStartupBridge?.failed(code, String(message));
+        }
+        window.lingxiStartup = {
+          fail,
+          ready() {
+            requestAnimationFrame(() => {
+              if (failure || ready) return;
+              if (!document.querySelector('.app-shell')?.getBoundingClientRect().height) return;
+              ready = true;
+              clearTimeout(timer);
+              screen.hidden = true;
+              window.lingxiStartupBridge?.ready();
+            });
+          }
+        };
+        window.addEventListener('error', (event) => {
+          if (event.target instanceof HTMLScriptElement) fail('SCRIPT_LOAD_FAILED', event.target.src);
+          else if (!ready) fail('RENDERER_ERROR', event.error || event.message);
+        }, true);
+        window.addEventListener('unhandledrejection', (event) => {
+          if (!ready) fail('RENDERER_REJECTION', event.reason);
+        });
+        document.getElementById('startup-retry').onclick = () => location.reload();
+        document.getElementById('startup-copy').onclick = async (event) => {
+          try {
+            if (window.lingxiStartupBridge) await window.lingxiStartupBridge.copy();
+            else {
+              const field = document.getElementById('startup-details');
+              field.value = diagnostic;
+              field.hidden = false;
+              field.select();
+              if (!document.execCommand('copy')) throw new Error('请选中下方信息并复制');
+            }
+            event.target.textContent = '已复制，请发给技术支持';
+          } catch {
+            const field = document.getElementById('startup-details');
+            field.value = diagnostic;
+            field.hidden = false;
+            field.select();
+            event.target.textContent = '请复制下方诊断信息';
+          }
+        };
+      })();
+    </script>
+    <script src="renderer.js"></script>
+  </body>
 </html>

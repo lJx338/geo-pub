@@ -27,7 +27,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "1.0.15"
+var version = "1.0.16"
 var buildMode = "production"
 
 var platforms = map[string]bool{
