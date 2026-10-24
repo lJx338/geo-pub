@@ -1,6 +1,7 @@
-import { chmod, copyFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app } from 'electron';
+import { replaceFile } from './file-replacement.js';
 import { cliExecutablePath, isMacAppStoreRuntime } from './runtime-paths.js';
 import { externalFilePath } from './windows-store-paths.js';
 
@@ -53,7 +54,7 @@ export async function installBundledCli(version: string): Promise<string | null>
   await rm(temporary, { force: true });
   await copyFile(source, temporary);
   if (process.platform !== 'win32') await chmod(temporary, 0o755);
-  await rename(temporary, destination);
+  await replaceFile(temporary, destination);
   await writeFile(join(directory, 'version.json'), JSON.stringify({ version, installedAt: new Date().toISOString() }, null, 2));
   return await externalFilePath(destination);
 }

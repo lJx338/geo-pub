@@ -1,9 +1,14 @@
-import { mkdtempSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readdirSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { repairContentReusePolicies } from './content-repair.js';
+
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, renameSync: vi.fn(actual.renameSync) };
+});
 
 function fixture(policies: SQLInputValue[]) {
   const directory = mkdtempSync(join(tmpdir(), 'geo-content-repair-'));
@@ -26,11 +31,12 @@ function fixture(policies: SQLInputValue[]) {
 }
 
 describe('content reuse policy repair', () => {
-  it('backs up committed WAL data and changes only invalid policies, with an atomic audit log', () => {
+  it.each([false, true])('backs up WAL data and repairs with an atomic audit log (EXDEV: %s)', exdev => {
     const f = fixture(['standard', 'evergreen', ' STANDARD ', ' Evergreen\t', '', null, 'unknown', 42, new Uint8Array([1, 2])]);
     const before = f.rows();
     try {
       expect(existsSync(`${f.path}-wal`)).toBe(true);
+      if (exdev) vi.mocked(renameSync).mockImplementationOnce(() => { throw Object.assign(new Error('EXDEV'), { code: 'EXDEV' }); });
       const result = f.repair();
       expect(result).toMatchObject({ status: 'repaired', repairedCount: 7 });
       const backup = new DatabaseSync(result!.backupPath!, { readOnly: true });

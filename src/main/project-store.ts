@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { replaceFile } from './file-replacement.js';
 import { dataDirectory } from './runtime-paths.js';
 import { projectProfileFields } from '../shared/project-profile.js';
 import { publishingDefaultsSchema } from '../shared/platform-settings.js';
@@ -125,6 +126,6 @@ export class ProjectStore {
     const temporary = `${path}.${process.pid}.new`;
     await mkdir(dirname(path), { recursive: true });
     await writeFile(temporary, JSON.stringify(this.state, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
   }
 }

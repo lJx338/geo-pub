@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,7 +6,7 @@ import { StartupLog } from './startup-log.js';
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, appendFileSync: vi.fn(actual.appendFileSync) };
+  return { ...actual, appendFileSync: vi.fn(actual.appendFileSync), renameSync: vi.fn(actual.renameSync) };
 });
 
 const roots: string[] = [];
@@ -29,10 +29,11 @@ describe('persistent startup diagnostics', () => {
     expect(reopened.report()).toContain('missing preload.cjs');
   });
 
-  it('rotates a full log and retains the new failure', () => {
+  it.each([false, true])('rotates a full log and retains the new failure (EXDEV: %s)', exdev => {
     const root = temporaryDirectory();
     const log = new StartupLog([root]);
     writeFileSync(log.path!, 'x'.repeat(1024 * 1024));
+    if (exdev) vi.mocked(renameSync).mockImplementationOnce(() => { throw Object.assign(new Error('EXDEV'), { code: 'EXDEV' }); });
     log.record('RENDERER_PROCESS_GONE', { reason: 'crashed' });
     expect(readFileSync(`${log.path}.1`, 'utf8').length).toBe(1024 * 1024);
     expect(log.report()).toContain('RENDERER_PROCESS_GONE');
