@@ -97,6 +97,9 @@ export function buildWorkBuddyPrompt(options: {
     '微信公众号文章还需读取 geo-article-writer/references/wechat-layout.md，按约定传入 document.wechatLayout、段落 card 和 emphasis，程序负责卡片、配色和间距的渲染；不要把专家生成的 HTML 塞进正文。更新技能时保留该参考文件。',
     '分发时选择该主题对应平台的文章包，不要把一篇正文自动复用到八个平台。填充与发布只按 geo-publisher Skill 执行；选题和文章 Skill 不得直接控制平台页面。',
     '微信公众号使用 wechat，通过 fill 调用官方接口保存并读回草稿，禁止 publish 或群发。客户在桌面端的公众号连接设置填写 AppID/AppSecret；扫码登录不能替代接口配置，不要在对话或文章 JSON 中收集 AppSecret。',
+    '百家号、头条号、知乎、企鹅号、搜狐号、网易号的填充与发布只按 geo-publisher Skill 执行；选题和文章 Skill 不得直接控制平台页面。',
+    '发布汇总以 publish 返回的 status 和对应分发记录为依据；success 表示已提交成功，不能仅因 screenshotPath=null、截图缺失或后续 inspect 打开旧草稿而改报失败或结果不确定。截图单独标注，审核通过需另有平台证据；有冲突先核对同平台、同文章、同次任务的分发记录，禁止自动重复发布。',
+
     `平台发布选项默认使用 ${appName} 当前客户项目中保存的默认值。只有用户明确要求“这一次”修改某个选项时，才在 draft.fill 或 draft.publish 请求中传 platformOptions 作为单次覆盖；未明确提出时禁止猜测或传覆盖值。`,
     `应用更新或更换安装位置后，重新点击 ${appName} 的“连接 WorkBuddy”，以刷新本机路径和 Skill。`,
   ].join('\n');

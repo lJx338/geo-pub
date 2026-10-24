@@ -52,6 +52,13 @@
 .workbuddy-connect-step .workbuddy-workspace-emphasis { color:#b42318; font-size:inherit; font-weight:700; }
 .workbuddy-automation-note.guide-usage-note { margin:0 0 12px; }
 .platform-toolbar-actions { flex:0 0 auto; }
+.platform-page-status { position:fixed; top:78px; left:248px; right:0; height:44px; display:flex; align-items:center; gap:8px; padding:0 16px; background:#f9fafb; border-bottom:1px solid #eaecf0; color:#475467; font-size:12px; z-index:5; }
+.platform-page-status > span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.platform-page-status > svg,.platform-page-status > .spinner { flex-shrink:0; }
+.platform-page-status .ui-button { flex-shrink:0; padding:4px 8px; min-height:28px; font-size:12px; }
+.platform-page-status.slow,.platform-page-status.login_required { background:#fffaeb; color:#93370d; }
+.platform-page-status.error { background:#fef3f2; color:#b42318; }
+@media(max-width:1080px) { .platform-page-status { left:218px; } }
 .platform-zoom-controls { display:flex; align-items:center; gap:2px; padding-right:8px; margin-right:4px; border-right:1px solid #eaecf0; }
 .platform-zoom-controls .ui-button { padding:7px 8px; }
 #platform-zoom-reset { min-width:52px; font-variant-numeric:tabular-nums; }

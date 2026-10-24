@@ -84,14 +84,8 @@ if (typeof window !== 'undefined') {
       enumerable: true,
     });
 
-    // 覆盖 permissions.query
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => {
-      if (parameters.name === 'notifications') {
-        return Promise.resolve({ state: 'prompt', onchange: null } as PermissionStatus);
-      }
-      return originalQuery(parameters);
-    };
+    // 使用原生 Permissions API，保留 query 的接收者与 PermissionStatus
+    // 的事件接口；登录组件可能依赖这些浏览器接口。
 
     // 添加 navigator.connection
     if (!(navigator as any).connection) {
@@ -122,17 +116,7 @@ if (typeof window !== 'undefined') {
       });
     }
 
-    // 防止通过 Error.stack 检测
-    const originalError = Error;
-    const NewError: any = function(...args: any[]) {
-      const error = new originalError(...args);
-      if (error.stack) {
-        error.stack = error.stack.replace(/electron/gi, 'chrome');
-      }
-      return error;
-    };
-    NewError.prototype = originalError.prototype;
-    (window as any).Error = NewError;
+    // 使用原生 Error，保留静态方法、构造函数身份和子类行为。
 
     // 覆盖 navigator.userAgent（双重保险）
     const originalUA = navigator.userAgent;

@@ -18,7 +18,7 @@ export function macMenuTemplate(appName: string, showWindow: () => void): MenuIt
     },
     { label: '文件', submenu: [{ role: 'close', label: '关闭窗口' }] },
     { role: 'editMenu', label: '编辑' },
-    { label: '显示', submenu: [{ role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
+    { label: '显示', submenu: [{ role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen', label: '进入/退出全屏', accelerator: 'Control+Command+F' }] },
     {
       role: 'windowMenu',
       label: '窗口',
@@ -26,8 +26,8 @@ export function macMenuTemplate(appName: string, showWindow: () => void): MenuIt
         // A custom action remains enabled even when closing has hidden the main window.
         { id: 'show-main-window', label: '显示主窗口', accelerator: 'CmdOrCtrl+Shift+1', click: showWindow },
         { type: 'separator' },
-        { role: 'minimize' },
-        { role: 'zoom' },
+        { role: 'minimize', label: '最小化窗口' },
+        { role: 'zoom', label: '缩放窗口' },
         { type: 'separator' },
         { role: 'front' },
       ],

@@ -101,14 +101,8 @@ export function getStealthScript(): string {
           configurable: true,
         });
 
-        // 5. 覆盖 permissions.query（某些网站会检测）
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => {
-          if (parameters.name === 'notifications') {
-            return Promise.resolve({ state: 'prompt', onchange: null });
-          }
-          return originalQuery(parameters);
-        };
+        // 保留原生 Permissions API：脱离接收者调用 query 会抛出
+        // Illegal invocation，伪造的 PermissionStatus 也缺少事件接口。
 
         // 6. 移除 _getElectronVersion 等可能暴露的函数
         delete window._getElectronVersion;
@@ -147,16 +141,8 @@ export function getStealthScript(): string {
           });
         }
 
-        // 10. 防止通过 Error.stack 检测
-        const originalError = Error;
-        Error = function(...args) {
-          const error = new originalError(...args);
-          if (error.stack) {
-            error.stack = error.stack.replace(/electron/gi, 'chrome');
-          }
-          return error;
-        };
-        Error.prototype = originalError.prototype;
+        // 保留原生 Error，避免丢失 captureStackTrace 等静态接口，
+        // 并避免重复注入叠加构造函数包装，干扰平台的异常处理。
 
         // 11. 覆盖 navigator.userAgent（双重保险）
         const originalUA = navigator.userAgent;

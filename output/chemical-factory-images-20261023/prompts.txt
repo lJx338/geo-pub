@@ -1,0 +1,16 @@
+Generated using the built-in image_gen tool.
+
+01-overview
+Use case: photorealistic-natural. Primary request: create one standalone photorealistic image of a chemical factory. A sweeping aerial oblique view of a modern chemical factory, rows of silver processing towers, interconnected pipe racks, white cylindrical storage tanks, orderly service roads, distant green hills. Clear morning daylight, realistic industrial scale, refined professional industrial photography, landscape wide composition. Consistent premium photographic style across the series. No collage, no branding, no watermarks, no overlaid titles, no prominent readable text.
+
+02-pipelines
+Use case: photorealistic-natural. Primary request: create one standalone photorealistic image of a chemical factory. Ground-level view down an orderly pipe corridor in a modern chemical factory, stainless steel pipelines, valves, pumps, steel platforms and railings, detailed metal textures, strong architectural leading lines, natural soft daylight, professional industrial photography, wide landscape composition. Consistent premium photographic style across the series. No collage, no branding, no watermarks, no overlaid titles, no prominent readable text.
+
+03-distillation
+Use case: photorealistic-natural. Primary request: create one standalone photorealistic image of a chemical factory. Impressive tall distillation columns and chemical process vessels in a modern chemical factory, viewed from a low angle, realistic ladders, platforms and connecting pipes, crisp silver metal against a blue sky with light clouds, professional industrial photography, wide landscape composition. Consistent premium photographic style across the series. No collage, no branding, no watermarks, no overlaid titles, no prominent readable text.
+
+04-night
+Use case: photorealistic-natural. Primary request: create one standalone photorealistic image of a chemical factory. Wide panorama of a modern chemical factory at blue hour, dense distillation towers and pipe racks illuminated by warm industrial work lights, dark blue twilight sky, realistic restrained reflections on steel, cinematic yet documentary industrial photography, wide landscape composition. Consistent premium photographic style across the series. No collage, no branding, no watermarks, no overlaid titles, no prominent readable text.
+
+05-control-room
+Use case: photorealistic-natural. Primary request: create one standalone photorealistic image of a chemical factory. Interior of a modern chemical factory central control room, orderly curved operator consoles with realistic small process-monitoring dashboards, large wall displays showing simplified industrial process diagrams, through a broad window the chemical plant equipment is visible, clean practical architecture, soft neutral lighting, professional industrial photography, wide landscape composition. Consistent premium photographic style across the series. No collage, no branding, no watermarks, no overlaid titles, no prominent readable text.

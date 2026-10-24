@@ -68,7 +68,7 @@ function resultStatus(mode: 'fill' | 'publish', result: unknown, platform: Platf
 function resultEvidence(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== 'object') return {};
   const value = result as Record<string, unknown>;
-  return Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked', 'operationKey', 'mediaId', 'saved', 'verified', 'reused']
+  return Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'pageText', 'screenshotStatus', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked', 'operationKey', 'mediaId', 'saved', 'verified', 'reused']
     .filter((key) => value[key] !== undefined)
     .map((key) => [key, value[key]]));
 }

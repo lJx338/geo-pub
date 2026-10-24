@@ -170,3 +170,13 @@ Use these platform mappings:
 - Filling writes the title and plain-text body, configured required fields and image attachments, then requests the captcha. A successful handoff returns `pending_manual`: report “已填充，待手动发布”. The USER completes the slider, checks the content and submits. Do not solve captcha, click submit, continue automatically after verification, or report publication success.
 - A pending page stays open during other platform tasks. Never refill it automatically; ask the user to finish or explicitly discard it by refreshing.
 - Use current-project material IDs for body images. The adapter converts images to JPEG under 1 MB. The optional cover is uploaded as another attachment.
+
+
+## Reporting publishing results
+
+- Preserve each `publish` response's structured `status`. The command envelope's `ok` only means the command completed; it is not the publishing outcome.
+- `status: success` means the adapter confirmed submission. Report “已提交成功”; only report “已正式发布” or “审核通过” when the matched article's platform state or public article page confirms that stronger claim.
+- `screenshotPath: null` or `screenshotStatus: unavailable` means only that the evidence screenshot was not saved. Report “已提交成功（成功截图缺失）” for a successful result. Do not change it to failed or result_uncertain solely because a screenshot is missing.
+- Successful publishing closes the background execution page. A later `inspect` may open a new editor; this is not a query for the earlier article's publishing outcome. An old same-title draft may coexist with the published article. Neither observation alone overrides the successful publish response.
+- Before a final summary, reconcile any conflicting observations against `content list <projectId> distribution`, matching platform, title, mode=publish and the task time. Preserve the saved status, message, URL and evidence separately. Generic `status` and `inspect` describe current runtime/page state, not a specific article's publishing outcome.
+- If newer evidence contradicts the saved result, report both facts and request verification of the exact article; never republish automatically. A genuine `result_uncertain` stays uncertain until matching platform evidence resolves it. User confirmation of the published article should be attributed as “用户已核实发布成功”.

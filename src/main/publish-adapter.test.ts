@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   draftContentMatches,
+  withPublishEvidence,
   isNeteasePreflightRunning,
   isNeteasePreflightComplete,
   isPublishSuccess,
@@ -94,5 +95,21 @@ describe('NetEase pre-publish check', () => {
 
   it('does not invent a second publish click when no check was observed', () => {
     expect(shouldContinueNeteaseAfterPreflight({ text: '发布设置' }, false, false, true)).toBe(false);
+  });
+});
+
+
+describe('publish screenshot evidence', () => {
+  it.each(['success', 'result_uncertain', 'action_required'] as const)('preserves %s when screenshot capture fails', (status) => {
+    const result = withPublishEvidence({
+      status, platform: 'sohu', title: '测试文章', stage: 'result_check',
+      message: '平台返回结果', url: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+      pageText: '测试文章 已发布', primaryClicked: true, confirmationClicked: false,
+    }, null);
+    expect(result.status).toBe(status);
+    expect(result.screenshotStatus).toBe('unavailable');
+    expect(result.screenshotPath).toBeNull();
+    if (status === 'success') expect(result.message).toContain('请勿重复发布');
+    else expect(result.message).toBe('平台返回结果');
   });
 });

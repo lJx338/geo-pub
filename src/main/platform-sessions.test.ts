@@ -74,7 +74,7 @@ describe('platform runtime status', () => {
 
     sessions.setUiOverlayOpen(false);
     expect(visibility.at(-1)).toBe(true);
-    expect(bounds.at(-1)).toEqual({ x: 248, y: 78, width: 1112, height: 822 });
+    expect(bounds.at(-1)).toEqual({ x: 248, y: 122, width: 1112, height: 778 });
   });
 });
 
@@ -105,12 +105,12 @@ describe('platform view layout', () => {
     sessions.resize();
     sessions.setUiOverlayOpen(false);
     expect(managed.view.setBounds).toHaveBeenCalledTimes(1);
-    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 248, y: 78, width: 1112, height: 822 });
+    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 248, y: 122, width: 1112, height: 778 });
 
     window.isMinimized.mockReturnValue(false);
     window.getContentSize.mockReturnValue([920, 640]);
     sessions.resize();
-    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 218, y: 78, width: 702, height: 562 });
+    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 218, y: 122, width: 702, height: 518 });
   });
 
   it('ignores transient zero dimensions and a destroyed window', () => {
@@ -129,7 +129,7 @@ describe('platform view layout', () => {
     const { sessions, managed } = setup();
     Object.assign(sessions, { views: new Map(), background: managed });
     sessions.resize();
-    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 248, y: 78, width: 1112, height: 822 });
+    expect(managed.view.setBounds).toHaveBeenLastCalledWith({ x: 248, y: 122, width: 1112, height: 778 });
     managed.view.setBounds.mockClear();
     managed.host = 'background';
     sessions.resize();
@@ -145,5 +145,37 @@ describe('operation deadline', () => {
       details: { screenshotPath: '/tmp/timeout.png' },
     } satisfies Partial<OperationTimeoutError>);
     expect(closed).toBe(true);
+  });
+});
+
+
+describe('platform history navigation', () => {
+  it.each(['goBack', 'goForward'] as const)('%s ignores missing history and still blocks navigation while busy', (action) => {
+    const navigationHistory = {
+      canGoBack: vi.fn(() => false),
+      canGoForward: vi.fn(() => false),
+      goBack: vi.fn(),
+      goForward: vi.fn(),
+    };
+    const sessions = Object.create(PlatformSessions.prototype) as PlatformSessions;
+    const snapshot = { activePlatform: 'baijia' };
+    Object.assign(sessions, {
+      activePlatform: 'baijia',
+      views: new Map([['baijia', { view: { webContents: { navigationHistory } } }]]),
+      pendingOperations: 0,
+      status: () => snapshot,
+    });
+
+    expect(sessions[action]()).toBe(snapshot);
+    expect(navigationHistory[action]).not.toHaveBeenCalled();
+
+    navigationHistory.canGoBack.mockReturnValue(true);
+    navigationHistory.canGoForward.mockReturnValue(true);
+    expect(sessions[action]()).toBe(snapshot);
+    expect(navigationHistory[action]).toHaveBeenCalledTimes(1);
+
+    Object.assign(sessions, { pendingOperations: 1 });
+    expect(() => sessions[action]()).toThrow('PUBLISHER_BUSY');
+    expect(navigationHistory[action]).toHaveBeenCalledTimes(1);
   });
 });
