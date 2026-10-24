@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron';
 import { StartupLog } from './startup-log.js';
+import { isWorkspaceFileUrl } from './workspace-file.js';
 
 export function softwareRenderingRequested(dataDirectory: string): boolean {
   return process.platform === 'win32' && (process.argv.includes('--disable-gpu') || existsSync(join(dataDirectory, 'software-rendering')));
@@ -43,7 +44,7 @@ export class StartupSupport {
   attach(window: BrowserWindow, htmlPath: string): void {
     this.window = window;
     const trusted = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) =>
-      event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame?.url === pathToFileURL(htmlPath).href;
+      event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && isWorkspaceFileUrl(event.senderFrame?.url, htmlPath);
     ipcMain.on('lingxi:startup-ready', (event) => {
       if (!trusted(event) || this.failure) {
         if (event.sender === window.webContents) this.log.record('startup.ready-rejected', {

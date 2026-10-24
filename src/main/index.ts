@@ -1,7 +1,7 @@
 import { copyFile, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { isWorkspaceFileUrl } from './workspace-file.js';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
 import { APP_NAME } from '../shared/branding.js';
 import packageJson from '../../package.json' with { type: 'json' };
@@ -570,7 +570,7 @@ async function runDesktop(): Promise<void> {
     return { copied: true as const, diagnostic };
   });
   ipcMain.handle('geo:diagnostic-logs-export', async (event) => {
-    if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame?.url !== pathToFileURL(htmlPath).href) {
+    if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || !isWorkspaceFileUrl(event.senderFrame?.url, htmlPath)) {
       return { exported: false, message: '不允许从此页面导出诊断日志' };
     }
     try {

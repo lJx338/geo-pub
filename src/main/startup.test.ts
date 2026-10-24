@@ -34,12 +34,12 @@ afterEach(() => {
   rmSync(directory, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(htmlPath = join(directory, 'index.html')) {
   const log = new StartupLog([directory]);
   const startup = new StartupSupport(log, directory);
-  const contents = Object.assign(new EventEmitter(), { mainFrame: { url: pathToFileURL(join(directory, 'index.html')).href }, reload: vi.fn() });
+  const contents = Object.assign(new EventEmitter(), { mainFrame: { url: pathToFileURL(htmlPath).href }, reload: vi.fn() });
   const window = { webContents: contents, isDestroyed: () => false, show: vi.fn() };
-  startup.attach(window as unknown as BrowserWindow, join(directory, 'index.html'));
+  startup.attach(window as unknown as BrowserWindow, htmlPath);
   const event = { sender: contents, senderFrame: contents.mainFrame };
   const listener = (channel: string) => mocks.ipcOn.mock.calls.find(([name]) => name === channel)![1];
   return { log, startup, window, contents, event, listener };
@@ -73,6 +73,20 @@ describe('startup recovery', () => {
     expect(contents.reload).toHaveBeenCalledOnce();
     expect(window.show).toHaveBeenCalledOnce();
     expect(mocks.relaunch).not.toHaveBeenCalled();
+  });
+
+  it('accepts encoded tilde paths for readiness and diagnostic copies without allowing other pages', async () => {
+    const { startup, event, listener, log } = fixture(join(directory, 'RUNNER~1', 'index.html'));
+    startup.start();
+    event.senderFrame.url = event.senderFrame.url.replace(/%7e/gi, '~').replace('~', '%7E');
+    listener('lingxi:startup-ready')(event);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(log.report()).toContain('"event":"renderer.ready"');
+    expect(mocks.dialog).not.toHaveBeenCalled();
+    const copy = mocks.handle.mock.calls.find(([name]) => name === 'lingxi:startup-copy')![1];
+    expect(copy(event)).toBe(true);
+    event.senderFrame.url = pathToFileURL(join(directory, 'other.html')).href;
+    expect(() => copy(event)).toThrow('不允许');
   });
 
   it('persists Windows compatibility mode and restarts in the foreground', async () => {
