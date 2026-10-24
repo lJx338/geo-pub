@@ -912,6 +912,8 @@ func instructions() json.RawMessage {
 			"Use fill for preview or any request that says not to publish",
 			"Use publish only after explicit user authorization and confirmPublish=true",
 			"Process platforms serially and preserve every structured result",
+			"Report publish status=success as confirmed submission, not necessarily review approval; screenshotPath=null or screenshotStatus=unavailable only means screenshot evidence is missing and must not downgrade success",
+			"A later inspect can open a fresh editor and same-title drafts may coexist with published articles; reconcile conflicts against content list <projectId> distribution for the matching platform, article and task time, never automatically republish",
 			"Never republish automatically when status=result_uncertain; reconcile first",
 			"Before generating an article, list topics with auto-selectable=true and reserve exactly one topic with a unique task id",
 			"After saving an article call topic use; if generation fails call topic release; used topics remain searchable but are not automatically selected unless evergreen",

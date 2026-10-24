@@ -492,6 +492,13 @@ async function runDesktop(): Promise<void> {
     if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
     return status;
   });
+  ipcMain.handle('geo:platform-reopen', async () => {
+    ensureAppIdle('任务执行中，不能重新打开平台');
+    await sessions.reopenActivePlatform();
+    const status = desktopStatus();
+    if (!window.isDestroyed()) window.webContents.send('geo:status-changed', status);
+    return status;
+  });
   ipcMain.handle('geo:platform-zoom', (_event, action: 'out' | 'in' | 'reset') => {
     sessions.zoomActivePlatform(action);
     const status = desktopStatus();

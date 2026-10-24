@@ -9,7 +9,7 @@ import { fillBaijiaDraft } from './baijia-adapter.js';
 import { diagnosticError } from './diagnostics.js';
 import { fillNeteaseDraft } from './netease-adapter.js';
 import { fillPenguinDraft } from './penguin-adapter.js';
-import { publishFilledDraft, type PublishResult } from './publish-adapter.js';
+import { publishFilledDraft, withPublishEvidence, type PublishResult } from './publish-adapter.js';
 import { fillSohuDraft } from './sohu-adapter.js';
 import { evidenceDirectory } from './runtime-paths.js';
 import { setupStealthInjection, setupStealthSession, setupStealthUserAgent } from './stealth.js';
@@ -19,6 +19,7 @@ import { normalizeArticleTags, renderArticleDocument, type ArticleDocument } fro
 import { restorePlatformCookies, restorePlatformRendererStorage, snapshotPlatformCookies, snapshotPlatformRendererStorage, type RendererStorageSnapshot } from './cookie-vault.js';
 import type { PlatformOptions } from '../shared/platform-settings.js';
 import { PLATFORM_HORIZONTAL_SCROLLBAR_THEME, PLATFORM_SCROLLBAR_CSS, installPlatformHorizontalScrollbar } from './platform-scrollbars.js';
+import { PLATFORM_NOTICE_HEIGHT, readPlatformPageHealth, type PlatformPageHealth } from './platform-page-health.js';
 
 const defaultPlatformUrls: Record<Platform, string> = {
   baijia: 'https://baijiahao.baidu.com/builder/rc/edit',
@@ -45,6 +46,14 @@ interface ManagedView {
   lastUsedAt: number;
   cookieSnapshotTimer: NodeJS.Timeout | null;
   cookieChangeListener: (() => void) | null;
+  pageHealth: PlatformPageHealth;
+  navigationStartedAt: number;
+  navigationGeneration: number;
+  domReady: boolean;
+  healthProbePending: boolean;
+  healthTimer: NodeJS.Timeout | null;
+  recoveryTimer: NodeJS.Timeout | null;
+  recoveryAttempts: number;
 }
 
 const MAX_RESIDENT_INTERACTIVE_VIEWS = 1;
@@ -216,6 +225,7 @@ export class PlatformSessions {
   private pendingOperations = 0;
   private uiOverlayOpen = false;
   private projectId: string | null = null;
+  private readonly interactiveOpens = new Map<Platform, Promise<PlatformStatus>>();
   // NetEase keeps part of its login handshake in renderer storage. Keep a
   // memory-only handoff when the Draft.js safety reset replaces its view;
   // values are never logged or written to the diagnostic record.
@@ -283,7 +293,16 @@ export class PlatformSessions {
   }
 
   async open(platform: Platform): Promise<PlatformStatus> {
-    this.ensureProject();
+    const pending = this.interactiveOpens.get(platform);
+    if (pending) return pending;
+    const opening = this.openInteractive(platform);
+    this.interactiveOpens.set(platform, opening);
+    try { return await opening; }
+    finally { if (this.interactiveOpens.get(platform) === opening) this.interactiveOpens.delete(platform); }
+  }
+
+  private async openInteractive(platform: Platform): Promise<PlatformStatus> {
+    const projectId = this.ensureProject();
     if (this.isBusy()) {
       if (this.executingPlatform === platform && this.background) {
         this.showRunningPlatform(this.background);
@@ -298,29 +317,20 @@ export class PlatformSessions {
     let managed = this.views.get(platform);
     if (!managed) {
       await this.evictIdleInteractiveView(platform);
+      this.ensureProject(projectId);
       managed = await this.createView(platform, 'interactive');
+      if (this.projectId !== projectId) {
+        managed.cancelled = true;
+        this.removeCookieSubscription(managed);
+        managed.view.webContents.close({ waitForBeforeUnload: false });
+        throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新打开平台');
+      }
       this.views.set(platform, managed);
-      // Keep a new WebContentsView detached until its first navigation has
-      // completed.  Attaching it before loadURL() resolves paints a blank
-      // Chromium surface over the whole workspace content area while the
-      // renderer still reports activePlatform=null.  During a slow platform
-      // response this makes the sidebar appear unresponsive because route
-      // changes happen underneath the detached page.  Loading first also
-      // leaves the current workspace visible until the new page is ready.
-      try {
-        await this.loadUrl(managed, PLATFORM_URLS[platform]);
-      } catch (error) {
-        if (managed.cancelled) return this.platformStatus(platform);
-        this.closeInteractiveView(managed);
-        throw error;
-      }
-      // The workspace can be navigated while a slow platform request is in
-      // flight.  hideActivePlatform() then cancels and removes this detached
-      // view; never reattach a view that is no longer retained by the map.
-      if (managed.cancelled || this.views.get(platform) !== managed || managed.view.webContents.isDestroyed()) {
-        return this.platformStatus(platform);
-      }
+      // Give the document a real viewport before its first script runs. Return
+      // immediately so the workspace can show its toolbar and loading notice;
+      // slow fonts, analytics and iframes must not hold the open-platform IPC.
       this.attachInteractive(managed);
+      this.startInteractiveNavigation(managed, PLATFORM_URLS[platform]);
     } else if (this.activePlatform !== platform) {
       this.attachInteractive(managed);
     }
@@ -348,9 +358,8 @@ export class PlatformSessions {
       this.window.contentView.removeChildView(managed.view);
     }
     this.activePlatform = null;
-    // A newly opened page is loaded detached so a slow response cannot cover
-    // the workspace.  If the user navigates away before it finishes, cancel
-    // that request instead of attaching the page after the new module opens.
+    // Discard any other unfinished view; it must never appear over a different
+    // workspace module after the user has left the platform.
     for (const pending of [...this.views.values()]) {
       if (pending !== managed && pending.host === 'interactive' && pending.loading) {
         pending.cancelled = true;
@@ -364,8 +373,8 @@ export class PlatformSessions {
     const managed = this.activeManagedView();
     if (!managed) return this.status();
     if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 平台任务正在执行，暂时不能后退');
-    if (!managed.view.webContents.canGoBack()) throw new Error('NAVIGATION_UNAVAILABLE: 当前页面没有可返回的历史记录');
-    managed.view.webContents.goBack();
+    if (!managed.view.webContents.navigationHistory.canGoBack()) return this.status();
+    managed.view.webContents.navigationHistory.goBack();
     return this.status();
   }
 
@@ -373,8 +382,8 @@ export class PlatformSessions {
     const managed = this.activeManagedView();
     if (!managed) return this.status();
     if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 平台任务正在执行，暂时不能前进');
-    if (!managed.view.webContents.canGoForward()) throw new Error('NAVIGATION_UNAVAILABLE: 当前页面没有可前进的历史记录');
-    managed.view.webContents.goForward();
+    if (!managed.view.webContents.navigationHistory.canGoForward()) return this.status();
+    managed.view.webContents.navigationHistory.goForward();
     return this.status();
   }
 
@@ -383,6 +392,20 @@ export class PlatformSessions {
     if (!managed) return this.status();
     if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 平台任务正在执行，暂时不能刷新');
     managed.view.webContents.reload();
+    return this.status();
+  }
+
+  async reopenActivePlatform(): Promise<DesktopStatus> {
+    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 任务执行中，不能重新打开平台');
+    const managed = this.activeManagedView();
+    if (!managed) return this.status();
+    const platform = managed.platform;
+    if (platform === 'netease') await withEvidenceTimeout(this.captureRendererStorage(managed.view.webContents), 1_000).catch(() => undefined);
+    await managed.partition.flushStorageData();
+    if (this.isBusy()) throw new Error('PUBLISHER_BUSY: 任务执行中，不能重新打开平台');
+    if (this.activeManagedView() !== managed) return this.status();
+    this.closeInteractiveView(managed);
+    await this.open(platform);
     return this.status();
   }
 
@@ -473,7 +496,7 @@ export class PlatformSessions {
         const screenshotPath = await this.captureEvidence(managed, `publish-${result.status}`);
         if (result.status === 'action_required') await this.promoteForVisibleAttention(managed, result);
         if (result.status === 'success' && this.background) await this.closeBackground();
-        return { fill, ...result, screenshotPath };
+        return { fill, ...withPublishEvidence(result, screenshotPath) };
       } catch (error) {
         const details = await this.captureFailureDetails(managed, 'publish-failure');
         const enrichedError = this.attachErrorDetails(error, details);
@@ -524,13 +547,16 @@ export class PlatformSessions {
   }
 
   status(): DesktopStatus {
+    const activeContents = this.activeManagedView()?.view.webContents;
     return {
       version: this.version,
       pid: process.pid,
       ready: true,
       busy: this.isBusy(),
       activePlatform: this.activePlatform,
-      activePlatformZoomFactor: this.activeManagedView()?.view.webContents.getZoomFactor() ?? 1,
+      activePlatformZoomFactor: activeContents?.getZoomFactor() ?? 1,
+      activePlatformCanGoBack: activeContents?.navigationHistory.canGoBack() ?? false,
+      activePlatformCanGoForward: activeContents?.navigationHistory.canGoForward() ?? false,
       executingPlatform: this.executingPlatform,
       windowState: this.window.isMinimized() ? 'minimized' : this.window.isVisible() ? 'visible' : 'hidden',
       currentProject: null,
@@ -555,6 +581,10 @@ export class PlatformSessions {
   }
 
   dispose(): void {
+    for (const managed of [...this.views.values(), ...(this.background ? [this.background] : [])]) {
+      managed.cancelled = true;
+      this.removeCookieSubscription(managed);
+    }
     this.executionHost.destroy();
   }
 
@@ -588,6 +618,14 @@ export class PlatformSessions {
       lastUsedAt: Date.now(),
       cookieSnapshotTimer: null,
       cookieChangeListener: null,
+      pageHealth: { state: 'loading', message: '正在连接平台…' },
+      navigationStartedAt: Date.now(),
+      navigationGeneration: 0,
+      domReady: false,
+      healthProbePending: false,
+      healthTimer: null,
+      recoveryTimer: null,
+      recoveryAttempts: 0,
     };
     this.configurePlatformPopups(managed, view.webContents, useMinimalBrowserEnvironment);
     view.webContents.on('before-input-event', (event, input) => {
@@ -599,18 +637,47 @@ export class PlatformSessions {
         const action = input.key === '0' ? 'reset' : ['-', '_'].includes(input.key) ? 'out' : 'in';
         const status = this.zoomActivePlatform(action);
         if (!this.window.isDestroyed()) this.window.webContents.send('geo:status-changed', status);
-      } else if (modifiers.includes('alt') && input.key === 'Left' && view.webContents.canGoBack()) {
+      } else if (modifiers.includes('alt') && input.key === 'Left' && view.webContents.navigationHistory.canGoBack()) {
         event.preventDefault();
-        view.webContents.goBack();
-      } else if (modifiers.includes('alt') && input.key === 'Right' && view.webContents.canGoForward()) {
+        view.webContents.navigationHistory.goBack();
+      } else if (modifiers.includes('alt') && input.key === 'Right' && view.webContents.navigationHistory.canGoForward()) {
         event.preventDefault();
-        view.webContents.goForward();
+        view.webContents.navigationHistory.goForward();
       } else if (modifiers.includes('control') && input.key.toLowerCase() === 'r') {
         event.preventDefault();
         view.webContents.reload();
       }
     });
+    const notifyNavigationChanged = () => {
+      if (!managed.cancelled && this.activeManagedView() === managed && !this.window.isDestroyed()) {
+        this.onBusyChanged(this.isBusy());
+      }
+    };
+    view.webContents.on('did-navigate', notifyNavigationChanged);
+    view.webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+      if (isMainFrame) notifyNavigationChanged();
+    });
     view.webContents.on('did-start-loading', () => { managed.loading = true; });
+    view.webContents.on('did-start-navigation', (details) => {
+      if (!details.isMainFrame || details.isSameDocument) return;
+      managed.navigationGeneration += 1;
+      managed.navigationStartedAt = Date.now();
+      managed.domReady = false;
+      if (managed.recoveryTimer) clearTimeout(managed.recoveryTimer);
+      managed.recoveryTimer = null;
+      this.setPageHealth(managed, { state: 'loading', message: '正在连接平台…' });
+    });
+    view.webContents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
+      if (!isMainFrame || code === -3 || managed.cancelled) return;
+      this.setPageHealth(managed, { state: 'error', message: `平台页面加载失败（${code}），请检查网络后刷新或重新打开。` });
+    });
+    view.webContents.on('unresponsive', () => {
+      this.setPageHealth(managed, { state: 'error', message: '平台页面暂时没有响应，可重新打开；未保存内容可能丢失。' });
+    });
+    view.webContents.on('responsive', () => {
+      this.setPageHealth(managed, { state: 'loading', message: '平台已恢复响应，正在检查页面…' });
+      this.checkPageHealth(managed);
+    });
     // Publisher pages routinely emit third-party console warnings. Forward
     // them only during explicit adapter debugging; a desktop app must not
     // depend on the terminal that happened to launch it remaining attached.
@@ -620,10 +687,29 @@ export class PlatformSessions {
     view.webContents.on('render-process-gone', (_event, details) => {
       diagnosticError(`[${platform}] renderer process gone: ${details.reason}`);
       const retained = this.background === managed || this.views.get(platform) === managed;
-      if (retained && !view.webContents.isDestroyed()) setTimeout(() => void this.loadUrl(managed, view.webContents.getURL() || PLATFORM_URLS[platform]), 800);
+      managed.loading = false;
+      managed.domReady = false;
+      managed.navigationGeneration += 1;
+      if (!retained || managed.cancelled) return;
+      this.setPageHealth(managed, { state: 'error', message: '平台网页进程已退出，可重新打开；若任务已经提交，请先人工核对结果。' });
+      // Never reload during a publishing operation: it may already have sent
+      // its final request. Only recover an idle visible page once.
+      if (!this.isBusy() && managed.host === 'interactive' && this.activePlatform === platform && managed.recoveryAttempts < 1) {
+        managed.recoveryAttempts += 1;
+        managed.recoveryTimer = setTimeout(() => {
+          managed.recoveryTimer = null;
+          if (managed.cancelled || this.isBusy() || this.views.get(platform) !== managed || view.webContents.isDestroyed()) return;
+          this.startInteractiveNavigation(managed, view.webContents.getURL() || PLATFORM_URLS[platform]);
+        }, 800);
+      }
     });
     view.webContents.on('dom-ready', () => {
+      managed.domReady = true;
+      if (managed.pageHealth.state !== 'error') {
+        this.setPageHealth(managed, { state: 'loading', message: '正在加载平台内容，请稍候…' });
+      }
       this.restoreManagedView(managed);
+      this.checkPageHealth(managed);
       // User-origin CSS also wins over a platform's overflow-x:hidden!important.
       // A fresh navigation drops inserted CSS, so install it for each document.
       void view.webContents.insertCSS(PLATFORM_SCROLLBAR_CSS, { cssOrigin: 'user' })
@@ -635,6 +721,7 @@ export class PlatformSessions {
     view.webContents.on('did-stop-loading', () => {
       managed.loading = false;
       this.restoreManagedView(managed);
+      this.checkPageHealth(managed);
       void partition.flushStorageData();
       void snapshotPlatformCookies(partition, projectId, platform).catch(() => undefined);
     });
@@ -655,6 +742,8 @@ export class PlatformSessions {
     managed.cookieChangeListener = cookieChangeListener;
     partition.cookies.on('changed', cookieChangeListener);
     if (!useMinimalBrowserEnvironment) setupStealthInjection(view.webContents);
+    managed.healthTimer = setInterval(() => this.checkPageHealth(managed), 2_000);
+    managed.healthTimer.unref();
     return managed;
   }
 
@@ -775,6 +864,7 @@ export class PlatformSessions {
   private async closeBackground(): Promise<void> {
     const managed = this.background;
     if (!managed) return;
+    managed.cancelled = true;
     if (managed.platform === 'netease') await this.captureRendererStorage(managed.view.webContents);
     this.removeCookieSubscription(managed);
     this.executionHost.detach(managed.view);
@@ -878,6 +968,10 @@ export class PlatformSessions {
   }
 
   private removeCookieSubscription(managed: ManagedView): void {
+    if (managed.healthTimer) clearInterval(managed.healthTimer);
+    if (managed.recoveryTimer) clearTimeout(managed.recoveryTimer);
+    managed.healthTimer = null;
+    managed.recoveryTimer = null;
     if (managed.cookieSnapshotTimer) clearTimeout(managed.cookieSnapshotTimer);
     managed.cookieSnapshotTimer = null;
     if (managed.cookieChangeListener) {
@@ -1020,12 +1114,63 @@ export class PlatformSessions {
       platform, created, attached, runtimeState: platformRuntimeState(created, attached, background), loginState: 'not_checked',
       statusNote: 'active 表示显示在主窗口；background 表示后台任务页，二者都不能用于判断登录状态。',
       loading: managed?.loading ?? false, url: managed?.view.webContents.getURL() ?? '', title: managed?.view.webContents.getTitle() ?? '',
+      pageState: managed?.pageHealth.state,
+      pageMessage: managed?.pageHealth.message,
     };
   }
 
   private activeManagedView(): ManagedView | null {
     if (!this.activePlatform) return null;
     return this.views.get(this.activePlatform) || null;
+  }
+
+  private setPageHealth(managed: ManagedView, health: PlatformPageHealth): void {
+    if (managed.cancelled || (managed.pageHealth.state === health.state && managed.pageHealth.message === health.message)) return;
+    managed.pageHealth = health;
+    if (health.state === 'error') diagnosticError(`[${managed.platform}] ${health.message}`);
+    if (managed.host === 'interactive' && this.activePlatform === managed.platform && !this.window.isDestroyed()) {
+      this.onBusyChanged(this.isBusy());
+    }
+  }
+
+  private checkPageHealth(managed: ManagedView): void {
+    if (managed.cancelled || managed.host !== 'interactive' || this.activePlatform !== managed.platform
+      || this.isBusy() || managed.view.webContents.isDestroyed() || managed.pageHealth.state === 'error') return;
+    const elapsed = Date.now() - managed.navigationStartedAt;
+    if ((managed.pageHealth.state === 'loading' || (managed.pageHealth.state === 'slow'
+      && /平台响应较慢|平台仍未就绪/.test(managed.pageHealth.message))) && elapsed >= 10_000) {
+      this.setPageHealth(managed, {
+        state: 'slow',
+        message: elapsed >= 30_000
+          ? '平台仍未就绪，可继续等待或刷新；一直空白时可重新打开。'
+          : '平台响应较慢，页面仍在加载，请稍候…',
+      });
+    }
+    if (!managed.domReady || managed.healthProbePending) return;
+    const generation = managed.navigationGeneration;
+    managed.healthProbePending = true;
+    // Query the current frame directly: WebContents.executeJavaScript can
+    // wait for the entire document to load, including unrelated slow frames.
+    // Never queue multiple probes behind a stalled renderer.
+    void Promise.resolve()
+      .then(() => managed.view.webContents.mainFrame.executeJavaScript(`(${readPlatformPageHealth.toString()})()`))
+      .then((value) => {
+        const health = value as PlatformPageHealth;
+        if (generation !== managed.navigationGeneration || managed.cancelled || this.isBusy()
+          || managed.pageHealth.state === 'error') return;
+        if (health.state === 'loading' && Date.now() - managed.navigationStartedAt >= 10_000) return;
+        this.setPageHealth(managed, health);
+      })
+      .catch(() => undefined)
+      .finally(() => { managed.healthProbePending = false; });
+  }
+
+  private startInteractiveNavigation(managed: ManagedView, url: string): void {
+    void this.loadUrl(managed, url).catch(() => {
+      if (!managed.cancelled && !managed.view.webContents.isDestroyed()) {
+        this.setPageHealth(managed, { state: 'error', message: '平台连接失败，请检查网络后刷新或重新打开。' });
+      }
+    });
   }
 
   private async loadUrl(managed: ManagedView, url: string): Promise<void> {
@@ -1043,6 +1188,7 @@ export class PlatformSessions {
   }
 
   private restoreManagedView(managed: ManagedView): void {
+    if (managed.cancelled || managed.view.webContents?.isDestroyed()) return;
     if (managed.host === 'background' && this.background === managed) this.executionHost.restore(managed.view);
     if (managed.host === 'interactive' && this.activePlatform === managed.platform) {
       managed.view.setVisible(!this.uiOverlayOpen);
@@ -1053,7 +1199,7 @@ export class PlatformSessions {
   private interactiveViewBounds(): { x: number; y: number; width: number; height: number } {
     const [width = 920, height = 640] = this.window.getContentSize();
     const sidebarWidth = width <= 1080 ? 218 : 248;
-    const toolbarHeight = 78;
+    const toolbarHeight = 78 + PLATFORM_NOTICE_HEIGHT;
     return {
       x: sidebarWidth,
       y: toolbarHeight,

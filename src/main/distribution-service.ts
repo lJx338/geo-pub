@@ -59,7 +59,7 @@ function resultStatus(mode: 'fill' | 'publish', result: unknown): DistributionSt
 function resultEvidence(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== 'object') return {};
   const value = result as Record<string, unknown>;
-  return Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked']
+  return Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'pageText', 'screenshotStatus', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked']
     .filter((key) => value[key] !== undefined)
     .map((key) => [key, value[key]]));
 }

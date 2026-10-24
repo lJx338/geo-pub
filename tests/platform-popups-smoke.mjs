@@ -88,10 +88,20 @@ try {
     },
   });
   const main = await app.firstWindow();
+  const waitForPlatformPage = async () => {
+    const url = `${platformOrigin}/register`;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const page = app.context().pages().find(page => page.url() === url && !page.isClosed());
+      if (page) { await page.waitForLoadState('domcontentloaded'); return page; }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('platform view did not navigate');
+  };
   await main.waitForLoadState('domcontentloaded');
   await main.evaluate(() => window.geoPublisher.createProject({ name: '弹窗测试客户一' }));
   await main.evaluate(() => window.geoPublisher.openPlatform('penguin'));
-  const platformPage = app.context().pages().find((page) => page.url() === `${platformOrigin}/register`);
+  const platformPage = await waitForPlatformPage();
   assert.ok(platformPage, 'platform view is missing');
 
   // Model publisher dashboards that hide the viewport scrollbar even though
@@ -289,7 +299,7 @@ try {
   await Promise.all([newtabClosed, nestedClosed]);
   assert.equal(nested.isClosed(), true, 'project switch must close nested authorization windows');
   await main.evaluate(() => window.geoPublisher.openPlatform('penguin'));
-  const secondPlatformPage = app.context().pages().find(page => page.url() === `${platformOrigin}/register`);
+  const secondPlatformPage = await waitForPlatformPage();
   assert.ok(secondPlatformPage);
   assert.doesNotMatch(await secondPlatformPage.evaluate(() => document.cookie), /platform_auth/, 'login must remain isolated between customer projects');
   process.stdout.write('Platform popup smoke passed: native and fixed horizontal scrollbar drag at 100%, Sohu body overflow, nested pane replacement, clipped dashboard zoom, narrow toolbar, zoom keyboard shortcut, blank window, authorization callback, shared session, POST, loading page, nested windows, project isolation.\n');

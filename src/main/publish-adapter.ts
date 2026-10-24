@@ -15,6 +15,18 @@ export interface PublishResult {
   confirmationClicked: boolean;
 }
 
+/** Screenshot capture is independent of the platform's publishing result. */
+export function withPublishEvidence(result: PublishResult, screenshotPath: string | null) {
+  return {
+    ...result,
+    screenshotPath,
+    screenshotStatus: screenshotPath ? 'captured' as const : 'unavailable' as const,
+    message: !screenshotPath && result.status === 'success'
+      ? `${result.message}；成功截图未保存，但不影响已确认的提交结果，请勿重复发布`
+      : result.message,
+  };
+}
+
 interface PageState { url: string; text: string; pageTitle: string }
 
 interface DraftContentState { title: string; body: string }

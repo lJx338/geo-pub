@@ -116,6 +116,8 @@ export interface PlatformStatus {
   loginState: 'not_checked';
   statusNote: string;
   loading: boolean;
+  pageState?: 'loading' | 'ready' | 'slow' | 'login_required' | 'error';
+  pageMessage?: string;
   url: string;
   title: string;
 }
@@ -128,6 +130,8 @@ export interface DesktopStatus {
   busy: boolean;
   activePlatform: Platform | null;
   activePlatformZoomFactor?: number;
+  activePlatformCanGoBack: boolean;
+  activePlatformCanGoForward: boolean;
   executingPlatform: Platform | null;
   windowState: 'visible' | 'minimized' | 'hidden';
   currentProject: ProjectSummary | null;

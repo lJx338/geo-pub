@@ -182,6 +182,24 @@ describe('desktop distribution service', () => {
     expect(current).toMatchObject({ status: 'published', payload: { distribution: { successfulPlatforms: ['zhihu'] } } });
   });
 
+  it('keeps CLI and desktop success consistent when the success screenshot is missing', async () => {
+    const { executor, content } = await setup();
+    const published = {
+      status: 'success', stage: 'success', message: '已提交成功；成功截图缺失',
+      url: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+      pageText: '测试文章 已发布', screenshotPath: null, screenshotStatus: 'unavailable',
+    };
+    executor.publishDraft = async () => published;
+    const result = await new DistributionService(content, executor)
+      .runDirect({ projectId, platform: 'sohu', document, coverPath: '', mode: 'publish' });
+    expect(result).toEqual(published);
+    const [record] = await content.list(projectId, 'distribution');
+    expect(record).toMatchObject({ status: 'success', payload: { evidence: {
+      message: published.message, url: published.url, pageText: published.pageText,
+      screenshotPath: null, screenshotStatus: 'unavailable',
+    } } });
+  });
+
   it('records direct CLI failures before preserving the original error', async () => {
     const { executor, content } = await setup();
     executor.fillDraft = async () => { throw new Error('LOGIN_REQUIRED: 请先登录'); };
