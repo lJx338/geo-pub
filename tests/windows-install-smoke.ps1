@@ -68,10 +68,10 @@ try {
   }
   $instructions = & $discovery.cliPath instructions --json | ConvertFrom-Json
   $schema = & $discovery.cliPath schema --json | ConvertFrom-Json
-  if (-not $instructions.ok -or $instructions.data.platformOrder.Count -ne 6) {
+  if (-not $instructions.ok -or $instructions.data.platformOrder.Count -ne 8) {
     throw "CLI instructions are incomplete"
   }
-  if (-not $schema.ok -or $schema.data.article.platform.Count -ne 6) {
+  if (-not $schema.ok -or $schema.data.article.platform.Count -ne 8) {
     throw "CLI schema is incomplete"
   }
 
