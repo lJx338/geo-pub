@@ -50,7 +50,7 @@ try {
         if (scenario === 'normal' || scenario === 'renderer-crash') {
           await page.locator('#startup-screen').waitFor({ state: 'hidden' });
           await page.locator('.app-shell').waitFor();
-          await assertEventually(async () => assert.match(await readFile(logPath, 'utf8'), /renderer.ready/));
+          await assertEventually(async () => assert.match(await readFile(logPath, 'utf8'), /"event":"renderer\.ready"/));
           if (scenario === 'renderer-crash') {
             await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).webContents.forcefullyCrashRenderer());
             await assertEventually(async () => assert.match(await readFile(logPath, 'utf8'), /RENDERER_PROCESS_GONE/));
@@ -76,6 +76,11 @@ try {
         }
       }
       console.log(`Startup smoke passed: ${scenario}`);
+    } catch (error) {
+      console.error(`Startup smoke failed: ${scenario}`);
+      console.error(await readFile(join(profile, 'diagnostics/startup.log'), 'utf8').catch(() => 'No startup log'));
+      console.error('Startup windows:', await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({ url: window.webContents.getURL() }))).catch(() => []));
+      throw error;
     } finally { await application.close(); }
   }
 } finally { await rm(root, { recursive: true, force: true }); }

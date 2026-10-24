@@ -45,7 +45,13 @@ export class StartupSupport {
     const trusted = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) =>
       event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame?.url === pathToFileURL(htmlPath).href;
     ipcMain.on('lingxi:startup-ready', (event) => {
-      if (!trusted(event) || this.failure) return;
+      if (!trusted(event) || this.failure) {
+        if (event.sender === window.webContents) this.log.record('startup.ready-rejected', {
+          expectedUrl: pathToFileURL(htmlPath).href, receivedUrl: event.senderFrame?.url,
+          mainFrame: event.senderFrame === window.webContents.mainFrame, failure: this.failure ?? null,
+        });
+        return;
+      }
       this.ready = true;
       clearTimeout(this.timer);
       this.log.record('renderer.ready', { url: event.senderFrame?.url });
