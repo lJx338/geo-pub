@@ -1,6 +1,10 @@
-# GEO Publisher Desktop
+# Lingxi Workspace
 
-GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器保存八个平台的登录状态，通过本地 Go CLI 接收 WorkBuddy 或其他 Agent 的分发任务；微信公众号使用官方接口保存草稿，不依赖 MCP、Chrome 扩展、Native Host 或固定端口。
+Lingxi Workspace 是独立的桌面发布器。它使用 Electron 内置浏览器保存八个平台的登录状态，通过本地 Go CLI 接收 WorkBuddy 或其他 Agent 的发布任务；微信公众号使用官方接口保存草稿，不依赖 MCP、Chrome 扩展、Native Host 或固定端口。
+
+所有平台（包括普通 Mac 开发运行、DMG、Mac App Store 和 Windows）统一显示 `Lingxi Workspace`。内部 npm 包名为 `geo-publisher-desktop`，CLI 和发布 Skill 目录名为 `geo-publisher`。
+
+显示名称与内部标识分开维护：普通 Mac 数据继续保存在 `~/Library/Application Support/GEO Publisher Desktop`，Windows 继续使用 `%LOCALAPPDATA%\GEO Publisher Desktop`，MAS 继续使用沙盒 Application Support 下的 `GEO Publisher` 目录。更改显示名称不触发数据迁移。CLI 命令、Skill 标识和本地连接名称沿用 `geo-publisher`；路径与连接覆盖配置仍为 `GEO_PUBLISHER_USER_DATA_DIR` 和 `GEO_PUBLISHER_CONTROL_ENDPOINT`。Bundle ID、更新服务地址和浏览器分区标识也保持原值。
 
 ## 许可证
 
@@ -8,7 +12,7 @@ GEO Publisher 是独立的桌面发布器。它使用 Electron 内置浏览器�
 
 ## 用户流程
 
-1. 安装并打开 GEO Publisher；关闭主窗口后应用会驻留在系统托盘或 macOS 菜单栏。
+1. 安装并打开 Lingxi Workspace；关闭主窗口后应用会驻留在系统托盘或 macOS 菜单栏。
 2. 从左侧依次打开需要的平台并登录。
 3. 点击“连接 WorkBuddy”，在 WorkBuddy 中粘贴已复制的连接指令。
 4. 直接告诉 WorkBuddy 要填充或发布的文章和平台。自动任务在后台执行，不会抢占你正在使用的其他应用。

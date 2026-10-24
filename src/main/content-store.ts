@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { dataDirectory } from './runtime-paths.js';
 import { articleDocumentSchema, type ArticleDocument } from '../shared/article-document.js';
 import { isValidReusePolicy, normalizeStoredReusePolicy, repairContentReusePolicies, type ContentRepairNotice } from './content-repair.js';
+import { materialDirectories, storeMaterialFile } from './material-storage.js';
 
 const contentItemSchema = z.object({
   id: z.string().min(1), projectId: z.string().uuid(), kind: z.enum(['material', 'topic', 'article', 'distribution']),
@@ -166,9 +167,8 @@ export class ContentStore {
     }
     this.database.prepare('DELETE FROM content_items WHERE project_id = ? AND id = ?').run(projectId, id);
     if (item.kind === 'material' && typeof item.payload.sourcePath === 'string') {
-      const materialRoot = join(this.root, projectId, 'materials');
       const sourcePath = item.payload.sourcePath;
-      if (sourcePath.startsWith(`${materialRoot}/`) || sourcePath.startsWith(`${materialRoot}\\`)) await rm(sourcePath, { force: true });
+      if (materialDirectories(this.root, projectId).some((materialRoot) => sourcePath.startsWith(materialRoot + '/') || sourcePath.startsWith(materialRoot + '\\'))) await rm(sourcePath, { force: true });
     }
     return item;
   }
@@ -183,6 +183,12 @@ export class ContentStore {
       throw error;
     }
     await rm(join(this.root, projectId), { recursive: true, force: true });
+    try {
+      await rm(materialDirectories(this.root, projectId)[1], { recursive: true, force: true });
+    } catch (error) {
+      // A conflicting fallback parent means this project could not store files there.
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code || '')) throw error;
+    }
   }
 
   async reserveTopic(projectId: string, topicId: string, taskId: string, ttlMs = 10 * 60 * 1000): Promise<ContentItem> {
@@ -213,8 +219,10 @@ export class ContentStore {
   }
 
   async importMaterial(projectId: string, sourcePath: string, input: Omit<ContentInput, 'kind'> = {}): Promise<ContentItem> {
+    contentItemSchema.shape.projectId.parse(projectId);
     const source = await readFile(sourcePath); const hash = createHash('sha256').update(source).digest('hex'); const existing = (await this.list(projectId, 'material')).find((item) => item.payload.hash === hash); if (existing) return existing;
-    const sourceName = sourcePath.split(/[\\/]/).pop() || 'material'; const destination = join(this.root, projectId, 'materials', `${hash.slice(0, 16)}-${sourceName}`); await mkdir(join(this.root, projectId, 'materials'), { recursive: true }); await copyFile(sourcePath, destination);
+    const sourceName = sourcePath.split(/[\\/]/).pop() || 'material';
+    const destination = await storeMaterialFile(this.root, projectId, hash.slice(0, 16) + '-' + sourceName, source);
     const extension = sourceName.toLowerCase().split('.').pop() || '';
     if (['png', 'jpg', 'jpeg', 'webp'].includes(extension)) {
       return this.save(projectId, {

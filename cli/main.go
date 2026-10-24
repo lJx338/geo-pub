@@ -28,7 +28,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "1.0.14"
+var version = "1.0.16"
 var buildMode = "production"
 
 var platforms = map[string]bool{
@@ -199,8 +199,8 @@ func run(args []string) (string, json.RawMessage, error) {
 	if !isDevelopmentBuild() && !productionCommands[command] {
 		return command, nil, &cliError{
 			code:       "COMMAND_NOT_EXPOSED",
-			message:    "此命令仅在 GEO Publisher 开发工具中可用，不向 WorkBuddy 生产 CLI 暴露",
-			suggestion: "请使用 GEO Publisher 桌面端界面完成项目管理或开发诊断",
+			message:    "此命令仅在 Lingxi Workspace 开发工具中可用，不向 WorkBuddy 生产 CLI 暴露",
+			suggestion: "请使用 Lingxi Workspace 桌面端界面完成项目管理或开发诊断",
 		}
 	}
 
@@ -226,7 +226,7 @@ func run(args []string) (string, json.RawMessage, error) {
 		if err != nil {
 			return command, response, err
 		}
-		// `start` is the explicit "open GEO Publisher" command. The previous
+		// `start` is the explicit "open Lingxi Workspace" command. The previous
 		// implementation launched with --background, which left a new desktop
 		// hidden and made an existing minimized instance ignore the
 		// second-instance event. Ask the already-ready desktop to show itself so
@@ -501,7 +501,7 @@ func runProject(args []string) (string, json.RawMessage, error) {
 		return "project." + subcommand, nil, &cliError{
 			code:       "COMMAND_NOT_EXPOSED",
 			message:    "生产 CLI 只允许创建客户项目，或读取、更新当前客户项目",
-			suggestion: "请在 GEO Publisher 桌面端管理客户项目",
+			suggestion: "请在 Lingxi Workspace 桌面端管理客户项目",
 		}
 	}
 	switch subcommand {
@@ -617,8 +617,8 @@ func send(request controlRequest, timeout time.Duration) (json.RawMessage, error
 	connection, err := dialControl(ctx, controlEndpoint())
 	if err != nil {
 		return nil, &cliError{
-			code: "DESKTOP_NOT_RUNNING", message: "无法连接 GEO Publisher 桌面端：" + err.Error(),
-			suggestion: "先打开 GEO Publisher，或运行 geo-publisher start",
+			code: "DESKTOP_NOT_RUNNING", message: "无法连接 Lingxi Workspace 桌面端：" + err.Error(),
+			suggestion: "先打开 Lingxi Workspace，或运行 geo-publisher start",
 		}
 	}
 	defer connection.Close()
@@ -914,7 +914,7 @@ func waitForDesktop(timeout time.Duration) (json.RawMessage, error) {
 		last = err
 		time.Sleep(500 * time.Millisecond)
 	}
-	return nil, &cliError{code: "DESKTOP_START_TIMEOUT", message: fmt.Sprintf("桌面端 30 秒内没有就绪：%v", last), suggestion: "手动打开 GEO Publisher 并查看是否有系统拦截提示"}
+	return nil, &cliError{code: "DESKTOP_START_TIMEOUT", message: fmt.Sprintf("桌面端 30 秒内没有就绪：%v", last), suggestion: "手动打开 Lingxi Workspace 并查看是否有系统拦截提示"}
 }
 
 func startDesktop() error {
@@ -932,7 +932,7 @@ func startDesktop() error {
 		command = exec.Command("geo-publisher-desktop")
 	}
 	if err := command.Start(); err != nil {
-		return &cliError{code: "DESKTOP_START_FAILED", message: err.Error(), suggestion: "确认 GEO Publisher 桌面端已安装"}
+		return &cliError{code: "DESKTOP_START_FAILED", message: err.Error(), suggestion: "确认 Lingxi Workspace 桌面端已安装"}
 	}
 	return nil
 }
@@ -1102,7 +1102,7 @@ func commandSchema() json.RawMessage {
 		"profile":  cliProfile(),
 		"commands": commands,
 		"article": map[string]any{
-			"projectId": "required UUID from geo-publisher project current; must match the project currently selected in GEO Publisher",
+			"projectId": "required UUID from geo-publisher project current; must match the project currently selected in Lingxi Workspace",
 			"platform":  []string{"baijia", "toutiao", "zhihu", "penguin", "sohu", "netease", "wechat", "lieju"},
 			"document": map[string]any{
 				"title": "string; Toutiao 2-30, Baijia 2-64, Sohu 5-72, NetEase 5-64, WeChat 2-32, Lieju 5-30",
@@ -1155,13 +1155,13 @@ func platformOverview() json.RawMessage {
 func readToken() (string, error) {
 	data, err := os.ReadFile(tokenPath())
 	if err != nil {
-		return "", &cliError{code: "CONTROL_TOKEN_MISSING", message: err.Error(), suggestion: "先启动一次 GEO Publisher 桌面端"}
+		return "", &cliError{code: "CONTROL_TOKEN_MISSING", message: err.Error(), suggestion: "先启动一次 Lingxi Workspace 桌面端"}
 	}
 	var record struct {
 		Token string `json:"token"`
 	}
 	if err := json.Unmarshal(data, &record); err != nil || len(record.Token) != 64 {
-		return "", &cliError{code: "CONTROL_TOKEN_INVALID", message: "本地控制令牌无效", suggestion: "完全退出并重新启动 GEO Publisher"}
+		return "", &cliError{code: "CONTROL_TOKEN_INVALID", message: "本地控制令牌无效", suggestion: "完全退出并重新启动 Lingxi Workspace"}
 	}
 	return record.Token, nil
 }
@@ -1268,7 +1268,7 @@ func usageError(message string) error {
 func suggestionFor(code string) string {
 	switch code {
 	case "LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "RISK_CONTROL_REQUIRED":
-		return "GEO Publisher 已打开对应页面；请完成登录、验证或风险提示处理后重新执行同一命令一次"
+		return "Lingxi Workspace 已打开对应页面；请完成登录、验证或风险提示处理后重新执行同一命令一次"
 	case "UNAUTHORIZED":
 		return "完全退出并重新启动桌面端，再重试命令"
 	case "CONTROL_REQUEST_FAILED":

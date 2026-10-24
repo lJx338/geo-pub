@@ -1,11 +1,11 @@
 ---
 name: geo-material-organizer
-description: Organize newly uploaded image materials in the current GEO Publisher customer project through one-time visual analysis. Use when the user asks to 整理素材、识别图片、处理待整理图片、建立图片素材库, or before topic/article work when `material pending` returns images. Do not write articles or control publishing platforms.
+description: Organize newly uploaded image materials in the current Lingxi Workspace customer project through one-time visual analysis. Use when the user asks to 整理素材、识别图片、处理待整理图片、建立图片素材库, or before topic/article work when `material pending` returns images. Do not write articles or control publishing platforms.
 ---
 
 # GEO Material Organizer
 
-Use GEO Publisher Desktop as the only material store. Analyze each imported image once, save a reusable index, and never modify the original file.
+Use Lingxi Workspace as the only material store. Analyze each imported image once, save a reusable index, and never modify the original file.
 
 ## Workflow
 

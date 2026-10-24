@@ -27,6 +27,6 @@ export async function loadOrCreateControlToken(): Promise<string> {
 
 export async function readControlToken(): Promise<string> {
   const parsed = JSON.parse(await readFile(authFilePath(), 'utf8')) as AuthRecord;
-  if (!/^[a-f0-9]{64}$/.test(parsed.token)) throw new Error('控制令牌无效，请重新启动 GEO Publisher');
+  if (!/^[a-f0-9]{64}$/.test(parsed.token)) throw new Error('控制令牌无效，请重新启动 Lingxi Workspace');
   return parsed.token;
 }

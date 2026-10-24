@@ -188,7 +188,7 @@ export function buildDistributionDiagnosis(record: DistributionDiagnosisRecord):
 export function distributionDiagnosisText(record: DistributionDiagnosisRecord): string {
   const diagnosis = buildDistributionDiagnosis(record);
   return [
-    `GEO Publisher 分发诊断`,
+    `Lingxi Workspace 分发诊断`,
     diagnosis.title,
     `结论：${diagnosis.summary}`,
     `下一步：${diagnosis.nextAction}`,

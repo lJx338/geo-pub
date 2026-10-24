@@ -52,6 +52,30 @@ describe('WorkBuddy connection prompt', () => {
     expect(prompt).toContain("CLI 调用前缀：'/Users/demo/Library/Application Support/GEO Publisher Desktop/bin/geo-publisher'");
   });
 
+  it('keeps the physical Store data directory in both Windows invocation forms', () => {
+    const root = "C:\\Users\\o'neil\\AppData\\Local\\Packages\\dynamic-package\\LocalCache\\Local\\GEO Publisher Desktop";
+    const cli = `${root}\\bin\\versions\\1.0.14\\geo-publisher.exe`;
+    const prompt = buildWorkBuddyPrompt({
+      appPath: 'D:\\WindowsApps\\current-package\\app\\Lingxi Workspace.exe',
+      cliPath: cli,
+      skillPath: `${root}\\integrations\\workbuddy\\geo-publisher`,
+      profileSkillPath: `${root}\\integrations\\workbuddy\\geo-customer-profile`,
+      topicSkillPath: `${root}\\integrations\\workbuddy\\geo-topic-planner`,
+      articleSkillPath: `${root}\\integrations\\workbuddy\\geo-article-writer`,
+      materialSkillPath: `${root}\\integrations\\workbuddy\\geo-material-organizer`,
+      platform: 'win32', windowsStore: true, userData: root,
+    });
+    const env = `$env:GEO_PUBLISHER_USER_DATA_DIR='${root.replaceAll("'", "''")}'; `;
+    expect(prompt).toContain(`CLI 调用前缀：${env}& '${cli.replaceAll("'", "''")}'`);
+    expect(prompt).toContain(`${env}cmd.exe --% /d /v:off /s /c`);
+    expect(prompt).toContain(`cmd.exe --% /d /v:off /s /c ""${cli}" doctor --json"`);
+    expect(prompt).not.toContain("& '<CLI 位置>' doctor");
+    expect(() => cliCallPrefix(cli, 'win32', false, '', true)).toThrow('Microsoft Store user data directory');
+    // A Store-like pathname alone must not alter ordinary EXE or macOS launches.
+    expect(cliCallPrefix(cli, 'win32', false, root, false)).toBe(`& '${cli.replaceAll("'", "''")}'`);
+    expect(cliCallPrefix('/bin/geo-publisher', 'darwin', false, root, true)).toBe("'/bin/geo-publisher'");
+  });
+
   it('ships a dedicated customer profile skill with the WorkBuddy integration', async () => {
     const skill = await readFile(join(process.cwd(), 'integrations', 'workbuddy', 'geo-customer-profile', 'SKILL.md'), 'utf8');
     expect(skill).toContain('name: geo-customer-profile');

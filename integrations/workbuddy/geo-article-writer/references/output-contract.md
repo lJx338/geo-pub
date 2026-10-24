@@ -25,7 +25,7 @@ For `lieju`, the complete description must be 200–300 characters including hea
 - Provide at least two of: concrete actions, criteria, causal mechanisms, scenarios, examples, boundaries, or reusable checklists.
 - Write headings for this exact topic. Never output generic headings such as “核心判断、常见误区、适合谁/不适合谁、总结与行动建议、边界与结论”.
 - Remove structural prefixes such as “先说结论：” when the remaining heading or paragraph already carries the meaning.
-- Finish the body with a natural next action, without hard selling. Separately provide two to five specific industry topics in `document.tags`; GEO Publisher renders them at the article ending.
+- Finish the body with a natural next action, without hard selling. Separately provide two to five specific industry topics in `document.tags`; Lingxi Workspace renders them at the article ending.
 
 ## Structured document
 
@@ -46,7 +46,7 @@ The only publishing source is `payload.document`:
 }
 ```
 
-`tags` is required for every ready article. Use two to five concise topics or keywords that directly match the article, ideally two to eight Chinese characters each. Do not add `#` or `＃`, punctuation, contact details, broad filler such as “行业资讯”, or duplicate variants. GEO Publisher normalizes the values, adds the hash marks in the article-ending topic line, and also sends the same values to a platform-native topic field when supported.
+`tags` is required for every ready article. Use two to five concise topics or keywords that directly match the article, ideally two to eight Chinese characters each. Do not add `#` or `＃`, punctuation, contact details, broad filler such as “行业资讯”, or duplicate variants. Lingxi Workspace normalizes the values, adds the hash marks in the article-ending topic line, and also sends the same values to a platform-native topic field when supported.
 
 Allow only `paragraph`, `heading` level 2 or 3, `list`, `quote`, `divider`, and `image`. Prefer an image from the current project's indexed material library: `{ "type": "image", "materialId": "saved material id", "alt": "图片描述", "caption": "图注" }`. Other platforms may also use a real HTTP(S) `src`; WeChat requires a current-project `materialId`, so import network images before use. Never invent an ID or reuse another customer's material. Never place raw Markdown or HTML inside block text.
 

@@ -14,6 +14,10 @@ import { WechatSettingsDialog } from './components/wechat-settings.js';
 import { WechatArticlePreview, WechatBlockControls, WechatLayoutControls } from './components/wechat-article.js';
 import { wechatLayoutSchema, type WechatLayout } from '../shared/wechat-layout.js';
 
+if (!window.geoPublisher) {
+  window.lingxiStartup.fail('PRELOAD_BRIDGE_MISSING', new Error('桌面功能接口未能加载'));
+  throw new Error('PRELOAD_BRIDGE_MISSING');
+}
 const appName = window.geoPublisher.appName;
 document.title = appName;
 
@@ -45,6 +49,7 @@ function articleHasCompletedDistribution(article: any, distributions: any[]): bo
 }
 
 function App() {
+  useEffect(() => { window.lingxiStartup.ready(); }, []);
   const [view, setView] = useState<View>('overview'); const [status, setStatus] = useState<any>({ platforms: [] }); const [projects, setProjects] = useState<any[]>([]); const [project, setProject] = useState<any>(null); const [items, setItems] = useState<any[]>([]); const [contentCounts, setContentCounts] = useState<Record<string, number>>({}); const [workBuddy, setWorkBuddy] = useState<any>({ prepared: false }); const [update, setUpdate] = useState<any>({ phase: 'idle' }); const [message, setMessage] = useState(''); const [error, setError] = useState(false); const [editing, setEditing] = useState<any>(null); const [selectingProject, setSelectingProject] = useState(false);
   const [contentTab, setContentTab] = useState<'overview' | 'material' | 'topic' | 'article'>('overview');
   const [contentRepair, setContentRepair] = useState<ContentRepairNotice | null>(null);
@@ -822,6 +827,18 @@ function SettingsView({ status, workBuddy, setWorkBuddy, update, setUpdate, conn
     const result = await window.geoPublisher.openDataDirectory();
     notify(result.opened ? '已打开本地数据目录' : `无法打开数据目录：${result.error || '未知错误'}`, !result.opened);
   };
+  const exportDiagnosticLogs = async () => {
+    setWorking('diagnostics');
+    try {
+      const result = await window.geoPublisher.exportDiagnosticLogs();
+      if (result.exported) notify('诊断日志已保存，可将文件发给技术支持');
+      else if (result.message !== '已取消保存') notify(result.message || '诊断日志保存失败', true);
+    } catch (error) {
+      notify('导出诊断日志失败：' + (error as Error).message, true);
+    } finally {
+      setWorking(null);
+    }
+  };
   const updateCopy = friendlyUpdateStatus(update);
   return <div className="settings-grid">
     <div className="settings-column">
@@ -850,9 +867,9 @@ function SettingsView({ status, workBuddy, setWorkBuddy, update, setUpdate, conn
       </Card>
 
       <Card className="settings-card">
-        <CardHeader><div><CardTitle>排障与本地数据</CardTitle><CardDescription>遇到问题时可以复制排障信息给客服，不会包含客户资料或账号信息。</CardDescription></div><Badge>保存在本机</Badge></CardHeader>
-        <CardContent><div className="setting-row"><div><strong>排障信息</strong><p>只包含应用版本、电脑系统和运行状态。</p></div></div><div className="setting-row"><div><strong>本地数据</strong><p>每个客户的资料、内容和平台登录状态分别保存在本机。</p></div></div></CardContent>
-        <CardFooter><Button variant="outline" icon={Copy} onClick={() => void copyDiagnostics()}>复制排障信息</Button><Button variant="outline" icon={FolderOpen} onClick={() => void openDataDirectory()}>打开保存位置</Button></CardFooter>
+        <CardHeader><div><CardTitle>排障与本地数据</CardTitle><CardDescription>遇到图片添加问题时，导出诊断日志并将文件发给技术支持。</CardDescription></div><Badge>保存在本机</Badge></CardHeader>
+        <CardContent><div className="setting-row"><div><strong>排障信息</strong><p>复制应用版本、电脑系统和运行状态。</p></div></div><div className="setting-row"><div><strong>素材诊断日志</strong><p>包含本机保存路径、错误码和目录检查结果，不包含图片内容、文章正文或账号凭据。</p></div></div><div className="setting-row"><div><strong>本地数据</strong><p>每个客户的资料、内容和平台登录状态分别保存在本机。</p></div></div></CardContent>
+        <CardFooter><Button id="export-diagnostic-logs" variant="outline" icon={Download} disabled={working === 'diagnostics'} onClick={() => void exportDiagnosticLogs()}>{working === 'diagnostics' ? '正在导出…' : '导出诊断日志'}</Button><Button variant="outline" icon={Copy} onClick={() => void copyDiagnostics()}>复制排障信息</Button><Button variant="outline" icon={FolderOpen} onClick={() => void openDataDirectory()}>打开保存位置</Button></CardFooter>
       </Card>
     </div>
   </div>;
@@ -980,4 +997,6 @@ function ProjectDialog({ editing, setEditing, save }: any) {
     </form>
   </dialog>;
 }
-createRoot(document.getElementById('root')!).render(<App/>);
+createRoot(document.getElementById('root')!, {
+  onUncaughtError: (error) => window.lingxiStartup.fail('REACT_RENDER_FAILED', error),
+}).render(<App/>);

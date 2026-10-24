@@ -1,11 +1,11 @@
 ---
 name: geo-publisher
-description: Use GEO Publisher Desktop and its local CLI to validate, fill, preview, or publish articles on Baijiahao, Toutiao, Zhihu, Tencent Content Open Platform, Sohu, and NetEase, and save WeChat Official Account drafts through the official API. Trigger whenever the user asks to log in to a supported platform, fill an article, inspect a draft, publish content, save a 公众号草稿, check publishing status, or diagnose the GEO Publisher connection.
+description: Use Lingxi Workspace and its local CLI to validate, fill, preview, or publish articles on Baijiahao, Toutiao, Zhihu, Tencent Content Open Platform, Sohu, NetEase, WeChat Official Account, and Lieju. Trigger whenever the user asks to log in to a supported platform, fill an article, inspect a draft, publish content, save a 公众号草稿, check publishing status, or diagnose the Lingxi Workspace connection.
 ---
 
-# GEO Publisher
+# Lingxi Workspace
 
-Use the desktop application as the execution engine and the current customer project's only content store. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, direct browser automation, or a separate customer workspace. Browser platform operations run in GEO Publisher's background execution page and must not be preceded by `show` or `open`. WeChat `fill` uses the desktop's official API adapter and needs no browser page or website login.
+Use the desktop application as the execution engine and the current customer project's only content store. Do not use browser extensions, MCP publishers, fixed ports, screen coordinates, direct browser automation, or a separate customer workspace. Browser platform operations run in Lingxi Workspace's background execution page and must not be preceded by `show` or `open`. WeChat `fill` uses the desktop's official API adapter and needs no browser page or website login.
 
 ## Customer project context
 
@@ -70,12 +70,14 @@ All materials, topics, article packages, and distribution records belong to the 
 
 If the user supplied the desktop's “连接 WorkBuddy” prompt, use its complete CLI call prefix for every command. For Mac App Store installations it includes `env GEO_PUBLISHER_USER_DATA_DIR=... /bin/sh ...`; preserve all of it. The app obtains the data directory from Electron's sandbox runtime. Never replace it with the non-store path below, and never run the embedded Go helper directly. The bundled client transfers input JSON and local cover/material files to the running app. Existing command names and JSON results stay the same. A connection failure does not authorize retrying a publish; inspect the platform state first.
 
-Run `geo-publisher doctor` when the command is available. Otherwise read `discovery.json` from the operating system's GEO Publisher user-data directory and invoke its `cliPath`:
+For Microsoft Store (MSIX) installations, the desktop exports the actual redirected CLI and Skill paths. Its PowerShell call prefix also sets `$env:GEO_PUBLISHER_USER_DATA_DIR` to the actual data directory. Preserve that assignment for every command, including when falling back to `cmd.exe`; use the complete fallback command in the connection prompt. Do not replace these paths with `%LOCALAPPDATA%\GEO Publisher Desktop` or invoke only the EXE without the data-directory assignment.
+
+Run `geo-publisher doctor` when the command is available. Otherwise read `discovery.json` from the operating system's Lingxi Workspace user-data directory and invoke its `cliPath`:
 
 - macOS: resolve from the current user's `~/Library/Application Support/GEO Publisher Desktop` directory.
 - Windows: resolve from `%LOCALAPPDATA%\GEO Publisher Desktop`.
 
-Never copy a path or user name from another computer. If discovery is missing, ask the user to install and open GEO Publisher Desktop once.
+Never copy a path or user name from another computer. If discovery is missing, ask the user to install and open Lingxi Workspace once.
 
 Treat the discovered `cliPath` as one executable path even when it contains spaces. On Windows PowerShell invoke it with the call operator, for example `& '<discovered cliPath>' doctor`; do not split or reconstruct the path. Use only the production `geo-publisher` binary supplied by the desktop. Never search for or invoke `geo-publisher-dev`, `.dev-cli`, raw control sockets, control tokens, or developer-only commands.
 
@@ -98,7 +100,7 @@ Run `geo-publisher schema --json` before assembling the first request in a task.
 - Send one `document` object, not top-level `title`、`html` or `tags` fields.
 - `document.title` is the published title. `document.blocks` must use semantic blocks: `paragraph`、`heading`（only level 2 or 3）、`list`、`quote`、`divider`、`image`.
 - Keep text natural. Do not put raw Markdown markers (`##`、`-`、`>`) or raw HTML into block text.
-- `document.summary` is optional platform metadata. Every ready article must provide two to five concise, article-specific topics or keywords in `document.tags`, such as `企业AI` and `流程优化`; omit a leading `#`. GEO Publisher appends them to the article ending and also fills a platform-native topic field when supported.
+- `document.summary` is optional platform metadata. Every ready article must provide two to five concise, article-specific topics or keywords in `document.tags`, such as `企业AI` and `流程优化`; omit a leading `#`. Lingxi Workspace appends them to the article ending and also fills a platform-native topic field when supported.
 - An `image` block should use a `materialId` from the current project's indexed material library; `alt` and `caption` are optional. Other platforms may also use a real http(s) `src`, but WeChat requires material IDs. A local file path belongs only in `coverPath`, not in body text or `src`.
 - Select the saved article whose `platform` matches the destination and whose `payload.topicId` matches the requested topic. Use that package's exact `payload.document`; do not send one platform's body to every destination or rewrite it during distribution. If a platform package is missing, route writing to `geo-article-writer` before distribution. An explicit user request to distribute one existing article unchanged may still use that article.
 
@@ -128,7 +130,7 @@ Example input for `validate` or `fill`:
 These browser-status checks apply to website sessions. For WeChat API readiness, follow the WeChat section below; `login wechat` and `inspect wechat` inspect only the embedded website and do not establish API permissions.
 
 - `created` means the platform page currently has an in-memory WebView. `created=false` does not mean logged out.
-- `attached` means the platform page is currently visible in the GEO Publisher window. `runtimeState=background` means an automation page is retained without showing it. Neither state indicates whether the account is logged in.
+- `attached` means the platform page is currently visible in the Lingxi Workspace window. `runtimeState=background` means an automation page is retained without showing it. Neither state indicates whether the account is logged in.
 - The desktop keeps the current interactive page and at most one background task page. Login cookies remain stored per platform.
 - Never convert `created/attached` into a login table or label a platform as `待登录` from those fields.
 - When the user asks whether platforms are logged in, run `inspect <platform>` serially for every requested platform. Report `已登录` only when the actual publishing page is visible, and report `待登录` only when the inspected page contains a visible login, verification, or risk-control prompt. Otherwise report `登录状态未确认`.
@@ -154,7 +156,7 @@ Use these platform mappings:
 
 ## Handle failures
 
-- For `LOGIN_REQUIRED`, `VERIFICATION_REQUIRED`, or `RISK_CONTROL_REQUIRED`, GEO Publisher has already opened the exact affected page. Ask the user to complete that visible action, then retry the same command once. Do not wait on the original command or issue `publish` again automatically.
+- For `LOGIN_REQUIRED`, `VERIFICATION_REQUIRED`, or `RISK_CONTROL_REQUIRED`, Lingxi Workspace has already opened the exact affected page. Ask the user to complete that visible action, then retry the same command once. Do not wait on the original command or issue `publish` again automatically.
 - For quota exhaustion, stop that platform and report the platform message.
 - For `result_uncertain`, query status or reconcile the management page. Never click publish again automatically.
 - For `ZHIHU_FORMAT_DEGRADED` or `NETEASE_FORMAT_DEGRADED`, do not publish. The desktop has detected that the editor removed required article structure; preserve the complete error and ask for an adapter update.

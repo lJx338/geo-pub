@@ -282,7 +282,7 @@ export class PlatformSessions {
   }
 
   ensureProject(projectId?: string): string {
-    if (!this.projectId) throw new Error('PROJECT_REQUIRED: 请先在 GEO Publisher 中新建并选择客户项目');
+    if (!this.projectId) throw new Error('PROJECT_REQUIRED: 请先在 Lingxi Workspace 中新建并选择客户项目');
     if (projectId && projectId !== this.projectId) throw new Error('PROJECT_CONTEXT_CHANGED: 当前客户项目已切换，请重新生成文章后再发布');
     return this.projectId;
   }
@@ -648,7 +648,7 @@ export class PlatformSessions {
     // them only during explicit adapter debugging; a desktop app must not
     // depend on the terminal that happened to launch it remaining attached.
     if (process.env.GEO_PUBLISHER_DEBUG_CONSOLE === '1') {
-      view.webContents.on('console-message', (_event, level, message) => { if (level >= 2) diagnosticError(`[${platform}] renderer: ${message}`); });
+      view.webContents.on('console-message', (_event, level, message) => { if (level >= 2) diagnosticError(`[${platform}] renderer: ${message}`, false); });
     }
     view.webContents.on('render-process-gone', (_event, details) => {
       diagnosticError(`[${platform}] renderer process gone: ${details.reason}`);
@@ -947,7 +947,7 @@ export class PlatformSessions {
   private recordAttention(attention: AttentionRequired): void {
     // Background jobs must never activate the app. WorkBuddy receives the
     // structured error immediately; the user can later open the platform
-    // page from GEO Publisher to complete any required login or verification.
+    // page from Lingxi Workspace to complete any required login or verification.
     this.attentionRequired = attention;
     this.onAttentionRequired(attention);
   }

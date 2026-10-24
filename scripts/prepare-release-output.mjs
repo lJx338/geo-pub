@@ -28,6 +28,6 @@ await fs.mkdir(outputDir, { recursive: true });
 // macOS Spotlight/Launchpad should never index build output. Keep this marker
 // at the shared root so it survives electron-builder cleaning a target folder.
 await fs.mkdir(releaseRoot, { recursive: true });
-await fs.writeFile(path.join(releaseRoot, '.metadata_never_index'), 'GEO Publisher build output\n', 'utf8');
+await fs.writeFile(path.join(releaseRoot, '.metadata_never_index'), 'Lingxi Workspace build output\n', 'utf8');
 
 console.log(`Prepared release output: ${path.relative(process.cwd(), outputDir) || '.'}`);

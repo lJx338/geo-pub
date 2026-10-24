@@ -14,6 +14,8 @@ on:
       - 'src/**'
       - 'cli/**'
       - 'integrations/**'
+      - 'tests/startup-smoke.mjs'
+      - 'tests/windows-store-startup-smoke.ps1'
       - '.github/workflows/validate-msix.yml'
   pull_request:
     paths:
@@ -28,6 +30,8 @@ on:
       - 'src/**'
       - 'cli/**'
       - 'integrations/**'
+      - 'tests/startup-smoke.mjs'
+      - 'tests/windows-store-startup-smoke.ps1'
       - '.github/workflows/validate-msix.yml'
   workflow_dispatch:
     inputs:
@@ -78,6 +82,24 @@ jobs:
 
       - name: Validate manifest and Store assets
         run: npm run validate:appx -- $env:STORE_PACKAGE_VERSION
+
+      - name: Verify startup failure recovery
+        run: node tests/startup-smoke.mjs
+
+      - name: Install and launch a signed test copy of the MSIX
+        shell: pwsh
+        run: ./tests/windows-store-startup-smoke.ps1 -ReleaseDirectory release/store
+
+      - name: Upload Store startup diagnostics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lingxi-msix-startup-diagnostics
+          path: |
+            release/store/startup-test-logs/*.log
+            release/test-evidence/startup-*.png
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Run Windows App Certification Kit when available
         shell: pwsh

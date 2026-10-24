@@ -1,11 +1,11 @@
 ---
 name: geo-topic-planner
-description: Generate, improve, deduplicate, schedule, or save GEO content topics for the current GEO Publisher customer project. Use when the user asks for 意图词、客户问题、生成选题、选题池、本周选题、内容规划, topic ideas, weekly topics, or wants to turn company materials and customer concerns into concrete article titles. Do not use for writing full articles or publishing them.
+description: Generate, improve, deduplicate, schedule, or save GEO content topics for the current Lingxi Workspace customer project. Use when the user asks for 意图词、客户问题、生成选题、选题池、本周选题、内容规划, topic ideas, weekly topics, or wants to turn company materials and customer concerns into concrete article titles. Do not use for writing full articles or publishing them.
 ---
 
 # GEO Topic Planner
 
-Use GEO Publisher Desktop as the only source of truth. Never create a separate workspace, topic CSV, company-information file, or template state.
+Use Lingxi Workspace as the only source of truth. Never create a separate workspace, topic CSV, company-information file, or template state.
 
 ## Start
 

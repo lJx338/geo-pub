@@ -7,6 +7,15 @@ import type { LiejuFormOptions } from '../shared/platform-settings.js';
 
 declare global {
   interface Window {
+    lingxiStartupBridge?: {
+      ready(): void;
+      failed(code: string, message: string): void;
+      copy(): Promise<boolean>;
+    };
+    lingxiStartup: {
+      ready(): void;
+      fail(code: string, error: unknown): void;
+    };
     geoPublisher: {
       appName: string;
       status(): Promise<DesktopStatus>;
@@ -55,6 +64,7 @@ declare global {
       setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginStatus>;
       openLaunchAtLoginSettings(): Promise<{ opened: true }>;
       copyDiagnostics(): Promise<{ copied: true; diagnostic: DiagnosticSummary }>;
+      exportDiagnosticLogs(): Promise<{ exported: boolean; path?: string; message?: string }>;
       exportDiagnostic(projectId: string, recordId: string): Promise<{ exported: boolean; path?: string; message?: string }>;
       copyText(text: string): Promise<{ copied: true }>;
       openDataDirectory(): Promise<{ opened: boolean; error?: string }>;

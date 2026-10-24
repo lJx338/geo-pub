@@ -1,9 +1,9 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "1.0.14",
+  "version": "1.0.16",
   "license": "AGPL-3.0-or-later",
   "private": true,
-  "description": "GEO Publisher desktop application with a built-in persistent browser",
+  "description": "Lingxi Workspace desktop application with a built-in persistent browser",
   "author": "Lingxi",
   "main": "dist/main/index.cjs",
   "type": "module",
@@ -18,6 +18,8 @@
     "test:lieju": "npm run build && npm run build:cli && node tests/lieju-desktop-smoke.mjs",
     "test:resize": "npm run build && npm run build:cli && node tests/platform-resize-smoke.mjs",
     "test:popups": "npm run build && node tests/platform-popups-smoke.mjs",
+    "test:startup": "npm run build && node tests/startup-smoke.mjs",
+    "test:diagnostics": "npm run build && node tests/material-diagnostics-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package:mac": "npm run build && npm run build:cli && node scripts/prepare-release-output.mjs release && electron-builder --mac --arm64",
     "package:mas": "node scripts/package-mas.mjs",
@@ -55,7 +57,7 @@
   },
   "build": {
     "appId": "com.lingxi.geo-publisher",
-    "productName": "GEO Publisher",
+    "productName": "Lingxi Workspace",
     "asar": true,
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
@@ -139,7 +141,7 @@
       "displayLanguageSelector": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "GEO Publisher",
+      "shortcutName": "Lingxi Workspace",
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false
     }

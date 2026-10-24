@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import { APP_NAME } from './shared/branding.js';
 import type { BetaActivationResult, DataChangeEvent, DesktopDistributionRequest, DiagnosticSummary, DesktopStatus, LaunchAtLoginStatus, Platform, PlatformStatus, UpdateStatus, WorkBuddyIntegrationStatus } from './shared/protocol.js';
 import type { Project, ProjectInput } from './main/project-store.js';
 import type { ContentFilter, ContentInput, ContentItem, ContentKind } from './main/content-store.js';
@@ -6,7 +7,14 @@ import type { ContentRepairNotice } from './main/content-repair.js';
 import type { WechatConnectionSettings, WechatConnectionStatus, WechatCredentials } from './main/wechat/types.js';
 import type { LiejuFormOptions } from './shared/platform-settings.js';
 
-const appName = process.argv.includes('--geo-app-brand=lingxi') ? 'Lingxi Workspace' : 'GEO Publisher';
+const appName = APP_NAME;
+
+// Keep startup recovery independent from the full workspace API.
+contextBridge.exposeInMainWorld('lingxiStartupBridge', {
+  ready: () => ipcRenderer.send('lingxi:startup-ready'),
+  failed: (code: string, message: string) => ipcRenderer.send('lingxi:startup-failed', code, message),
+  copy: (): Promise<boolean> => ipcRenderer.invoke('lingxi:startup-copy'),
+});
 
 // 反检测：确保不暴露任何Electron相关的全局对象
 // 删除可能被注入的 process 和 require
@@ -71,6 +79,7 @@ contextBridge.exposeInMainWorld('geoPublisher', {
   setLaunchAtLogin: (enabled: boolean): Promise<LaunchAtLoginStatus> => ipcRenderer.invoke('geo:set-launch-at-login', enabled),
   openLaunchAtLoginSettings: (): Promise<{ opened: true }> => ipcRenderer.invoke('geo:open-launch-at-login-settings'),
   copyDiagnostics: (): Promise<{ copied: true; diagnostic: DiagnosticSummary }> => ipcRenderer.invoke('geo:copy-diagnostics'),
+  exportDiagnosticLogs: (): Promise<{ exported: boolean; path?: string; message?: string }> => ipcRenderer.invoke('geo:diagnostic-logs-export'),
   exportDiagnostic: (projectId: string, recordId: string): Promise<{ exported: boolean; path?: string; message?: string }> => ipcRenderer.invoke('geo:diagnostic-export', projectId, recordId),
   copyText: (text: string): Promise<{ copied: true }> => ipcRenderer.invoke('geo:copy-text', text),
   openDataDirectory: (): Promise<{ opened: boolean; error?: string }> => ipcRenderer.invoke('geo:open-data-directory'),

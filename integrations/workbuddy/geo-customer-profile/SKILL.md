@@ -1,11 +1,11 @@
 ---
 name: geo-customer-profile
-description: Collect, extract, lightly polish, confirm, create, or update customer company profiles in GEO Publisher Desktop. Use when a customer asks to create a customer project, configure or complete company information, update an existing profile, or provides a company introduction, brand profile, brochure, or website copy specifically to initialize or improve the desktop customer project.
+description: Collect, extract, lightly polish, confirm, create, or update customer company profiles in Lingxi Workspace. Use when a customer asks to create a customer project, configure or complete company information, update an existing profile, or provides a company introduction, brand profile, brochure, or website copy specifically to initialize or improve the desktop customer project.
 ---
 
 # GEO Customer Profile
 
-Keep GEO Publisher Desktop as the only source of truth. Store the result through its production CLI; never create a separate workspace, Markdown profile, template state, or local customer database.
+Keep Lingxi Workspace as the only source of truth. Store the result through its production CLI; never create a separate workspace, Markdown profile, template state, or local customer database.
 
 ## Start
 
@@ -44,7 +44,7 @@ Second collection round is optional. Ask in one message whether they want to add
 
 Then show the complete summary and ask for one explicit confirmation.
 
-## Map information to GEO Publisher
+## Map information to Lingxi Workspace
 
 Use only these project fields:
 
@@ -86,7 +86,7 @@ Before creating or updating, show:
 1. Project name.
 2. The non-empty project fields in plain Chinese.
 3. Any inferred or uncertain statements under “待确认”.
-4. A direct question: “以上资料是否确认写入 GEO Publisher？回复‘确认创建’或告诉我需要修改的地方。”
+4. A direct question: “以上资料是否确认写入 Lingxi Workspace？回复‘确认创建’或告诉我需要修改的地方。”
 
 Only an explicit confirmation in the current conversation authorizes the write. Do not treat silence, “差不多”, or a previous unrelated confirmation as authorization.
 

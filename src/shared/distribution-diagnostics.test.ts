@@ -54,7 +54,7 @@ describe('distribution diagnostics', () => {
 
   it('creates a copyable plain-text report', () => {
     const report = distributionDiagnosisText({ platform: 'sohu', status: 'success', title: '测试文章' });
-    expect(report).toContain('GEO Publisher 分发诊断');
+    expect(report).toContain('Lingxi Workspace 分发诊断');
     expect(report).toContain('搜狐号已确认发布');
   });
 });

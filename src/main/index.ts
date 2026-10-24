@@ -1,7 +1,9 @@
 import { copyFile, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
+import { isWorkspaceFileUrl } from './workspace-file.js';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, session, shell, Tray } from 'electron';
+import { APP_NAME } from '../shared/branding.js';
 import packageJson from '../../package.json' with { type: 'json' };
 import { macMenuTemplate } from './mac-menu.js';
 import { persistSandboxFile } from './sandbox-imports.js';
@@ -15,32 +17,29 @@ import { PlatformSessions } from './platform-sessions.js';
 import { ProjectStore, type ProjectInput } from './project-store.js';
 import { ContentStore, type ContentKind, type ContentInput, type ContentFilter } from './content-store.js';
 import { DataChangeTracker } from './data-change.js';
-import { configureSandboxUserData, dataDirectory, isMacAppStoreRuntime } from './runtime-paths.js';
+import { configureSandboxUserData, dataDirectory, isMacAppStoreRuntime, isWindowsStoreRuntime } from './runtime-paths.js';
 import { setupStealthSession } from './stealth.js';
 import { UpdateManager } from './update-manager.js';
 import { prepareWorkBuddyIntegration, prepareWorkBuddyMaterialOrganization, workBuddyIntegrationStatus } from './workbuddy-integration.js';
 import { DistributionService } from './distribution-service.js';
 import { runIdleMaintenance } from './maintenance.js';
-import { diagnosticError, guardProcessOutputStreams } from './diagnostics.js';
+import { diagnosticError, guardProcessOutputStreams, setDiagnosticSink } from './diagnostics.js';
+import { StartupLog } from './startup-log.js';
+import { softwareRenderingRequested, StartupSupport } from './startup.js';
 import { exportDistributionDiagnosticBundle } from './diagnostic-bundle.js';
+import { writeMaterialDiagnosticReport } from './material-diagnostics.js';
 import { getLaunchAtLoginStatus, openWindowsStartupSettings, setLaunchAtLogin } from './launch-at-login.js';
 import { createElectronWechatAdapter } from './wechat/index.js';
 import { registerWechatDesktopHandlers } from './wechat/desktop.js';
 import { loadLiejuFormOptions } from './lieju-form.js';
 
 guardProcessOutputStreams();
-app.setName('GEO Publisher');
-if (isMacAppStoreRuntime()) {
-  // Keep the previous sandbox data location when changing the displayed app name.
-  const existingUserData = join(app.getPath('appData'), 'GEO Publisher');
-  app.setPath('userData', existingUserData);
-  configureSandboxUserData(existingUserData);
-  app.setName('Lingxi Workspace');
-} else app.setPath('userData', dataDirectory());
-if (process.platform === 'win32') app.setName('Lingxi Workspace');
+app.setName(APP_NAME);
 const appName = app.getName();
 // Product/CLI version follows the source release; MAS packaging requires the same store version.
 const appVersion = packageJson.version;
+let startup: StartupSupport | undefined;
+let startupLog: StartupLog | undefined;
 
 // Match the browser-worker runtime used by the last working release. Sohu's
 // captcha and SMS flow relies on timers and renderer activity while the page
@@ -51,17 +50,44 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
 async function runDesktop(): Promise<void> {
+  if (isMacAppStoreRuntime()) {
+    // Keep the existing sandbox profile when the display name changes.
+    const existingUserData = join(app.getPath('appData'), 'GEO Publisher');
+    app.setPath('userData', existingUserData);
+    configureSandboxUserData(existingUserData);
+  } else app.setPath('userData', dataDirectory());
   if (!app.requestSingleInstanceLock()) {
     app.quit();
     return;
   }
 
+  startupLog = new StartupLog([join(dataDirectory(), 'diagnostics'), join(app.getPath('temp'), 'lingxi-startup')]);
+  setDiagnosticSink((message) => startupLog?.record('main.error', { message }));
+  const softwareRendering = softwareRenderingRequested(dataDirectory());
+  if (softwareRendering) app.disableHardwareAcceleration();
+  startupLog.record('startup.begin', {
+    version: appVersion, packageVersion: app.getVersion(), platform: process.platform, arch: process.arch,
+    windowsStore: isWindowsStoreRuntime(), mas: isMacAppStoreRuntime(), packaged: app.isPackaged,
+    electron: process.versions.electron, chrome: process.versions.chrome, os: process.getSystemVersion(),
+    softwareRendering, userData: app.getPath('userData'), appPath: app.getAppPath(),
+  });
+  startup = new StartupSupport(startupLog, dataDirectory());
+  process.on('uncaughtExceptionMonitor', (error) => {
+    diagnosticError(`Uncaught exception: ${error.stack || error.message}`);
+    dialog.showErrorBox('Lingxi Workspace 运行异常', `程序遇到错误，即将退出。\n日志：${startupLog?.path ?? '无法写入'}\n${error.message}`);
+  });
+  process.on('unhandledRejection', (error) => {
+    void startup?.fail('UNHANDLED_REJECTION', error instanceof Error ? error.stack || error.message : String(error));
+  });
   await app.whenReady();
+  startup.start();
+  startupLog.record('startup.projects');
   const projects = new ProjectStore();
   await projects.load();
   const content = new ContentStore();
   const wechat = await createElectronWechatAdapter();
   const dataChanges = new DataChangeTracker();
+  startupLog.record('startup.cli');
   const cliPath = await installBundledCli(appVersion).catch((error) => {
     diagnosticError(`Failed to install bundled CLI: ${error instanceof Error ? error.stack || error.message : String(error)}`);
     return null;
@@ -78,20 +104,21 @@ async function runDesktop(): Promise<void> {
     minWidth: 920,
     minHeight: 640,
     title: appName,
-    show: !startsInBackground,
+    show: false,
     paintWhenInitiallyHidden: true,
     autoHideMenuBar: process.platform === 'win32',
     icon: join(__dirname, '..', 'renderer', 'logo.png'),
     backgroundColor: '#f5f6f8',
     webPreferences: {
       preload: join(__dirname, '..', 'preload.cjs'),
-      additionalArguments: [`--geo-app-brand=${appName === 'Lingxi Workspace' ? 'lingxi' : 'geo'}`],
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
       webSecurity: true,
     },
   });
+  const htmlPath = join(__dirname, '..', 'renderer', 'index.html');
+  startup.attach(window, htmlPath);
   if (process.platform === 'win32') window.setMenuBarVisibility(false);
   const showWindow = () => {
     if (window.isDestroyed()) return;
@@ -99,6 +126,7 @@ async function runDesktop(): Promise<void> {
     window.show();
     window.focus();
   };
+  window.once('ready-to-show', () => { if (!startsInBackground) showWindow(); });
   if (process.platform === 'darwin') {
     Menu.setApplicationMenu(Menu.buildFromTemplate(macMenuTemplate(appName, showWindow)));
     app.setAboutPanelOptions({ applicationName: appName, applicationVersion: appVersion });
@@ -143,7 +171,7 @@ async function runDesktop(): Promise<void> {
   window.on('close', (event) => {
     // MacUpdater closes windows before it emits app.before-quit. Without this
     // explicit path, the regular "hide on close" behavior blocks installation.
-    if (shuttingDown || closingForUpdate) return;
+    if (shuttingDown || closingForUpdate || startup?.isQuitting) return;
     event.preventDefault();
     window.hide();
   });
@@ -302,6 +330,7 @@ async function runDesktop(): Promise<void> {
   };
 
   const token = await loadOrCreateControlToken();
+  startupLog.record('startup.control-server');
   const controlServer = new ControlServer(token, route);
   const endpoint = await controlServer.start();
   await writeDiscoveryRecord(createDiscoveryRecord(appVersion, cliPath, true));
@@ -561,6 +590,28 @@ async function runDesktop(): Promise<void> {
     clipboard.writeText(JSON.stringify(diagnostic, null, 2));
     return { copied: true as const, diagnostic };
   });
+  ipcMain.handle('geo:diagnostic-logs-export', async (event) => {
+    if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || !isWorkspaceFileUrl(event.senderFrame?.url, htmlPath)) {
+      return { exported: false, message: '不允许从此页面导出诊断日志' };
+    }
+    try {
+      const choice = await dialog.showSaveDialog(window, {
+        title: '导出诊断日志',
+        defaultPath: join(app.getPath('downloads'), 'Lingxi-Workspace-diagnostics-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json'),
+        filters: [{ name: 'JSON 诊断日志', extensions: ['json'] }],
+      });
+      if (choice.canceled || !choice.filePath) return { exported: false, message: '已取消保存' };
+      await writeMaterialDiagnosticReport(choice.filePath, join(dataDirectory(), 'content'), {
+        version: appVersion, platform: process.platform, arch: process.arch,
+        os: process.getSystemVersion(), electron: process.versions.electron,
+        packaged: app.isPackaged, windowsStore: isWindowsStoreRuntime(), mas: isMacAppStoreRuntime(),
+      });
+      return { exported: true, path: choice.filePath };
+    } catch (error) {
+      diagnosticError('Failed to export diagnostic logs: ' + String(error));
+      return { exported: false, message: '诊断日志保存失败，请选择其他保存位置后重试' };
+    }
+  });
   ipcMain.handle('geo:diagnostic-export', async (_event, projectId: unknown, recordId: unknown) => {
     if (typeof projectId !== 'string' || typeof recordId !== 'string') return { exported: false, message: '诊断记录编号无效' };
     ensureCurrentContentProject(projectId);
@@ -570,7 +621,7 @@ async function runDesktop(): Promise<void> {
     window.focus();
     const choice = await dialog.showSaveDialog(window, {
       title: '导出诊断包',
-      defaultPath: join(app.getPath('downloads'), `GEO-Publisher-${record.platform}-diagnostic.zip`),
+      defaultPath: join(app.getPath('downloads'), `Lingxi-Workspace-${record.platform}-diagnostic.zip`),
       filters: [{ name: 'ZIP 诊断包', extensions: ['zip'] }],
       properties: ['createDirectory', 'showOverwriteConfirmation'],
     });
@@ -601,7 +652,8 @@ async function runDesktop(): Promise<void> {
     const error = await shell.openPath(content.backupDirectory);
     return error ? { opened: false, error } : { opened: true };
   });
-  await window.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
+  startupLog.record('startup.load-ui', { htmlPath });
+  await window.loadFile(htmlPath);
   if (!startsInBackground) showWindow();
   updateManager.start();
   // Evidence and updater downloads are diagnostic/temporary data. Clean them
@@ -632,7 +684,13 @@ async function runDesktop(): Promise<void> {
 }
 
 runDesktop().catch((error) => {
-  diagnosticError(`GEO Publisher failed to start: ${error instanceof Error ? error.stack || error.message : String(error)}`);
-  process.exitCode = 1;
-  app.quit();
+  diagnosticError(`Lingxi Workspace failed to start: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+  const message = error instanceof Error ? error.stack || error.message : String(error);
+  if (startup) void startup.fail('MAIN_STARTUP_FAILED', message);
+  else {
+    const fallback = new StartupLog([join(tmpdir(), 'lingxi-startup')]);
+    fallback.record('MAIN_STARTUP_FAILED', { message });
+    dialog.showErrorBox('Lingxi Workspace 启动异常', `程序未能启动。\n${message}\n日志：${fallback.path ?? '无法写入'}`);
+    app.exit(1);
+  }
 });
