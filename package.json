@@ -46,7 +46,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "cos-nodejs-sdk-v5": "^2.15.4",
-    "electron": "^43.1.1",
+    "electron": "43.8.3",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.28.1",
     "playwright": "^1.62.1",

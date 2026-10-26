@@ -63,6 +63,24 @@ try {
           await page.locator('#startup-screen').waitFor({ state: 'hidden' });
           await page.locator('.app-shell').waitFor();
           await assertEventually(async () => assert.match(await readFile(logPath, 'utf8'), /"event":"renderer\.ready"/));
+          if (scenario === 'normal') {
+            // Exercise the SwiftShader probe implicated in Electron #52700.
+            // An unavailable adapter is supported; a killed process is not.
+            // This unpackaged check complements, not replaces, Store testing.
+            const gpuResult = await page.evaluate(async () => {
+              if (!navigator.gpu) return 'WebGPU unavailable';
+              let timer;
+              try {
+                const adapter = await Promise.race([
+                  navigator.gpu.requestAdapter({ forceFallbackAdapter: true }),
+                  new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('WebGPU probe timed out')), 15_000); }),
+                ]);
+                return adapter ? 'fallback adapter available' : 'fallback adapter unavailable';
+              } finally { clearTimeout(timer); }
+            });
+            assert.equal(await page.locator('.app-shell').isVisible(), true);
+            console.log(`WebGPU fallback probe survived: ${gpuResult}`);
+          }
           if (scenario === 'exdev') {
             assert.ok(await application.evaluate(() => globalThis.exdevCount) >= 1);
             assert.equal(JSON.parse(await readFile(join(profile, 'discovery.json'), 'utf8')).ready, true);
