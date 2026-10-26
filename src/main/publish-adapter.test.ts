@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  publishFilledDraft,
   draftContentMatches,
   withPublishEvidence,
   isNeteasePreflightRunning,
@@ -111,5 +112,105 @@ describe('publish screenshot evidence', () => {
     expect(result.screenshotPath).toBeNull();
     if (status === 'success') expect(result.message).toContain('请勿重复发布');
     else expect(result.message).toBe('平台返回结果');
+  });
+});
+
+
+describe('Zhihu publish orchestration', () => {
+  afterEach(() => vi.useRealTimers());
+  const draft = { url: 'https://zhuanlan.zhihu.com/p/42/edit', pageTitle: '写文章', text: '标题 正文 草稿 发布' };
+
+  function fixture(options: { confirmation?: boolean; covered?: boolean; lostAcknowledgement?: boolean; success?: boolean; blocked?: boolean } = {}) {
+    let primaryCount = 0;
+    let confirmationCount = 0;
+    const webContents = {
+      executeJavaScript: vi.fn(async (script: string) => {
+        if (script.includes('clickZhihuPublishControl')) {
+          if (script.endsWith(', "primary")')) {
+            if (options.covered) return { clicked: false, reason: 'covered' };
+            primaryCount++;
+            if (options.lostAcknowledgement) throw new Error('Execution context was destroyed');
+            return { clicked: true, reason: 'clicked' };
+          }
+          if (options.confirmation && !confirmationCount) {
+            confirmationCount++;
+            return { clicked: true, reason: 'clicked' };
+          }
+          return { clicked: false, reason: 'missing' };
+        }
+        if (script.includes('pageTitle: document.title')) {
+          return options.success && (options.confirmation ? confirmationCount : primaryCount)
+            ? { ...draft, url: 'https://zhuanlan.zhihu.com/p/42' } : draft;
+        }
+        return options.blocked ? '安全验证' : null;
+      }),
+      sendInputEvent: vi.fn(),
+    };
+    return { webContents, counts: () => [primaryCount, confirmationCount] };
+  }
+
+  it('does not resend the primary click when the page stays a draft', async () => {
+    vi.useFakeTimers();
+    const { webContents, counts } = fixture();
+    const completion = publishFilledDraft(webContents as never, 'zhihu', '标题');
+    await vi.runAllTimersAsync();
+    expect(await completion).toMatchObject({ status: 'result_uncertain', primaryClicked: true, confirmationClicked: false });
+    expect(counts()).toEqual([1, 0]);
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('recognizes success with confirmation=%s and activates each step once', async confirmation => {
+    vi.useFakeTimers();
+    const { webContents, counts } = fixture({ confirmation, success: true });
+    const completion = publishFilledDraft(webContents as never, 'zhihu', '标题');
+    await vi.runAllTimersAsync();
+    expect(await completion).toMatchObject({ status: 'success', primaryClicked: true, confirmationClicked: confirmation });
+    expect(counts()).toEqual([1, Number(confirmation)]);
+  });
+
+  it('reports an obstructed primary button without claiming a click', async () => {
+    const { webContents, counts } = fixture({ covered: true });
+    expect(await publishFilledDraft(webContents as never, 'zhihu', '标题')).toMatchObject({
+      status: 'action_required', stage: 'publish_click', primaryClicked: false,
+    });
+    expect(counts()).toEqual([0, 0]);
+  });
+
+  it('preserves uncertainty after a lost click acknowledgement without retrying', async () => {
+    vi.useFakeTimers();
+    const { webContents, counts } = fixture({ lostAcknowledgement: true });
+    const completion = publishFilledDraft(webContents as never, 'zhihu', '标题');
+    await vi.runAllTimersAsync();
+    expect(await completion).toMatchObject({ status: 'result_uncertain' });
+    expect(counts()).toEqual([1, 0]);
+  });
+
+  it('can confirm a navigation even when the click acknowledgement was lost', async () => {
+    vi.useFakeTimers();
+    const { webContents, counts } = fixture({ lostAcknowledgement: true, success: true });
+    const completion = publishFilledDraft(webContents as never, 'zhihu', '标题');
+    await vi.runAllTimersAsync();
+    expect(await completion).toMatchObject({ status: 'success' });
+    expect(counts()).toEqual([1, 0]);
+  });
+
+  it('verifies Zhihu content again before dispatching any publish click', async () => {
+    const webContents = { executeJavaScript: vi.fn()
+      .mockResolvedValueOnce({ title: '标题', body: '', expectedBody: '完整正文', expectedBodyLength: 4 })
+      .mockResolvedValue(draft) };
+    expect(await publishFilledDraft(webContents as never, 'zhihu', '标题', '<p>完整正文</p>')).toMatchObject({
+      status: 'action_required', stage: 'draft_verify', primaryClicked: false,
+    });
+    expect(webContents.executeJavaScript.mock.calls.some(([script]) => String(script).includes('clickZhihuPublishControl'))).toBe(false);
+  });
+
+  it('stops before clicking when a platform verification prompt is present', async () => {
+    const { webContents, counts } = fixture({ blocked: true });
+    expect(await publishFilledDraft(webContents as never, 'zhihu', '标题')).toMatchObject({ status: 'action_required', stage: 'publish_blocked' });
+    expect(counts()).toEqual([0, 0]);
+  });
+
+  it.each(['https://zhuanlan.zhihu.com/p/42/edit#settings', 'https://zhuanlan.zhihu.com/p/42/edit/', 'https://example.com/zhuanlan.zhihu.com/p/42'])('does not misreport an editor or unrelated URL as success: %s', url => {
+    expect(isPublishSuccess('zhihu', { ...draft, url }, '标题')).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "description": "Lingxi Workspace desktop application with a built-in persistent browser",
@@ -15,6 +15,7 @@
     "pretest": "node node_modules/electron/install.js",
     "test": "vitest run",
     "test:e2e": "npm run build && npm run build:cli && npm run build:cli:dev && node tests/electron-smoke.mjs && node tests/platform-popups-smoke.mjs && node tests/platform-loading-smoke.mjs && node tests/background-start-smoke.mjs && node tests/launch-at-login-smoke.mjs",
+    "test:zhihu-publish": "node tests/zhihu-publish-smoke.mjs",
     "test:popups": "npm run build && node tests/platform-popups-smoke.mjs",
     "test:platform-loading": "npm run build && node tests/platform-loading-smoke.mjs",
     "test:startup": "npm run build && node tests/startup-smoke.mjs",

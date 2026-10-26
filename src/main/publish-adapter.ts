@@ -1,5 +1,7 @@
 import type { WebContents } from 'electron';
+import { randomUUID } from 'node:crypto';
 import type { Platform } from '../shared/protocol.js';
+import { clickZhihuPublishControl, type ZhihuPublishClick } from './zhihu-publish-controls.js';
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -131,7 +133,7 @@ async function verifyDraftContent(
       const bodyElement = document.querySelector('.ProseMirror[contenteditable="true"],.ql-editor[contenteditable="true"],[data-editor="content"] [contenteditable="true"]');
       title = titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement ? titleElement.value : '';
       body = bodyElement instanceof HTMLElement ? bodyElement.innerText || bodyElement.textContent || '' : '';
-    } else if (platform === 'netease') {
+    } else if (platform === 'netease' || platform === 'zhihu') {
       const titleElement = document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
       const bodyElement = document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
       title = titleElement instanceof HTMLTextAreaElement ? titleElement.value : '';
@@ -360,7 +362,12 @@ export function isPublishSuccess(platform: Platform, state: PageState, title: st
   // “加工中” before it becomes “审核中” or “已发布”. It is an authoritative
   // post-submit state when the exact title is present on that management page.
   const positive = /发布成功|提交成功|审核中|待审核|已发布|发布中|加工中|处理中/.test(state.text);
-  if (platform === 'zhihu') return !/\/edit(?:\?|$)/.test(state.url) && /zhuanlan\.zhihu\.com\/p\//.test(state.url);
+  if (platform === 'zhihu') {
+    try {
+      const url = new URL(state.url);
+      return url.hostname === 'zhuanlan.zhihu.com' && /^\/p\/\d+\/?$/.test(url.pathname);
+    } catch { return false; }
+  }
   if (platform === 'toutiao') {
     return isToutiaoManagementPage(state) && hasTitle && positive;
   }
@@ -406,7 +413,7 @@ async function blocker(webContents: WebContents, state: PageState): Promise<stri
 }
 
 export async function publishFilledDraft(webContents: WebContents, platform: Platform, title: string, html = ''): Promise<PublishResult> {
-  if (html && ['baijia', 'toutiao', 'netease'].includes(platform)) {
+  if (html && ['baijia', 'toutiao', 'netease', 'zhihu'].includes(platform)) {
     const verification = await verifyDraftContent(webContents, platform, title, html);
     if (!verification.matches) {
       const state = await pageStateWithRetry(webContents);
@@ -417,6 +424,7 @@ export async function publishFilledDraft(webContents: WebContents, platform: Pla
       };
     }
   }
+  if (platform === 'zhihu') return await publishZhihuDraft(webContents, title);
   const config = primaryConfig[platform];
   const primaryClicked = platform === 'toutiao'
     ? await clickVisibleDom(webContents, config.texts, config.excludes, config.selector || 'button,[role="button"],li')
@@ -492,4 +500,62 @@ export async function publishFilledDraft(webContents: WebContents, platform: Pla
     return { status: 'result_uncertain', platform, title, stage: 'result_check', message: '已复核企鹅号作品管理页，但暂未找到匹配文章，停止自动重试', url: evidenceState.url, pageText: evidenceState.text.slice(0, 1000), primaryClicked, confirmationClicked };
   }
   return { status: 'result_uncertain', platform, title, stage: 'result_check', message, url: state.url, pageText: state.text.slice(0, 1000), primaryClicked, confirmationClicked };
+}
+
+async function publishZhihuDraft(webContents: WebContents, title: string): Promise<PublishResult> {
+  const sessionId = randomUUID();
+  let primaryClicked = false;
+  let confirmationClicked = false;
+  let unknownClick: 'primary' | 'confirmation' | null = null;
+  let confirmationReason: ZhihuPublishClick['reason'] = 'missing';
+  const clickReasons: Record<ZhihuPublishClick['reason'], string> = {
+    clicked: '按钮已触发', missing: '未找到可操作的新按钮', ambiguous: '存在多个候选按钮',
+    covered: '按钮被其他页面元素遮挡', already_clicked: '按钮已触发，不重复点击',
+    no_session: '页面已刷新，无法确认后续发布步骤',
+  };
+  let state = await pageStateWithRetry(webContents);
+  const result = (status: PublishResult['status'], stage: string, message: string): PublishResult => ({
+    status, platform: 'zhihu', title, stage, message, url: state.url,
+    pageText: state.text.slice(0, 1000), primaryClicked, confirmationClicked,
+  });
+  const click = (phase: 'primary' | 'confirmation'): Promise<ZhihuPublishClick> => webContents.executeJavaScript(
+    `(${clickZhihuPublishControl.toString()})(${JSON.stringify(sessionId)}, ${JSON.stringify(phase)})`, true,
+  );
+  const blocked = await blocker(webContents, state);
+  if (blocked) return result('action_required', 'publish_blocked', `平台阻止发布：${blocked}`);
+  try {
+    const primary = await click('primary');
+    if (!primary.clicked) {
+      return result('action_required', 'publish_click', `ZHIHU_PUBLISH_CLICK_BLOCKED: 发布按钮未点击：${clickReasons[primary.reason]}，请检查页面`);
+    }
+    primaryClicked = true;
+  } catch {
+    // The renderer may navigate after activation but before returning its
+    // acknowledgement. Never retry a click whose delivery is unknown.
+    unknownClick = 'primary';
+  }
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await delay(attempt === 0 ? 1500 : 1000);
+    try {
+      state = await pageStateWithRetry(webContents);
+      if (isPublishSuccess('zhihu', state, title)) return result('success', 'success', '文章已提交并在发布结果页确认');
+      const blocked = await blocker(webContents, state);
+      if (blocked) return result('action_required', 'publish_blocked', `平台阻止发布：${blocked}`);
+      if (!confirmationClicked && !unknownClick) {
+        try {
+          const confirmation = await click('confirmation');
+          confirmationReason = confirmation.reason;
+          confirmationClicked = confirmation.clicked;
+        } catch {
+          unknownClick = 'confirmation';
+        }
+      }
+    } catch {
+      return result('result_uncertain', 'result_check', '知乎发布后页面读取或确认回执丢失，请核对原文章，禁止自动重发');
+    }
+  }
+  if (unknownClick) return result('result_uncertain', 'result_check', `知乎${unknownClick === 'primary' ? '主发布' : '二次确认'}点击回执丢失，未确认发布结果，请核对原文章，禁止自动重发`);
+  return result('result_uncertain', 'result_check', confirmationClicked
+    ? '知乎主发布和二次确认按钮均已触发，但未确认发布结果，请核对原文章，禁止自动重发'
+    : `知乎主发布按钮已触发，但未确认发布结果；后续确认：${clickReasons[confirmationReason]}，请核对原草稿及发布设置，禁止自动重发`);
 }
