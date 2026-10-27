@@ -2,6 +2,9 @@ name: Build macOS DMG
 run-name: Build macOS DMG - ${{ github.ref_name }}
 
 on:
+  push:
+    branches: ['**']
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:

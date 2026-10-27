@@ -1,6 +1,6 @@
 # CI/CD 发布流程
 
-Mac App Store 使用独立的 `Build Mac App Store` 工作流；操作和沙盒验收见 [Mac App Store 构建指南](MAC-APP-STORE.md)。下面的版本标签及 COS 流程适用于原有商店外安装包。
+Mac App Store 使用独立的 `Build Mac App Store` 工作流；普通 macOS DMG 使用 `Build macOS DMG` 工作流。两者都会在分支或 `v*` 标签推送后自动运行，也可以从 Actions 页面手动运行。操作和沙盒验收见 [Mac App Store 构建指南](MAC-APP-STORE.md)。下面的版本标签及 COS 流程适用于原有商店外安装包。
 
 苹果和微软商店包共用 `build/store-version.json` 的商店版本：例如 `1.0.13` 对应苹果 `1.0.13`、Windows `1.0.13.0`。工作流默认读取该文件，不再按各自运行次数决定商店版本。应用内部版本仍由 `npm run version:set` 单独同步。两种商店安装包统一保存在项目 `release/store/`。
 
