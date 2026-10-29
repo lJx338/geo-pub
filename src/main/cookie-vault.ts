@@ -1,6 +1,7 @@
-import { access, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { safeStorage, type Session } from 'electron';
+import { replaceFile } from './file-replacement.js';
 import type { Platform } from '../shared/protocol.js';
 import { dataDirectory } from './runtime-paths.js';
 
@@ -125,7 +126,7 @@ async function writeSnapshot(partition: Session, platform: Platform, path: strin
   await mkdir(dirname(path), { recursive: true });
   try {
     await writeFile(temporary, safeStorage.encryptString(JSON.stringify(cookies)), { mode: 0o600 });
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
     await chmod(path, 0o600);
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
@@ -154,7 +155,7 @@ export async function snapshotPlatformRendererStorage(projectId: string, platfor
   await mkdir(dirname(path), { recursive: true });
   try {
     await writeFile(temporary, safeStorage.encryptString(payload), { mode: 0o600 });
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
     await chmod(path, 0o600);
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);

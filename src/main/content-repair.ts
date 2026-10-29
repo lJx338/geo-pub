@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
+import { replaceFileSync } from './file-replacement.js';
 import { diagnosticError } from './diagnostics.js';
 
 export type ContentRepairNotice = {
@@ -54,7 +55,7 @@ export function repairContentReusePolicies(database: DatabaseSync, databasePath:
       reader.close();
     }
     chmodSync(temporaryBackupPath, 0o600);
-    renameSync(temporaryBackupPath, destination);
+    replaceFileSync(temporaryBackupPath, destination);
     temporaryBackupPath = undefined;
     backupPath = destination;
 

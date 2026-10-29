@@ -50,6 +50,8 @@ jobs:
         run: npx vitest run src/main/windows-store-paths.test.ts src/main/workbuddy-store.test.ts src/main/workbuddy-integration.test.ts src/main/cli-installer.test.ts src/main/material-storage.test.ts src/main/material-diagnostics.test.ts src/main/content-store.test.ts
       - name: Verify material diagnostic export from the desktop UI
         run: node tests/material-diagnostics-smoke.mjs
+      - name: Verify Zhihu publish interactions without contacting the platform
+        run: npm run test:zhihu-publish
       - run: node scripts/prepare-release-output.mjs release/win-smoke
       - run: npx electron-builder --config scripts/windows-config.mjs --win --x64 --publish never --config.directories.output=release/win-smoke
       - shell: pwsh

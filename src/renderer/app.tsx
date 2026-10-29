@@ -210,18 +210,18 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
   const projectId = project?.id || '当前项目 ID';
   const workBuddyPrompts = [
     {
-      number: '1', title: '先登录各个平台', badge: '先完成', description: '进入“平台账号”，依次打开准备使用的平台并完成登录。遇到扫码、验证码或安全验证时，请先在平台页面处理完成。',
-      action: 'accounts',
-    },
-    {
-      number: '2', title: '完成平台登录后连接 WorkBuddy', badge: '必须', action: 'connect',
+      number: '1', title: '连接 WorkBuddy', badge: '必须', action: 'connect',
       description: workBuddy.prepared
         ? <><strong className="workbuddy-workspace-emphasis">先在 WorkBuddy 中创建一个新的工作空间</strong>，将连接指令粘贴到该工作空间的对话框并发送（连接指令已经准备好）；如果 WorkBuddy 无法读取当前项目，再重新连接一次。</>
-        : <>完成平台登录后，<strong className="workbuddy-workspace-emphasis">先在 WorkBuddy 中创建一个新的工作空间</strong>，再点击“连接 WorkBuddy”，将自动复制的连接指令粘贴到该工作空间的对话框并发送。</>,
+        : <><strong className="workbuddy-workspace-emphasis">先在 WorkBuddy 中创建一个新的工作空间</strong>，再点击“连接 WorkBuddy”，将自动复制的连接指令粘贴到该工作空间的对话框并发送。</>,
     },
     {
-      number: '3', title: '配置公司资料', badge: '必须', action: 'profile', description: '把已有的公司简介直接放在提示词最后。没有简介也可以，WorkBuddy 会用两轮以内的问题帮你补齐。',
+      number: '2', title: '配置公司资料', badge: '必须', action: 'profile', description: '把已有的公司简介直接放在提示词最后。没有简介也可以，WorkBuddy 会用两轮以内的问题帮你补齐。',
       prompt: `请帮我配置 ${appName} 当前客户项目的公司资料。\n\n如果当前没有客户项目，请帮我新建一个；如果已经有项目，只更新当前项目，不要修改其他客户。请从我提供的简介中提取并适度润色公司名称、行业、产品或服务、核心优势、目标客户、案例、资质、服务地区、客户常问问题和禁用词。不要收集或写入官网、电话、邮箱、微信等联系方式。只追问最关键的缺失信息，最多两轮。整理完成后先给我看一份简洁摘要，必须等我明确回复“确认创建”或“确认写入”后再保存。不要编造公司事实。\n\n公司简介：\n【把公司简介粘贴到这里】`,
+    },
+    {
+      number: '3', title: '先登录各个平台', badge: '先完成', description: '进入“平台账号”，依次打开准备使用的平台并完成登录。遇到扫码、验证码或安全验证时，请先在平台页面处理完成。',
+      action: 'accounts',
     },
     {
       number: '4', title: '上传并整理图片', badge: '有图片时', action: 'materials', description: '先点击“前往上传图片”，在素材页面添加图片。上传完成后复制整理提示词，发给 WorkBuddy。每张图片只需整理一次。',
@@ -269,7 +269,7 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
     <section className="guide-hero"><div><p className="eyebrow">{appName} 使用指南</p><h2>从客户资料到多平台分发，一步一步完成</h2><p>桌面端负责项目、素材和发布；WorkBuddy 负责理解需求、生成选题和文章。你只需要选择客户、检查内容，再决定是否发布。</p><div className="guide-hero-actions"><Button icon={UsersRound} onClick={() => setView('projects')}>管理客户项目</Button><Button variant="outline" icon={BookOpen} onClick={() => openContent('overview')}>查看内容中心</Button></div></div><div className="guide-status"><Badge tone={project ? 'success' : 'warning'}>{project ? '当前项目已就绪' : '请先创建项目'}</Badge><strong>{project?.name || '尚未选择客户项目'}</strong><small>{workBuddy.prepared ? 'WorkBuddy 连接指令已准备' : '还没有连接 WorkBuddy'}</small></div></section>
     <section className="guide-section"><div className="guide-section-heading"><p className="eyebrow">你可以用它做什么</p><h3>把重复的发布工作集中到一个地方</h3></div><div className="guide-feature-grid">{features.map(([title, description, Icon]) => <Card className="guide-feature" key={title}><Icon size={19}/><h4>{title}</h4><p>{description}</p></Card>)}</div></section>
     <section className="guide-section workbuddy-tutorial">
-      <div className="guide-section-heading"><p className="eyebrow">首次使用</p><h3>搭配 WorkBuddy，从平台登录到自动发布</h3><p>第一次按顺序完成下面 {workBuddyPrompts.length} 步：先登录平台，再连接 WorkBuddy，之后配置资料、准备内容和发布。带【】的内容需要换成自己的平台或资料。</p></div>
+      <div className="guide-section-heading"><p className="eyebrow">首次使用</p><h3>搭配 WorkBuddy，从平台登录到自动发布</h3><p>第一次按顺序完成下面 {workBuddyPrompts.length} 步：先连接 WorkBuddy，再配置资料并登录平台，之后准备内容和发布。带【】的内容需要换成自己的平台或资料。</p></div>
       <aside className="workbuddy-automation-note guide-usage-note" aria-label="使用注意事项">
         <ShieldCheck size={18}/>
         <div><strong>使用注意事项</strong><p>使用时请关闭 VPN／代理（外网工具），保持正常联网。仅支持 Windows 10 及以上的 64 位（x64）电脑，以及搭载 Apple M 系列芯片的 Mac。</p><p>任务运行期间，请保持 WorkBuddy 和 {appName} 打开并运行，确保需要发布的各平台账号已登录，电脑保持联网且不进入睡眠。</p></div>

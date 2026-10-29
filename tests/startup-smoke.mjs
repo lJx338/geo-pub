@@ -8,7 +8,7 @@ const root = await mkdtemp(join(tmpdir(), 'lingxi-startup-'));
 const evidenceDirectory = join(process.cwd(), 'release', 'test-evidence');
 await mkdir(evidenceDirectory, { recursive: true });
 try {
-  for (const scenario of ['normal', 'missing-renderer', 'missing-preload', 'missing-html', 'broken-react', 'invalid-projects', 'renderer-crash']) {
+  for (const scenario of ['normal', 'exdev', 'missing-renderer', 'missing-preload', 'missing-html', 'broken-react', 'invalid-projects', 'renderer-crash']) {
     const fixture = join(root, scenario);
     const profile = join(fixture, 'profile');
     await mkdir(profile, { recursive: true });
@@ -22,6 +22,18 @@ try {
         globalThis.startupDialogs.push(options);
         return new Promise((resolve) => { globalThis.resolveStartupDialog = resolve; });
       };
+      globalThis.exdevCount = 0;
+      if (${JSON.stringify(scenario)} === 'exdev') {
+        const fs = require('node:fs/promises');
+        const rename = fs.rename;
+        fs.rename = async (source, target) => {
+          if (!require('node:path').basename(source).startsWith('.replace-')) {
+            globalThis.exdevCount++;
+            throw Object.assign(new Error('simulated MSIX cross-device rename'), { code: 'EXDEV' });
+          }
+          return rename(source, target);
+        };
+      }
       require('./dist/main/index.cjs');
     `);
     if (scenario === 'missing-renderer') await rm(join(fixture, 'dist/renderer/renderer.js'));
@@ -47,10 +59,33 @@ try {
       } else {
         const page = await application.firstWindow();
         page.setDefaultTimeout(15_000);
-        if (scenario === 'normal' || scenario === 'renderer-crash') {
+        if (scenario === 'normal' || scenario === 'exdev' || scenario === 'renderer-crash') {
           await page.locator('#startup-screen').waitFor({ state: 'hidden' });
           await page.locator('.app-shell').waitFor();
           await assertEventually(async () => assert.match(await readFile(logPath, 'utf8'), /"event":"renderer\.ready"/));
+          if (scenario === 'normal') {
+            // Exercise the SwiftShader probe implicated in Electron #52700.
+            // An unavailable adapter is supported; a killed process is not.
+            // This unpackaged check complements, not replaces, Store testing.
+            const gpuResult = await page.evaluate(async () => {
+              if (!navigator.gpu) return 'WebGPU unavailable';
+              let timer;
+              try {
+                const adapter = await Promise.race([
+                  navigator.gpu.requestAdapter({ forceFallbackAdapter: true }),
+                  new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('WebGPU probe timed out')), 15_000); }),
+                ]);
+                return adapter ? 'fallback adapter available' : 'fallback adapter unavailable';
+              } finally { clearTimeout(timer); }
+            });
+            assert.equal(await page.locator('.app-shell').isVisible(), true);
+            console.log(`WebGPU fallback probe survived: ${gpuResult}`);
+          }
+          if (scenario === 'exdev') {
+            assert.ok(await application.evaluate(() => globalThis.exdevCount) >= 1);
+            assert.equal(JSON.parse(await readFile(join(profile, 'discovery.json'), 'utf8')).ready, true);
+            assert.doesNotMatch(await readFile(logPath, 'utf8'), /MAIN_STARTUP_FAILED/);
+          }
           if (scenario === 'renderer-crash') {
             await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).webContents.forcefullyCrashRenderer());
             await assertEventually(async () => assert.match(await readFile(logPath, 'utf8'), /RENDERER_PROCESS_GONE/));

@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { replaceFile } from './file-replacement.js';
 import { persistSandboxFile } from './sandbox-imports.js';
 
 const MAX_BODY = 96 * 1024 * 1024;
@@ -127,7 +128,7 @@ export class MasCliBridge {
     this.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const path = join(this.options.dataDir, 'mas-cli-bridge.json');
     await writeFile(`${path}.tmp`, JSON.stringify({ url: this.url, pid: process.pid }), { mode: 0o600 });
-    await rename(`${path}.tmp`, path);
+    await replaceFile(`${path}.tmp`, path);
     return this.url;
   }
   async stop(): Promise<void> {

@@ -17,6 +17,7 @@ $certificate = $null
 $installed = $null
 $trustedCertificate = $null
 $logPaths = @()
+$launchedAt = $null
 try {
   $signedPackage = Join-Path $testDirectory $package.Name
   Copy-Item $package.FullName $signedPackage
@@ -59,13 +60,45 @@ try {
     Start-Sleep -Seconds 1
   }
   if (-not $ready) { throw 'Installed MSIX did not render the workspace under its Store identity within 90 seconds.' }
-  Write-Host "MSIX startup smoke passed: $($installed.Version), package identity and renderer ready confirmed."
+  $expectedElectron = (Get-Content (Join-Path $PSScriptRoot '../package.json') -Raw | ConvertFrom-Json).devDependencies.electron
+  if ($begin.details.electron -ne $expectedElectron) {
+    throw "MSIX contains Electron $($begin.details.electron), expected the pinned runtime $expectedElectron."
+  }
+  # A rendered window alone does not prove the package remains usable. Windows
+  # can terminate a GPU child later and mark the package NeedsRemediation.
+  for ($attempt = 0; $attempt -lt 15; $attempt++) {
+    Start-Sleep -Seconds 1
+    $currentPackage = Get-AppxPackage -Name $identity
+    if (-not $currentPackage -or [string]$currentPackage.Status -ne 'Ok') {
+      throw "MSIX became unavailable after rendering: $($currentPackage.Status)"
+    }
+    $mainProcess = Get-Process -Id $begin.pid -ErrorAction SilentlyContinue
+    if (-not $mainProcess -or $mainProcess.HasExited) {
+      throw 'MSIX main process exited after the workspace rendered.'
+    }
+  }
+  Write-Host "MSIX startup smoke passed: $($installed.Version), Electron $expectedElectron, renderer ready and package remains Ok."
 } finally {
   $evidence = Join-Path $ReleaseDirectory 'startup-test-logs'
   New-Item -ItemType Directory -Force -Path $evidence | Out-Null
   $index = 0
   foreach ($logPath in $logPaths) {
     if (Test-Path $logPath) { Copy-Item $logPath (Join-Path $evidence "startup-$index.log"); $index++ }
+  }
+  if ($launchedAt) {
+    foreach ($channel in @('Microsoft-Windows-CodeIntegrity/Operational', 'Microsoft-Windows-AppModel-Runtime/Admin')) {
+      $name = ($channel -replace '[/\\]', '-') + '.json'
+      try {
+        $events = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = $launchedAt } -MaxEvents 300 -ErrorAction Stop |
+          Where-Object { $_.Message -match [regex]::Escape($identity) } |
+          Select-Object TimeCreated, Id, ProviderName, Message)
+        ConvertTo-Json -InputObject $events -Depth 4 | Set-Content (Join-Path $evidence $name) -Encoding UTF8
+      } catch {
+        # A runner may not expose these channels or may have no events. Do not
+        # disguise an unavailable diagnostic source as an empty successful read.
+        $_.Exception.Message | Set-Content (Join-Path $evidence "$name.unavailable.log") -Encoding UTF8
+      }
+    }
   }
   if ($installed) {
     Get-Process | Where-Object {

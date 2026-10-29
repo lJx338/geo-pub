@@ -1,5 +1,6 @@
-import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { replaceFile } from './file-replacement.js';
 import { controlEndpoint, discoveryFilePath } from './runtime-paths.js';
 
 export interface DiscoveryRecord {
@@ -35,7 +36,7 @@ export async function writeDiscoveryRecord(record: DiscoveryRecord): Promise<str
   const temporary = `${path}.new`;
   await mkdir(dirname(path), { recursive: true });
   await writeFile(temporary, JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 });
-  await rename(temporary, path);
+  await replaceFile(temporary, path);
   if (process.platform !== 'win32') await chmod(path, 0o600);
   return path;
 }

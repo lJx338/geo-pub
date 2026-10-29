@@ -1,6 +1,6 @@
 # CI/CD 发布流程
 
-Mac App Store 使用独立的 `Build Mac App Store` 工作流；操作和沙盒验收见 [Mac App Store 构建指南](MAC-APP-STORE.md)。下面的版本标签及 COS 流程适用于原有商店外安装包。
+Mac App Store 使用独立的 `Build Mac App Store` 工作流；普通 macOS DMG 使用 `Build macOS DMG` 工作流。两者都会在分支或 `v*` 标签推送后自动运行，也可以从 Actions 页面手动运行。操作和沙盒验收见 [Mac App Store 构建指南](MAC-APP-STORE.md)。下面的版本标签及 COS 流程适用于原有商店外安装包。
 
 苹果和微软商店包共用 `build/store-version.json` 的商店版本：例如 `1.0.13` 对应苹果 `1.0.13`、Windows `1.0.13.0`。工作流默认读取该文件，不再按各自运行次数决定商店版本。应用内部版本仍由 `npm run version:set` 单独同步。两种商店安装包统一保存在项目 `release/store/`。
 
@@ -11,6 +11,12 @@ Mac App Store 使用独立的 `Build Mac App Store` 工作流；操作和沙盒�
 Windows CI 在构建 CLI 后验证路径解析、普通安装包隔离，以及从外部 PowerShell 调用 production CLI 读取实际连接数据；测试使用 junction 模拟目录重定向。真实 MSIX 包发布前仍需在 Windows 上从包外验证连接指令，不能把该模拟测试当作商店安装验收。
 
 `Validate MSIX` 还会检查包内 ASAR 的主程序、preload、界面脚本和独立启动提示页。它在临时 Windows Runner 中给安装包副本签署测试证书，安装并通过 AppsFolder 激活应用；必须记录 `windowsStore: true`、`packaged: true` 和 `renderer.ready` 才算启动成功，且不加 `--disable-gpu`。测试副本和证书随后清理，上传商店的原始包不变。该步骤需要支持桌面包激活的 Windows Runner。
+
+Electron 固定为 `43.8.3`，包含上游从 `43.5.0` 发布的 [MSIX WebGPU/SwiftShader 进程终止修复](https://releases.electronjs.org/pr/53197)。旧版 `43.1.1` 不包含该修复；相关已知问题可能使包进入 `Modified, NeedsRemediation`，但这个包状态本身不能确定具体 DLL 或触发原因。2026-10-26 收到的受影响机器日志进一步确认了 CodeIntegrity 事件 3033：`Lingxi Workspace.exe` 加载 `vk_swiftshader.dll` 被签名级别要求拒绝，安装包仍为 `1.0.17.0`。这与上游缺陷吻合，不能把这种故障归因于文章数据库损坏，也不能把同版本的商店恢复误认为正常版本升级。
+
+商店安装验收核对实际运行库版本，并在界面就绪后观察 15 秒，要求主进程存活且包状态持续为 `Ok`；同时保存 CodeIntegrity 和 AppModel-Runtime 事件用于失败诊断。本地启动测试另执行 WebGPU fallback adapter 请求，适配器不可用本身不算失败，进程必须保持可用。这些检查不代替真实商店签名环境和受影响硬件上的验证。
+
+此升级是针对已知缺陷的候选修复，发布前需在受影响的 Windows 电脑通过商店测试渠道或实际商店包验证：保留客户数据及备份，打开之前触发退出的网页，测试 WebGPU 路径、关闭重开，并确认包状态仍为 `Ok`。修复前后的 CodeIntegrity 日志应与退出时间对应；如果发现其他 DLL 或没有匹配事件，需要继续排查。不要通过关闭 Windows 完整性检查、GPU 沙盒或删除数据库来验收。当前本地 macOS 测试不能证明 Windows/MSIX 故障已经消除。
 
 启动阶段、版本、商店身份、preload/页面加载失败和渲染进程退出信息写入数据目录的 `diagnostics/startup.log`（1 MiB 轮转，保留上一份）；目录不可写时回退到系统临时目录，再失败则保留内存记录。错误提示页和原生弹窗都提供复制诊断信息，无需用户运行命令。Windows 错误弹窗提供“兼容模式重启”，选择后会在数据目录记住软件渲染设置。日志不采集客户项目内容、登录 cookie 或控制令牌。`npm run test:startup` 覆盖正常启动及故障场景。
 

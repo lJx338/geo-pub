@@ -1,5 +1,6 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { replaceFileSync } from './file-replacement.js';
 
 const MAX_LOG_BYTES = 1024 * 1024;
 const MAX_REPORT_CHARS = 48_000;
@@ -32,7 +33,7 @@ export class StartupLog {
     if (this.recent.length > 80) this.recent.shift();
     if (!this.path) return;
     try {
-      if (statSync(this.path).size >= MAX_LOG_BYTES) renameSync(this.path, `${this.path}.1`);
+      if (statSync(this.path).size >= MAX_LOG_BYTES) replaceFileSync(this.path, `${this.path}.1`);
       appendFileSync(this.path, `${line}\n`, { mode: 0o600 });
     } catch {
       this.diskWriteFailed = true;

@@ -265,23 +265,22 @@ export async function ensureZhihuEditor(webContents: WebContents, timeoutMs = 12
       const blockingDialog = [...document.querySelectorAll('[role="dialog"],.Modal-wrapper,.Modal-content')]
         .filter(visible).find((element) => /草稿加载中|草稿正在加载|正在加载草稿/.test(String(element.textContent || '')));
       const confirm = blockingDialog ? [...blockingDialog.querySelectorAll('button,[role="button"]')]
-        .filter(visible).find((element) => String(element.textContent || '').replace(/\s+/g, '') === '确定') : null;
+        .filter(visible).find((element) => String(element.textContent || '').replace(/\\s+/g, '') === '确定') : null;
       if (confirm instanceof HTMLElement) {
-        const rect = confirm.getBoundingClientRect();
-        return { ready: false, loginBlocked: false, dismiss: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } };
+        confirm.click();
+        return { ready: false, loginBlocked: false, dismissed: true };
       }
       const title = document.querySelector(${JSON.stringify(TITLE_SELECTOR)});
       const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
       return {
-        ready: title instanceof HTMLTextAreaElement && !title.disabled && !title.readOnly
+        ready: !blockingDialog && title instanceof HTMLTextAreaElement && !title.disabled && !title.readOnly
           && visible(title) && body instanceof HTMLElement && body.isContentEditable && visible(body),
         loginBlocked: /登录知乎|请先登录|扫码登录|验证码|安全验证|验证身份|账号异常/.test(text),
-        dismiss: null,
+        dismissed: false,
       };
     })()`);
     if (state.loginBlocked) throw new Error('ZHIHU_LOGIN_REQUIRED: 请在桌面端完成知乎登录或验证');
-    if (state.dismiss) {
-      await cdpClick(webContents, { x: Math.round(state.dismiss.x), y: Math.round(state.dismiss.y) });
+    if (state.dismissed) {
       readyStreak = 0;
       await delay(1000);
       continue;
@@ -629,7 +628,10 @@ export async function fillZhihuDraft(
   if (!content.titleFilled || !content.bodyFilled) {
     throw new Error(`ZHIHU_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}, expectedLength=${content.bodyExpectedLength}, actualLength=${content.bodyTextLength}, draftWordCount=${content.draftWordCount}`);
   }
-  await delay(1000);
+  // Creating the server-side draft can finish after the editor DOM has
+  // accepted the content. Zhihu may show its loading notice during that
+  // transition; settle it before changing settings or activating publish.
+  await ensureZhihuEditor(webContents);
   const publishSettingsOpened = await openPublishSettings(webContents);
   if (publishSettingsOpened) {
     for (let attempt = 0; attempt < 12; attempt += 1) {

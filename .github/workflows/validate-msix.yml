@@ -97,6 +97,7 @@ jobs:
           name: lingxi-msix-startup-diagnostics
           path: |
             release/store/startup-test-logs/*.log
+            release/store/startup-test-logs/*.json
             release/test-evidence/startup-*.png
           if-no-files-found: ignore
           retention-days: 14

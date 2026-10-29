@@ -34,7 +34,7 @@ try {
   const window = await app.firstWindow();
   const errors = []; window.on('pageerror', (error) => errors.push(error.message));
   await window.locator('.app-sidebar').waitFor();
-  assert.equal(await window.title(), process.platform === 'win32' ? 'Lingxi Workspace' : 'GEO Publisher');
+  assert.equal(await window.title(), 'Lingxi Workspace');
   await app.evaluate(({ dialog }, imagePath) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [imagePath] });
     globalThis.__wechatDesktopTest = { calls: [], drafts: {}, nextId: 1, hold: false, release: null, readFails: false, timeout: false };
@@ -189,14 +189,14 @@ try {
   assert.equal(await window.locator('.distribution-history-row').filter({ hasText: '草稿已保存' }).first().locator('small').evaluate((element) => getComputedStyle(element).color), 'rgb(2, 122, 72)');
   const historyScreenshot = join(root, 'wechat-in-main-history.png'); await window.screenshot({ path: historyScreenshot });
 
-  // Exercise the production CLI used by WorkBuddy: one topic, seven distinct saved
+  // Exercise the production CLI used by WorkBuddy: one topic, eight distinct saved
   // packages, then the WeChat package through the same desktop API and history.
   await app.evaluate(() => { globalThis.__wechatDesktopTest.timeout = false; });
   const instructions = await cli(['instructions', '--json']);
-  assert.deepEqual(instructions.platformOrder, ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease', 'wechat']);
+  assert.deepEqual(instructions.platformOrder, ['baijia', 'toutiao', 'zhihu', 'penguin', 'sohu', 'netease', 'wechat', 'lieju']);
   const topic = (await cli(['content', 'save', projectA], { kind: 'topic', title: '设备采购前如何核对需求', status: 'approved',
     payload: { coreQuestion: '设备采购前如何核对需求', directAnswer: '先核对工况和验收条件。', articleType: 'question' } })).item;
-  const taskId = 'seven-platform-integration';
+  const taskId = 'eight-platform-integration';
   await cli(['topic', 'reserve', projectA, '--topic', topic.id, '--task', taskId]);
   const packages = [];
   for (const [index, platform] of instructions.platformOrder.entries()) {
@@ -215,8 +215,8 @@ try {
   const topicsBeforeUse = (await cli(['content', 'list', projectA, 'topic'])).items;
   assert.equal(topicsBeforeUse.length, 1); assert.equal(topicsBeforeUse[0].usageCount, 0);
   const savedPackages = (await cli(['content', 'list', projectA, 'article'])).items.filter((item) => item.payload.topicId === topic.id);
-  assert.equal(savedPackages.length, 7); assert.equal(new Set(savedPackages.map((item) => item.platform)).size, 7);
-  assert.equal(new Set(savedPackages.map((item) => JSON.stringify(item.payload.document))).size, 7);
+  assert.equal(savedPackages.length, 8); assert.equal(new Set(savedPackages.map((item) => item.platform)).size, 8);
+  assert.equal(new Set(savedPackages.map((item) => JSON.stringify(item.payload.document))).size, 8);
   const wechatPackage = packages.find((item) => item.platform === 'wechat');
   await cli(['topic', 'use', projectA, '--topic', topic.id, '--task', taskId, '--article', wechatPackage.id]);
   const usedTopic = (await cli(['content', 'list', projectA, 'topic'])).items[0];
