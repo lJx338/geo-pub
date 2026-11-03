@@ -193,6 +193,86 @@ async function waitForEditorEmpty(webContents: WebContents, timeoutMs = 12_000):
   throw new Error('ZHIHU_CLEAR_FAILED: 旧正文未清空，已停止以避免内容追加');
 }
 
+// Use Chromium editing commands so Draft.js receives native input events.
+// Never send Backspace until the selection is confined to the complete body.
+export async function clearZhihuEditor(webContents: WebContents): Promise<void> {
+  await withDebugger(webContents, async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const point = await webContents.executeJavaScript(`(() => {
+        window.getSelection()?.removeAllRanges();
+        const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+        if (!(body instanceof HTMLElement) || !body.isContentEditable) return null;
+        body.scrollIntoView({ block: 'start', inline: 'nearest' });
+        const rect = body.getBoundingClientRect();
+        const left = Math.max(0, rect.left), right = Math.min(innerWidth, rect.right);
+        const top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
+        if (right - left < 4 || bottom - top < 4) return null;
+        // Long articles can extend far outside the viewport; hit-test only
+        // visible points and reject toolbars, assistants and overlay dialogs.
+        for (const fy of [0.25, 0.5, 0.75]) {
+          for (const fx of [0.25, 0.5, 0.75]) {
+            const x = left + (right - left) * fx, y = top + (bottom - top) * fy;
+            const hit = document.elementFromPoint(x, y);
+            if (hit instanceof HTMLElement && body.contains(hit) && hit.isContentEditable
+              && hit.closest('[contenteditable="true"]') === body) return { x, y };
+          }
+        }
+        return null;
+      })()`);
+      if (point) {
+        await cdpClick(webContents, point);
+        const focused = await webContents.executeJavaScript(`(() => {
+          const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+          if (!(body instanceof HTMLElement)) return false;
+          body.focus({ preventScroll: true });
+          const selection = window.getSelection();
+          return (document.activeElement === body || body.contains(document.activeElement))
+            && Boolean(selection?.anchorNode && selection.focusNode
+              && body.contains(selection.anchorNode) && body.contains(selection.focusNode));
+        })()`);
+        if (focused) {
+          const modifiers = process.platform === 'darwin' ? 4 : 2;
+          await webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+            type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers, commands: ['selectAll'],
+          });
+          await webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+            type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers,
+          });
+          const safe = await webContents.executeJavaScript(`(() => {
+            const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+            const selection = window.getSelection();
+            if (!(body instanceof HTMLElement) || !body.isContentEditable
+              || !(document.activeElement === body || body.contains(document.activeElement))
+              || !selection || selection.rangeCount !== 1
+              || !body.contains(selection.anchorNode) || !body.contains(selection.focusNode)) return false;
+            const range = selection.getRangeAt(0);
+            const before = document.createRange(); before.selectNodeContents(body);
+            before.setEnd(range.startContainer, range.startOffset);
+            const after = document.createRange(); after.selectNodeContents(body);
+            after.setStart(range.endContainer, range.endOffset);
+            const hasContent = (fragment) => Boolean(String(fragment.textContent || '').replace(/[\\u200b-\\u200d\\ufeff]/g, '').trim()
+              || fragment.querySelector('img,hr,video,audio,iframe,[contenteditable="false"]'));
+            return !hasContent(before.cloneContents()) && !hasContent(after.cloneContents());
+          })()`);
+          if (safe) {
+            await webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+              type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, commands: ['deleteBackward'],
+            });
+            await webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+              type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8,
+            });
+            await waitForEditorEmpty(webContents);
+            return;
+          }
+        }
+      }
+      await webContents.executeJavaScript('window.getSelection()?.removeAllRanges()');
+      await delay(120);
+    }
+    throw new Error('ZHIHU_CLEAR_FAILED: 无法确认选区完整位于正文编辑器内，已停止删除和填充');
+  });
+}
+
 async function clickEditorControl(webContents: WebContents, labels: string[], scope: 'toolbar' | 'menu' = 'toolbar'): Promise<boolean> {
   const point = await webContents.executeJavaScript(`(() => {
     const labels = ${JSON.stringify(labels)};
@@ -341,38 +421,17 @@ async function fillContent(webContents: WebContents, title: string, html: string
     titleElement.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: requestedTitle }));
     titleElement.dispatchEvent(new Event('change', { bubbles: true }));
 
-    bodyElement.scrollIntoView({ block: 'center', inline: 'nearest' });
-    const rect = bodyElement.getBoundingClientRect();
-    return { ready: true, expected, requestedBody, blocks, point: { x: rect.left + Math.min(rect.width / 2, 320), y: rect.top + Math.min(rect.height / 2, 120) } };
+    return { ready: true, expected, requestedBody, blocks };
   })()`);
-  if (!prepared.ready || !prepared.point) {
+  if (!prepared.ready) {
     return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, bodyExpectedLength: prepared.requestedBody?.length || 0, draftWordCount: 0, draftStateVerified: false, draftVerificationSource: 'none', formatVerification: { expected: prepared.expected || { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] } };
   }
 
-  // Draft.js persists React ContentState, not direct DOM assignments. Use one
-  // Chromium input path throughout so a hidden Windows WebContents cannot lose
-  // focus between an Electron event and a CDP event.
-  await webContents.executeJavaScript(`(() => {
-    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
-    if (!(body instanceof HTMLElement)) return false;
-    body.focus({ preventScroll: true });
-    const range = document.createRange(); range.selectNodeContents(body);
-    const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
-    return true;
-  })()`);
   const debuggerApi = webContents.debugger;
   const attachedHere = !debuggerApi.isAttached();
   try {
     if (attachedHere) debuggerApi.attach('1.3');
-    await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: prepared.point.x, y: prepared.point.y });
-    await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: prepared.point.x, y: prepared.point.y, button: 'left', clickCount: 1 });
-    await debuggerApi.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: prepared.point.x, y: prepared.point.y, button: 'left', clickCount: 1 });
-    const modifiers = process.platform === 'darwin' ? 4 : 2;
-    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers, commands: ['selectAll'] });
-    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers });
-    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, commands: ['deleteBackward'] });
-    await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
-    await waitForEditorEmpty(webContents);
+    await clearZhihuEditor(webContents);
     const enter = async () => {
       await ensureZhihuEditorInputFocus(webContents);
       await debuggerApi.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
