@@ -101,7 +101,10 @@ Run `geo-publisher schema --json` before assembling the first request in a task.
 - `document.title` is the published title. `document.blocks` must use semantic blocks: `paragraph`、`heading`（only level 2 or 3）、`list`、`quote`、`divider`、`image`.
 - Keep text natural. Do not put raw Markdown markers (`##`、`-`、`>`) or raw HTML into block text.
 - `document.summary` is optional platform metadata. Every ready article must provide two to five concise, article-specific topics or keywords in `document.tags`, such as `企业AI` and `流程优化`; omit a leading `#`. Lingxi Workspace appends them to the article ending and also fills a platform-native topic field when supported.
+- Zhihu requires at least one valid `document.tags` entry and at least one verified native topic selection. `ZHIHU_TOPICS_REQUIRED` rejects missing input; `ZHIHU_TOPICS_NOT_SELECTED` stops filling/publishing when no requested exact or related topic was confirmed selected. Partial matches can proceed if at least one is selected; still report unresolved tags.
+- For Zhihu, the desktop first searches the native “文章话题” field for exact names from `document.tags`. If unavailable, it searches shorter complete keywords and conservatively checks candidate qualifiers against the article title/body. Each fill first removes the previous draft’s native selected topics and verifies they are cleared, then selects topics for the current article. `ZHIHU_TOPICS_CLEAR_FAILED` stops the flow if cleanup cannot be confirmed; never publish with stale topics. It verifies actual new selections. Report `topicsApplied` (actual selected names), `topicsUnmatched` (unresolved original tags), `topicWarnings`, `topicFailures` (per-request failure code/message), and each `topicSelections` mapping (`requested`, `selected`, `match`, `query`, `reason`); explicitly disclose every `related` replacement. `topicsVerified=true` means every request has a verified exact or related selection, not that all names matched exactly. Unrelated or equally supported alternatives are skipped. `topicsUnmatched` means unresolved, not necessarily searched and absent: use `topicFailures` to distinguish `NO_MATCH` from field/input/focus/click/verification failures or `NOT_ATTEMPTED`. Do not call a control failure “no matching topic”, or infer a platform limit solely from a missing add button. Do not count body hashtags, typed search text, or recommendations as selected topics; original document tags are not rewritten.
 - An `image` block needs a real http(s) URL. A local image path belongs only in `coverPath`.
+- All six platforms require a non-empty `coverPath` pointing to an existing local image. This is Lingxi’s configured policy. For Zhihu, Penguin and Sohu, use PNG/JPG/JPEG; the desktop uploads it through the native cover picker and verifies the article cover preview; `coverStatus=applied` and `coverUploaded=true` indicate this check passed. An empty path is rejected with `COVER_REQUIRED`. An upload/selection failure stops the fill/publish flow with `*_COVER_NOT_APPLIED`; never report a body image or an unconfirmed upload thumbnail as the article cover.
 - Do not rewrite an article to fit a platform after it has been produced. Let Lingxi Workspace render the same structured content for that platform and return a format-verification result.
 
 Example input for `validate` or `fill`:
@@ -121,7 +124,7 @@ Example input for `validate` or `fill`:
     "summary": "用三类流程判断 AI 工具的部署优先级。",
     "tags": ["企业AI", "流程优化", "数字化"]
   },
-  "coverPath": ""
+  "coverPath": "/absolute/path/to/cover.jpg"
 }
 ```
 

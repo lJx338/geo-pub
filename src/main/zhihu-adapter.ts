@@ -1,10 +1,12 @@
 import type { WebContents } from 'electron';
+import { fillZhihuTopics, type ZhihuTopicsResult } from './zhihu-topics.js';
+import { fillArticleCover, type ArticleCoverResult } from './article-cover.js';
 
 const PUBLISH_URL = 'https://zhuanlan.zhihu.com/write';
 const TITLE_SELECTOR = 'textarea[placeholder*="请输入标题"]';
 const BODY_SELECTOR = '.public-DraftEditor-content[contenteditable="true"][role="textbox"],.public-DraftEditor-content[contenteditable="true"]';
 
-export interface ZhihuDraftFillResult {
+export interface ZhihuDraftFillResult extends ZhihuTopicsResult, ArticleCoverResult {
   titleFilled: boolean;
   bodyFilled: boolean;
   title: string;
@@ -681,6 +683,8 @@ export async function fillZhihuDraft(
   webContents: WebContents,
   title: string,
   html: string,
+  tags: readonly string[] = [],
+  coverPath = '',
 ): Promise<ZhihuDraftFillResult> {
   await ensureZhihuEditor(webContents);
   const content = await fillContent(webContents, title, html);
@@ -717,6 +721,8 @@ export async function fillZhihuDraft(
   }
   let declaration = { found: false, selected: false };
   if (publishSettingsOpened) declaration = await ensureAiDeclaration(webContents);
+  const topics = await fillZhihuTopics(webContents, tags, `${title}\n${html}`);
+  const cover = await fillArticleCover(webContents, 'zhihu', coverPath);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = ${normalizeZhihuEditorText.toString()};
     const visible = (element) => element instanceof HTMLElement && (() => {
@@ -734,6 +740,8 @@ export async function fillZhihuDraft(
   await delay(1_500);
   return {
     ...content,
+    ...topics,
+    ...cover,
     publishSettingsOpened,
     aiDeclarationFound: declaration.found,
     aiDeclarationSelected: declaration.selected,

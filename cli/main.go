@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -27,7 +28,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "1.0.19"
+var version = "1.0.20"
 var buildMode = "production"
 
 var platforms = map[string]bool{
@@ -218,7 +219,7 @@ func run(args []string) (string, json.RawMessage, error) {
 			return command, mustJSON(map[string]any{
 				"valid": true, "projectId": input.ProjectID, "platform": input.Platform, "title": input.Document.Title,
 				"titleLength": len([]rune(input.Document.Title)), "blockCount": len(input.Document.Blocks),
-				"coverRequired": input.Platform == "baijia" || input.Platform == "toutiao" || input.Platform == "netease",
+				"coverRequired": true, "topicsRequired": input.Platform == "zhihu",
 			}), nil
 		}
 		if command == "publish" && !input.ConfirmPublish {
@@ -633,7 +634,7 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 projectId、platform、document、coverPath（可选）、confirmPublish（publish 必须为 true）、platformOptions（仅明确覆盖单次发布时使用）"}
+		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 projectId、platform、document、coverPath（所有平台必填）、confirmPublish（publish 必须为 true）、platformOptions（仅明确覆盖单次发布时使用）"}
 	}
 	if input.Document.Tags == nil {
 		input.Document.Tags = []string{}
@@ -698,13 +699,23 @@ func validateFill(input fillInput) error {
 	if input.Platform == "netease" && (titleLength < 5 || titleLength > 64) {
 		return usageError("网易号 document.title 必须为 5-64 个字符")
 	}
-	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" && !filepath.IsAbs(input.CoverPath) {
+	if strings.TrimSpace(input.CoverPath) == "" {
+		return &cliError{code: "COVER_REQUIRED", message: "所有平台必须提供封面图片", suggestion: "在 coverPath 中填写现有封面图片的绝对路径"}
+	}
+	if !filepath.IsAbs(input.CoverPath) {
 		return usageError("coverPath 必须是绝对路径")
 	}
-	if input.Platform != "zhihu" && input.Platform != "penguin" && input.Platform != "sohu" {
-		info, err := os.Stat(input.CoverPath)
-		if err != nil || info.IsDir() {
-			return &cliError{code: "COVER_NOT_FOUND", message: "找不到封面文件：" + input.CoverPath, suggestion: "传入当前电脑上的封面绝对路径"}
+	info, err := os.Stat(input.CoverPath)
+	if err != nil || info.IsDir() {
+		return &cliError{code: "COVER_NOT_FOUND", message: "找不到封面文件：" + input.CoverPath, suggestion: "传入当前电脑上的封面绝对路径"}
+	}
+	if input.Platform == "zhihu" {
+		hasTopic := false
+		for _, tag := range input.Document.Tags {
+			hasTopic = hasTopic || strings.TrimFunc(tag, func(r rune) bool { return unicode.IsSpace(r) || r == '#' || r == '＃' }) != ""
+		}
+		if !hasTopic {
+			return &cliError{code: "ZHIHU_TOPICS_REQUIRED", message: "知乎必须提供至少一个有效话题，并确认在文章话题栏选中", suggestion: "填写 document.tags，正文中的 #话题不能代替原生话题选择"}
 		}
 	}
 	return nil
@@ -962,9 +973,9 @@ func commandSchema() json.RawMessage {
 					{"type": "image", "src": "https:// image URL", "alt": "optional string"},
 				},
 				"summary": "optional string, maximum 120 characters",
-				"tags":    "optional array, maximum 9",
+				"tags":    "array, maximum 9; at least one non-empty topic required for zhihu; at least one native topic must be confirmed selected",
 			},
-			"coverPath":      "absolute local path; required for baijia, toutiao, netease",
+			"coverPath":      "absolute local path to an existing image; required for all platforms",
 			"confirmPublish": "must be true for publish",
 			"platformOptions": map[string]any{
 				"usage": "omit to use current project defaults; only send when the user explicitly requests a one-shot override",

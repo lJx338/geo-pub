@@ -1,6 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
 import { OperationTimeoutError, PlatformSessions, pickEvictionCandidate, platformPartitionName, platformRuntimeState, projectPartitionName, shouldForegroundPlatformAutomation, withOperationDeadline } from './platform-sessions.js';
 
+describe('required fields before publication', () => {
+  it.each([
+    ['zhihu', { coverUploaded: true, coverStatus: 'applied', topicsApplied: [] }, 'ZHIHU_TOPICS_NOT_SELECTED'],
+    ['zhihu', { coverUploaded: false, topicsApplied: ['化工'] }, 'ZHIHU_COVER_NOT_APPLIED'],
+    ['penguin', { coverUploaded: false }, 'PENGUIN_COVER_NOT_APPLIED'],
+    ['sohu', { coverUploaded: false }, 'SOHU_COVER_NOT_APPLIED'],
+  ] as const)('stops %s before reaching the publish page when required fields are unverified', async (platform, fill, code) => {
+    const sessions = Object.create(PlatformSessions.prototype) as PlatformSessions;
+    const getView = vi.fn();
+    Object.assign(sessions, {
+      ensureProject: () => 'project',
+      runExclusive: (work: () => Promise<unknown>) => work(),
+      fillDraftInternal: async () => fill,
+      background: null,
+      views: { get: getView },
+    });
+    await expect(sessions.publishDraft(platform, { title: '测试文章', blocks: [{ type: 'paragraph', text: '正文' }], tags: ['化工'] }, '/tmp/cover.jpg')).rejects.toThrow(code);
+    expect(getView).not.toHaveBeenCalled();
+  });
+});
+
 describe('platform view eviction', () => {
   it('evicts the least recently used inactive platform', () => {
     expect(pickEvictionCandidate([

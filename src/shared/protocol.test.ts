@@ -25,7 +25,7 @@ describe('control protocol', () => {
   });
 
   it('requires an explicit confirmation for real publishing', () => {
-    const base = { id: '1', token: 'x'.repeat(32), action: 'draft.publish', projectId, platform: 'sohu', document, coverPath: '' };
+    const base = { id: '1', token: 'x'.repeat(32), action: 'draft.publish', projectId, platform: 'sohu', document, coverPath: '/tmp/cover.jpg' };
     expect(controlRequestSchema.safeParse(base).success).toBe(false);
     expect(controlRequestSchema.safeParse({ ...base, confirmPublish: true }).success).toBe(true);
   });
