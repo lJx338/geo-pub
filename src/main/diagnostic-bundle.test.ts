@@ -32,7 +32,8 @@ function failedDistribution(projectId: string, screenshotPath: string): ContentI
       mode: 'publish',
       startedAt: timestamp,
       completedAt: timestamp,
-      evidence: { stage: 'result_check', url: 'https://mp.toutiao.com/profile_v4/graphic/articles', screenshotPath },
+      evidence: { stage: 'toutiao_preview', url: 'https://mp.toutiao.com/profile_v4/graphic/publish', screenshotPath,
+        adDialogObserved: true, adConfirmationClicked: true, adDialogClosed: true, previewObserved: false, confirmationClicked: false },
       error: {
         code: 'TOUTIAO_RESULT_UNCERTAIN',
         message: '页面失败 token=secret-token，正文：不应进入诊断包',
@@ -67,6 +68,9 @@ describe('distribution diagnostic bundles', () => {
       expect(zip.readAsText('record.json')).not.toContain('secret-token');
       expect(zip.readAsText('record.json')).not.toContain('不应进入诊断包');
       const diagnostic = JSON.parse(zip.readAsText('diagnostic.json')) as Record<string, unknown>;
+      const steps = { adDialogObserved: true, adConfirmationClicked: true, adDialogClosed: true, previewObserved: false, confirmationClicked: false };
+      expect(diagnostic.result).toMatchObject(steps);
+      expect(JSON.parse(zip.readAsText('record.json')).payload.evidence).toMatchObject(steps);
       expect(JSON.stringify(diagnostic)).not.toContain('secret-token');
       expect(JSON.stringify(diagnostic)).not.toContain('不应进入诊断包');
       expect(zip.readFile('evidence/failure.png')?.toString()).toBe('png-test');

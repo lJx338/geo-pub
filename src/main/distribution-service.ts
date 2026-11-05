@@ -62,7 +62,7 @@ function resultEvidence(result: unknown): Record<string, unknown> {
   const fill = value.fill && typeof value.fill === 'object' ? value.fill as Record<string, unknown> : value;
   const fillEvidence = Object.fromEntries(['topicsRequested', 'topicsApplied', 'topicsUnmatched', 'topicsVerified', 'topicWarnings', 'topicFailures', 'topicSelections', 'coverUploaded', 'coverStatus']
     .filter(key => fill[key] !== undefined).map(key => [key, fill[key]]));
-  return { ...fillEvidence, ...Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'pageText', 'screenshotStatus', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked']
+  return { ...fillEvidence, ...Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'pageText', 'screenshotStatus', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked', 'adDialogObserved', 'adConfirmationClicked', 'adDialogClosed', 'previewObserved']
     .filter((key) => value[key] !== undefined)
     .map((key) => [key, value[key]])) };
 }

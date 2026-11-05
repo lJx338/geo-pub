@@ -2,6 +2,7 @@ import type { WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
 import type { Platform } from '../shared/protocol.js';
 import { clickZhihuPublishControl, type ZhihuPublishClick } from './zhihu-publish-controls.js';
+import { clickToutiaoPublishControl, inspectToutiaoPublishControls } from './toutiao-publish-controls.js';
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -15,6 +16,10 @@ export interface PublishResult {
   pageText: string;
   primaryClicked: boolean;
   confirmationClicked: boolean;
+  adDialogObserved?: boolean;
+  adConfirmationClicked?: boolean;
+  adDialogClosed?: boolean;
+  previewObserved?: boolean;
 }
 
 /** Screenshot capture is independent of the platform's publishing result. */
@@ -213,78 +218,94 @@ async function clickVisibleDom(
   })()`);
 }
 
-async function clickDialogButtonDom(webContents: WebContents, text: string): Promise<boolean> {
-  return await webContents.executeJavaScript(`(() => {
-    const normalize=(value)=>String(value||'').replace(/\\s+/g,' ').trim();
-    const visible=(element)=>element instanceof HTMLElement&&(()=>{const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden';})();
-    const button=[...document.querySelectorAll('[role="dialog"] button,[class*="modal"] button,[class*="Modal"] button,[class*="dialog"] button,[class*="Dialog"] button')]
-      .filter(visible).find((element)=>normalize(element.textContent)===${JSON.stringify(text)}&&!element.hasAttribute('disabled'));
-    if(!(button instanceof HTMLElement))return false;
-    button.click();
-    return true;
-  })()`);
-}
-
 async function hasVisibleButton(webContents: WebContents, text: string | string[]): Promise<boolean> {
   const texts = Array.isArray(text) ? text : [text];
   return await webContents.executeJavaScript(`(() => { const normalize=(value)=>String(value||'').replace(/\\s+/g,' ').trim(); const texts=${JSON.stringify(texts)}; return [...document.querySelectorAll('button,[role="button"]')].some((element)=>{if(!(element instanceof HTMLElement)||!texts.includes(normalize(element.textContent))||element.hasAttribute('disabled')||element.getAttribute('aria-disabled')==='true')return false;const rect=element.getBoundingClientRect();const style=getComputedStyle(element);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'&&style.pointerEvents!=='none';}); })()`);
 }
 
 async function publishToutiaoAfterPrimary(webContents: WebContents, title: string): Promise<PublishResult> {
-  let state = await pageState(webContents);
-  for (let attempt = 0; attempt < 15; attempt += 1) {
+  const sessionId = randomUUID();
+  let state = await pageStateWithRetry(webContents);
+  let adDialogObserved = false;
+  let adConfirmationClicked = false;
+  let adDialogClosed = false;
+  let previewObserved = false;
+  let confirmationClicked = false;
+  let adAttempts = 0;
+  let previewSamples = 0;
+  const result = (status: PublishResult['status'], stage: string, message: string): PublishResult => ({
+    status, platform: 'toutiao', title, stage, message, url: state.url, pageText: state.text.slice(0, 1000),
+    primaryClicked: true, confirmationClicked, adDialogObserved, adConfirmationClicked, adDialogClosed, previewObserved,
+  });
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
     await delay(attempt === 0 ? 1200 : 800);
-    state = await pageState(webContents);
-    if (isPublishSuccess('toutiao', state, title)) {
-      return { status: 'success', platform: 'toutiao', title, stage: 'success', message: '文章已提交并在作品管理页确认', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: false };
+    state = await pageStateWithRetry(webContents);
+    if (isPublishSuccess('toutiao', state, title)) return result('success', 'success', '文章已提交并在作品管理页确认');
+    const controls = await inspectToutiaoPublishControls(webContents, sessionId);
+    if (controls.adDialogVisible) {
+      adDialogObserved = true;
+      adDialogClosed = false;
+      previewSamples = 0;
+      if (adAttempts >= 3) {
+        return result('action_required', 'toutiao_ad_confirm', 'TOUTIAO_AD_CONFIRM_FAILED: “不投放广告”弹窗仍未关闭，已停止发布并保留当前页面');
+      }
+      adAttempts++;
+      adConfirmationClicked = await clickToutiaoPublishControl(webContents, 'ad', sessionId) || adConfirmationClicked;
+      // Never use the old snapshot to click a confirmation behind this dialog.
+      continue;
     }
-    if (state.text.includes('选择了“不投放广告”') && state.text.includes('不会产生广告收益')) {
-      let closed = false;
-      for (let retry = 0; retry < 3; retry += 1) {
-        await clickDialogButtonDom(webContents, '确定');
-        await delay(900 + retry * 400);
-        state = await pageState(webContents);
-        if (!state.text.includes('选择了“不投放广告”') || !state.text.includes('不会产生广告收益')) { closed = true; break; }
-      }
-      if (!closed) return { status: 'action_required', platform: 'toutiao', title, stage: 'toutiao_ad_confirm', message: 'TOUTIAO_AD_CONFIRM_FAILED: 未能关闭“不投放广告”确认弹窗', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: false };
+    adDialogClosed = true;
+    previewObserved ||= controls.previewVisible;
+    if (!controls.previewVisible || !controls.confirmationAvailable) {
+      previewSamples = 0;
+      const blocked = await blocker(webContents, state);
+      if (blocked) return result('action_required', 'publish_blocked', `平台阻止发布：${blocked}`);
+      continue;
     }
-    if (await hasVisibleButton(webContents, '确认发布')) {
-      let clicked = false;
-      for (let retry = 0; retry < 3; retry += 1) {
-        clicked = await clickVisibleDom(webContents, ['确认发布'], [], 'button,[role="button"]')
-          || await clickVisible(webContents, ['确认发布'], [], 'button,[role="button"]');
-        await delay(1000 + retry * 500);
-        if (!(await hasVisibleButton(webContents, '确认发布'))) break;
-      }
-      if (!clicked || await hasVisibleButton(webContents, '确认发布')) {
-        state = await pageState(webContents);
-        return { status: 'action_required', platform: 'toutiao', title, stage: 'toutiao_confirm_publish', message: 'TOUTIAO_CONFIRM_PUBLISH_FAILED: 自动点击后确认发布按钮仍然存在', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: clicked };
-      }
-      for (let resultAttempt = 0; resultAttempt < 30; resultAttempt += 1) {
-        await delay(1000);
-        state = await pageState(webContents);
-        if (isPublishSuccess('toutiao', state, title)) return { status: 'success', platform: 'toutiao', title, stage: 'success', message: '文章已提交并在作品管理页确认', url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
-        const blocked = await blocker(webContents, state);
-        if (blocked) return { status: 'action_required', platform: 'toutiao', title, stage: 'publish_blocked', message: `平台阻止发布：${blocked}`, url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
-      }
-      // Toutiao may finish publishing successfully while the publish editor
-      // remains open or while its SPA route has not updated yet. Re-open the
-      // article management list and reconcile by the exact title before
-      // reporting an uncertain result. This keeps the audit record aligned
-      // with the platform's authoritative published list.
-      const reconciliation = await reconcileToutiaoPublishedArticle(webContents, title);
-      if (reconciliation.match) return { status: 'success', platform: 'toutiao', title, stage: 'management_reconcile', message: '已在头条作品管理页核验发布结果', url: reconciliation.match.url, pageText: reconciliation.match.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
-      const evidenceState = reconciliation.last ?? state;
-      return { status: 'result_uncertain', platform: 'toutiao', title, stage: 'result_check', message: '已复核头条作品管理页，但暂未找到匹配文章，停止自动重试', url: evidenceState.url, pageText: evidenceState.text.slice(0, 1000), primaryClicked: true, confirmationClicked: true };
+    // Require a stable, exposed phone preview after the ad dialog has closed.
+    // The click helper checks this again immediately before native dispatch.
+    if (++previewSamples < 2) continue;
+    try {
+      confirmationClicked = await clickToutiaoPublishControl(webContents, 'confirmation', sessionId);
+    } catch {
+      // Dispatch may have reached Chromium even when its acknowledgement was
+      // lost. Do not repeat a potentially successful final submission.
+      return result('result_uncertain', 'toutiao_confirm_publish', 'TOUTIAO_CONFIRM_CLICK_UNCERTAIN: 确认发布点击回执异常，保留当前页面，请核对文章，禁止自动重发');
     }
+    if (confirmationClicked) break;
+    previewSamples = 0;
   }
-  // Even when the confirmation dialog never becomes visible, the platform
-  // may have accepted the request asynchronously. Always consult the
-  // authoritative works-management list before reporting an uncertain result.
+
+  if (!confirmationClicked) {
+    state = await pageStateWithRetry(webContents);
+    return result('action_required', 'toutiao_preview', 'TOUTIAO_PREVIEW_NOT_READY: 未确认预览面板已显示且“确认发布”按钮可点击，已停止发布并保留当前页面');
+  }
+
+  // The final confirmation is dispatched at most once. Its presence or
+  // disappearance is not itself evidence that the platform accepted the post.
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await delay(1000);
+    state = await pageStateWithRetry(webContents);
+    if (isPublishSuccess('toutiao', state, title)) return result('success', 'success', '文章已提交并在作品管理页确认');
+    const controls = await inspectToutiaoPublishControls(webContents, sessionId);
+    if (controls.adDialogVisible) {
+      adDialogObserved = true;
+      adDialogClosed = false;
+      return result('result_uncertain', 'toutiao_ad_confirm', 'TOUTIAO_AD_CONFIRM_AFTER_SUBMIT: 确认发布后仍出现广告确认弹窗，已保留当前页面，禁止自动重发');
+    }
+    const blocked = await blocker(webContents, state);
+    if (blocked) return result('action_required', 'publish_blocked', `平台阻止发布：${blocked}`);
+  }
+  const remaining = await inspectToutiaoPublishControls(webContents, sessionId);
+  if (remaining.adDialogVisible || remaining.previewVisible) {
+    adDialogClosed = !remaining.adDialogVisible;
+    return result('result_uncertain', 'toutiao_confirm_publish', 'TOUTIAO_CONFIRM_PUBLISH_PENDING: 点击确认发布后仍停留在弹窗或预览面板，已保留当前页面，禁止自动重发');
+  }
   const reconciliation = await reconcileToutiaoPublishedArticle(webContents, title);
-  if (reconciliation.match) return { status: 'success', platform: 'toutiao', title, stage: 'management_reconcile', message: '已在头条作品管理页核验发布结果', url: reconciliation.match.url, pageText: reconciliation.match.text.slice(0, 1000), primaryClicked: true, confirmationClicked: false };
-  const evidenceState = reconciliation.last ?? state;
-  return { status: 'result_uncertain', platform: 'toutiao', title, stage: 'result_check', message: '发布后未检测到明确成功状态，已复核头条作品管理页但暂未找到匹配文章，停止自动重试', url: evidenceState.url, pageText: evidenceState.text.slice(0, 1000), primaryClicked: true, confirmationClicked: false };
+  state = reconciliation.match ?? reconciliation.last ?? state;
+  if (reconciliation.match) return result('success', 'management_reconcile', '已在头条作品管理页核验发布结果');
+  return result('result_uncertain', 'result_check', '已复核头条作品管理页，但暂未找到匹配文章，停止自动重试');
 }
 
 interface ReconciliationResult {
