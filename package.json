@@ -18,6 +18,8 @@
     "test:lieju": "npm run build && npm run build:cli && node tests/lieju-desktop-smoke.mjs",
     "test:resize": "npm run build && npm run build:cli && node tests/platform-resize-smoke.mjs",
     "test:zhihu-publish": "node tests/zhihu-clear-smoke.mjs && node tests/zhihu-topics-smoke.mjs && node tests/zhihu-publish-smoke.mjs",
+    "test:toutiao-editor": "node tests/toutiao-editor-smoke.mjs",
+    "test:toutiao-publish": "node tests/toutiao-publish-smoke.mjs",
     "test:article-cover": "node tests/article-cover-smoke.mjs",
     "test:popups": "npm run build && node tests/platform-popups-smoke.mjs",
     "test:platform-loading": "npm run build && node tests/platform-loading-smoke.mjs",

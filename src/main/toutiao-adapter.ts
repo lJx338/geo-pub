@@ -596,7 +596,10 @@ async function uploadCover(webContents: WebContents, coverPath: string): Promise
 }
 
 export async function ensureToutiaoEditor(webContents: WebContents, timeoutMs = 120_000): Promise<void> {
-  if (!webContents.getURL().startsWith('https://mp.toutiao.com/')) {
+  // A works-management page shares the platform origin, but has no editor.
+  // Preserve an open editor (including its draft query); navigate other pages
+  // directly to the writing page before applying the existing draft recovery.
+  if (!/^https:\/\/mp\.toutiao\.com\/profile_v4\/graphic\/publish\/?(?:[?#]|$)/.test(webContents.getURL())) {
     await webContents.loadURL(PUBLISH_URL);
   }
   const deadline = Date.now() + timeoutMs;
@@ -620,9 +623,9 @@ export async function ensureToutiaoEditor(webContents: WebContents, timeoutMs = 
         && visible(document.querySelector(${JSON.stringify(BODY_SELECTOR)}));
     })()`);
     if (ready) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await delay(500);
   }
-  throw new Error('TOUTIAO_EDITOR_NOT_READY: 请检查是否已登录头条号，或在桌面端完成验证码');
+  throw new Error('TOUTIAO_EDITOR_NOT_READY: 编辑器未加载完成，请检查当前页面后重试');
 }
 
 async function writeToutiaoContent(
