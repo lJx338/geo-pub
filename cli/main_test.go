@@ -431,10 +431,11 @@ func TestValidateDoesNotContactDesktop(t *testing.T) {
 	}
 }
 
-func TestValidateZhihuDoesNotRequireCover(t *testing.T) {
+func TestValidateZhihuRequiresCover(t *testing.T) {
 	err := validateFill(fillInput{ProjectID: "11111111-1111-4111-8111-111111111111", Platform: "zhihu", Document: articleDocument{Title: "知乎标题", Blocks: []articleBlock{{Type: "paragraph", Text: "正文"}}}})
-	if err != nil {
-		t.Fatalf("validateFill returned error: %v", err)
+	var cliErr *cliError
+	if !errors.As(err, &cliErr) || cliErr.code != "COVER_REQUIRED" {
+		t.Fatalf("expected COVER_REQUIRED, got %v", err)
 	}
 }
 
@@ -501,5 +502,38 @@ func TestLiejuManualOnly(t *testing.T) {
 	input.Document.Title = "太短"
 	if err := validateFill(input); err == nil {
 		t.Fatal("must reject short title")
+	}
+}
+
+func TestRequiredCoverForEveryPlatform(t *testing.T) {
+	for _, platform := range []string{"baijia", "toutiao", "netease", "zhihu", "penguin", "sohu", "wechat"} {
+		t.Run(platform, func(t *testing.T) {
+			input, err := readFillInput(nil, strings.NewReader(fmt.Sprintf(`{"projectId":"11111111-1111-4111-8111-111111111111","platform":%q,"document":{"title":"封面必填测试文章","blocks":[{"type":"paragraph","text":"正文"}],"tags":["化工"]},"coverPath":""}`, platform)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cliErr *cliError
+			if err := validateFill(input); !errors.As(err, &cliErr) || cliErr.code != "COVER_REQUIRED" {
+				t.Fatalf("expected COVER_REQUIRED, got %v", err)
+			}
+			input.CoverPath = filepath.Join(t.TempDir(), "missing.jpg")
+			if err := validateFill(input); !errors.As(err, &cliErr) || cliErr.code != "COVER_NOT_FOUND" {
+				t.Fatalf("expected COVER_NOT_FOUND, got %v", err)
+			}
+			if err := os.WriteFile(input.CoverPath, []byte("test"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := validateFill(input); err != nil {
+				t.Fatal(err)
+			}
+			if platform == "zhihu" {
+				for _, tags := range [][]string{nil, {"#", " ＃ "}, {" # ＃ "}} {
+					input.Document.Tags = tags
+					if err := validateFill(input); !errors.As(err, &cliErr) || cliErr.code != "ZHIHU_TOPICS_REQUIRED" {
+						t.Fatalf("expected ZHIHU_TOPICS_REQUIRED, got %v", err)
+					}
+				}
+			}
+		})
 	}
 }

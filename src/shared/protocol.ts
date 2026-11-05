@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { distributionInputIssues } from './distribution-requirements.js';
 import { articleDocumentSchema } from './article-document.js';
 import type { ContentFilter, ContentKind } from '../main/content-store.js';
 import { platformOptionsSchema, type PlatformOptions } from './platform-settings.js';
@@ -45,15 +46,15 @@ const articleRequest = {
   platformOptions: platformOptionsSchema,
 } as const;
 
-const articleRefinements = <T extends { platform: string; document: { title: string }; coverPath: string }>(request: T, context: z.RefinementCtx) => {
+const articleRefinements = <T extends { platform: string; document: { title: string; tags: string[] }; coverPath: string }>(request: T, context: z.RefinementCtx) => {
   if (request.platform === 'lieju' && (request.document.title.length < 5 || request.document.title.length > 30)) {
     context.addIssue({ code: 'custom', path: ['document', 'title'], message: '列举网标题必须为 5～30 字' });
   }
   if (request.platform === 'toutiao' && request.document.title.length > 30) {
     context.addIssue({ code: 'custom', path: ['document', 'title'], message: '头条号标题不能超过 30 个字符' });
   }
-  if (!['zhihu', 'penguin', 'sohu', 'lieju'].includes(request.platform) && !request.coverPath.trim()) {
-    context.addIssue({ code: 'custom', path: ['coverPath'], message: '百家号、头条号、网易号和微信公众号必须提供封面路径' });
+  for (const issue of distributionInputIssues([request.platform], request.document.tags, request.coverPath)) {
+    context.addIssue({ code: 'custom', path: issue.field === 'tags' ? ['document', 'tags'] : ['coverPath'], message: `${issue.code}: ${issue.message}` });
   }
 };
 

@@ -29,6 +29,31 @@ async function setup() {
 }
 
 describe('desktop distribution service', () => {
+  it.each(['fill', 'publish'] as const)('rejects empty Zhihu topics before %s in desktop and direct CLI execution', async mode => {
+    const { article, executor, content, calls } = await setup();
+    const emptyTopics = { ...document, tags: ['#'] };
+    await content.save(projectId, { id: article.id, kind: 'article', payload: { ...article.payload, document: emptyTopics } });
+    const service = new DistributionService(content, executor);
+    await expect(service.run({ projectId, articleId: article.id, platforms: ['zhihu'], mode, coverPath: '/tmp/cover.jpg', confirmPublish: true })).rejects.toThrow('ZHIHU_TOPICS_REQUIRED');
+    await expect(service.runDirect({ projectId, platform: 'zhihu', document: emptyTopics, mode, coverPath: '/tmp/cover.jpg' })).rejects.toThrow('ZHIHU_TOPICS_REQUIRED');
+    expect(calls).toEqual([]);
+  });
+
+  it.each(['zhihu', 'penguin', 'sohu'] as const)('rejects direct CLI %s without a cover before invoking the adapter', async platform => {
+    const { executor, content, calls } = await setup();
+    await expect(new DistributionService(content, executor).runDirect({ projectId, platform, document, mode: 'fill', coverPath: '' })).rejects.toThrow('COVER_REQUIRED');
+    expect(calls).toEqual([]);
+  });
+
+  it.each(['fill', 'publish'] as const)('retains native topic and cover results in %s diagnostics', async mode => {
+    const { article, executor, content } = await setup();
+    const topics = { coverUploaded: true, coverStatus: 'applied', topicsRequested: ['CNC铣削', '未匹配'], topicsApplied: ['CNC加工'], topicsUnmatched: ['未匹配'], topicsVerified: false, topicWarnings: ['未获得可确认的候选'], topicFailures: [{ requested: '未匹配', code: 'NO_MATCH', message: '未获得可确认的候选' }], topicSelections: [{ requested: 'CNC铣削', selected: 'CNC加工', match: 'related', query: 'CNC', reason: '正文讨论加工工艺' }] };
+    executor.fillDraft = async () => topics;
+    executor.publishDraft = async () => ({ status: 'success', fill: topics });
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu'], mode, coverPath: '/tmp/cover.jpg', confirmPublish: mode === 'publish' });
+    expect(result.records[0]?.payload.evidence).toMatchObject(topics);
+  });
+
   it('keeps fill-only execution serial when one platform is slow', async () => {
     const { article, executor, content, calls } = await setup();
     const order: string[] = [];
@@ -39,7 +64,7 @@ describe('desktop distribution service', () => {
       calls.push({ mode: 'fill', platform });
       return { stage: 'filled', networkDelayMs: platform === 'zhihu' ? 45 : 5 };
     };
-    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '', confirmPublish: false });
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '/tmp/cover.jpg', confirmPublish: false });
     expect(result.records.map((record) => record.status)).toEqual(['filled', 'filled']);
     expect(order).toEqual(['zhihu:start', 'zhihu:end', 'sohu:start', 'sohu:end']);
     expect(calls.every((call) => call.mode === 'fill')).toBe(true);
@@ -53,7 +78,7 @@ describe('desktop distribution service', () => {
       if (platform === 'zhihu' && attempts++ === 0) throw new Error('NETWORK_SLOW: simulated renderer timeout');
       return { stage: 'filled' };
     };
-    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '', confirmPublish: false });
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '/tmp/cover.jpg', confirmPublish: false });
     expect(result.records.map((record) => record.status)).toEqual(['filled', 'filled']);
     expect(calls.filter((call) => call.platform === 'zhihu')).toHaveLength(2);
     expect(calls.some((call) => call.mode === 'publish')).toBe(false);
@@ -63,16 +88,16 @@ describe('desktop distribution service', () => {
     const { content, article, calls, executor } = await setup();
     const saved: string[] = [];
     const service = new DistributionService(content, executor, (record) => saved.push(`${record.platform}:${record.status}`));
-    const result = await service.run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '', confirmPublish: false });
+    const result = await service.run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '/tmp/cover.jpg', confirmPublish: false });
     expect(calls).toEqual([{ mode: 'fill', platform: 'zhihu' }, { mode: 'fill', platform: 'sohu' }]);
     expect(result.records.map((record) => record.status)).toEqual(['filled', 'filled']);
     expect(saved).toEqual(['zhihu:running', 'zhihu:filled', 'sohu:running', 'sohu:filled']);
   });
 
-  it('requires a cover before running platforms that need one', async () => {
+  it.each(['baijia', 'toutiao', 'netease', 'zhihu', 'penguin', 'sohu'] as const)('requires a cover before running %s', async platform => {
     const { article, calls, executor, content } = await setup();
     const service = new DistributionService(content, executor);
-    await expect(service.run({ projectId, articleId: article.id, platforms: ['baijia'], mode: 'fill', coverPath: '', confirmPublish: false })).rejects.toThrow('COVER_REQUIRED');
+    await expect(service.run({ projectId, articleId: article.id, platforms: [platform], mode: 'fill', coverPath: '', confirmPublish: false })).rejects.toThrow('COVER_REQUIRED');
     expect(calls).toEqual([]);
   });
 
@@ -100,7 +125,7 @@ describe('desktop distribution service', () => {
       if (platform === 'zhihu') throw new Error('LOGIN_REQUIRED: 请先登录');
       return { stage: 'filled' };
     };
-    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '', confirmPublish: false });
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'fill', coverPath: '/tmp/cover.jpg', confirmPublish: false });
     expect(result.records.map((record) => record.status)).toEqual(['failed', 'filled']);
     expect(result.records[0]!.payload.error).toMatchObject({ code: 'LOGIN_REQUIRED' });
   });
@@ -123,11 +148,11 @@ describe('desktop distribution service', () => {
   it('blocks a duplicate publish after success', async () => {
     const { article, executor, content } = await setup();
     const service = new DistributionService(content, executor);
-    const first = await service.run({ projectId, articleId: article.id, platforms: ['zhihu'], mode: 'publish', coverPath: '', confirmPublish: true });
+    const first = await service.run({ projectId, articleId: article.id, platforms: ['zhihu'], mode: 'publish', coverPath: '/tmp/cover.jpg', confirmPublish: true });
     expect(first.records[0]?.payload.targetPlatforms).toEqual(['zhihu']);
     const completed = (await content.list(projectId, 'article')).find((item) => item.id === article.id);
     expect(completed).toMatchObject({ status: 'published', payload: { distribution: { successfulPlatforms: ['zhihu'], lastTargetPlatforms: ['zhihu'] } } });
-    await expect(service.run({ projectId, articleId: article.id, platforms: ['zhihu'], mode: 'publish', coverPath: '', confirmPublish: true })).rejects.toThrow('DISTRIBUTION_ALREADY_FINALIZED');
+    await expect(service.run({ projectId, articleId: article.id, platforms: ['zhihu'], mode: 'publish', coverPath: '/tmp/cover.jpg', confirmPublish: true })).rejects.toThrow('DISTRIBUTION_ALREADY_FINALIZED');
   });
 
   it('retries only the unfinished platform after a partial publish', async () => {
@@ -138,10 +163,10 @@ describe('desktop distribution service', () => {
         ? { status: 'success', stage: 'reconciled' }
         : { status: 'action_required', stage: 'manual' };
     };
-    await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'publish', coverPath: '', confirmPublish: true });
+    await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'publish', coverPath: '/tmp/cover.jpg', confirmPublish: true });
     calls.length = 0;
     executor.publishDraft = async (platform: Platform): Promise<unknown> => { calls.push({ mode: 'publish', platform }); return { status: 'success', stage: 'reconciled' }; };
-    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'publish', coverPath: '', confirmPublish: true });
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'publish', coverPath: '/tmp/cover.jpg', confirmPublish: true });
     expect(calls).toEqual([{ mode: 'publish', platform: 'sohu' }]);
     expect(result.records.map((record) => record.platform)).toEqual(['sohu']);
   });
@@ -153,7 +178,7 @@ describe('desktop distribution service', () => {
       if (platform === 'zhihu') throw new Error('LOGIN_REQUIRED: 请先登录');
       return { status: 'success', stage: 'reconciled' };
     };
-    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'publish', coverPath: '', confirmPublish: true });
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id, platforms: ['zhihu', 'sohu'], mode: 'publish', coverPath: '/tmp/cover.jpg', confirmPublish: true });
     expect(result.records.map((record) => record.status)).toEqual(['failed', 'success']);
     const current = (await content.list(projectId, 'article')).find((item) => item.id === article.id);
     expect(current?.status).toBe('ready');
@@ -163,7 +188,7 @@ describe('desktop distribution service', () => {
     const { article, executor, content } = await setup();
     const saved: string[] = [];
     const result = await new DistributionService(content, executor, (record) => saved.push(`${record.kind}:${record.status}`))
-      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '', mode: 'fill' });
+      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '/tmp/cover.jpg', mode: 'fill' });
     expect(result).toMatchObject({ stage: 'filled' });
     const [record] = await content.list(projectId, 'distribution');
     expect(record).toMatchObject({ title: document.title, platform: 'zhihu', status: 'filled' });
@@ -174,7 +199,7 @@ describe('desktop distribution service', () => {
   it('records a direct CLI publish and marks a matching article published', async () => {
     const { article, executor, content } = await setup();
     const result = await new DistributionService(content, executor)
-      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '', mode: 'publish' });
+      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '/tmp/cover.jpg', mode: 'publish' });
     expect(result).toMatchObject({ status: 'success' });
     const [record] = await content.list(projectId, 'distribution');
     expect(record?.status).toBe('success');
@@ -191,7 +216,7 @@ describe('desktop distribution service', () => {
     };
     executor.publishDraft = async () => published;
     const result = await new DistributionService(content, executor)
-      .runDirect({ projectId, platform: 'sohu', document, coverPath: '', mode: 'publish' });
+      .runDirect({ projectId, platform: 'sohu', document, coverPath: '/tmp/cover.jpg', mode: 'publish' });
     expect(result).toEqual(published);
     const [record] = await content.list(projectId, 'distribution');
     expect(record).toMatchObject({ status: 'success', payload: { evidence: {
@@ -204,7 +229,7 @@ describe('desktop distribution service', () => {
     const { executor, content } = await setup();
     executor.fillDraft = async () => { throw new Error('LOGIN_REQUIRED: 请先登录'); };
     await expect(new DistributionService(content, executor)
-      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '', mode: 'fill' }))
+      .runDirect({ projectId, platform: 'zhihu', document, coverPath: '/tmp/cover.jpg', mode: 'fill' }))
       .rejects.toThrow('LOGIN_REQUIRED');
     const [record] = await content.list(projectId, 'distribution');
     expect(record).toMatchObject({ status: 'failed', payload: { source: 'cli', error: { code: 'LOGIN_REQUIRED' } } });
@@ -215,7 +240,7 @@ describe('desktop distribution service', () => {
     executor.publishDraft = async () => ({ status: 'result_uncertain', stage: 'result_check' });
     const otherDocument: ArticleDocument = { ...document, title: '一篇未保存到内容中心的文章' };
     await new DistributionService(content, executor)
-      .runDirect({ projectId, platform: 'sohu', document: otherDocument, coverPath: '', mode: 'publish' });
+      .runDirect({ projectId, platform: 'sohu', document: otherDocument, coverPath: '/tmp/cover.jpg', mode: 'publish' });
     const [record] = await content.list(projectId, 'distribution');
     expect(record?.status).toBe('result_uncertain');
     expect(record?.payload.articleId).toBeUndefined();

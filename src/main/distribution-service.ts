@@ -1,3 +1,4 @@
+import { assertDistributionInput } from '../shared/distribution-requirements.js';
 import { createHash } from 'node:crypto';
 import { articleDocumentSchema, type ArticleDocument } from '../shared/article-document.js';
 import { desktopDistributionRequestSchema, type DesktopDistributionRequest, type Platform } from '../shared/protocol.js';
@@ -22,7 +23,6 @@ type DirectDistributionRequest = {
   platformOptions?: PlatformOptions;
 };
 
-const coverRequiredPlatforms = new Set<Platform>(['baijia', 'toutiao', 'netease', 'wechat']);
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -41,7 +41,7 @@ function errorDetails(error: unknown): Record<string, unknown> | undefined {
   const details = (error as { details?: unknown }).details;
   if (!details || typeof details !== 'object') return undefined;
   const value = details as Record<string, unknown>;
-  const selected = Object.fromEntries(['platform', 'url', 'screenshotPath', 'originalCode', 'pageTitle', 'visibleFieldCount', 'editorCandidateCount', 'loginVisible']
+  const selected = Object.fromEntries(['platform', 'url', 'screenshotPath', 'originalCode', 'pageTitle', 'visibleFieldCount', 'editorCandidateCount', 'loginVisible', 'topicsRequested', 'topicsRemaining', 'topicsApplied', 'topicsUnmatched', 'topicWarnings', 'topicFailures', 'coverUploaded', 'coverStatus']
     .filter((key) => value[key] !== undefined && value[key] !== null)
     .map((key) => [key, value[key]]));
   return Object.keys(selected).length > 0 ? selected : undefined;
@@ -68,9 +68,12 @@ function resultStatus(mode: 'fill' | 'publish', result: unknown, platform: Platf
 function resultEvidence(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== 'object') return {};
   const value = result as Record<string, unknown>;
-  return Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'pageText', 'screenshotStatus', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked', 'operationKey', 'mediaId', 'saved', 'verified', 'reused']
+  const fill = value.fill && typeof value.fill === 'object' ? value.fill as Record<string, unknown> : value;
+  const fillEvidence = Object.fromEntries(['topicsRequested', 'topicsApplied', 'topicsUnmatched', 'topicsVerified', 'topicWarnings', 'topicFailures', 'topicSelections', 'coverUploaded', 'coverStatus']
+    .filter(key => fill[key] !== undefined).map(key => [key, fill[key]]));
+  return { ...fillEvidence, ...Object.fromEntries(['stage', 'message', 'errorCode', 'url', 'pageText', 'screenshotStatus', 'screenshotPath', 'settingsScreenshotPath', 'coverScreenshotPath', 'primaryClicked', 'confirmationClicked', 'operationKey', 'mediaId', 'saved', 'verified', 'reused']
     .filter((key) => value[key] !== undefined)
-    .map((key) => [key, value[key]]));
+    .map((key) => [key, value[key]])) };
 }
 
 function documentHash(document: ArticleDocument): string {
@@ -134,8 +137,7 @@ export class DistributionService {
 
     const targetPlatforms = input.platforms.filter((platform) => !finalizedPlatforms.has(platform));
     const options = this.optionsFor(input.projectId, input.platformOptions);
-    const coverMissing = targetPlatforms.filter((platform) => coverRequiredPlatforms.has(platform) && !input.coverPath.trim());
-    if (coverMissing.length) throw new Error(`COVER_REQUIRED: ${coverMissing.join('、')} 必须选择封面图片`);
+    assertDistributionInput(targetPlatforms, document.tags, input.coverPath);
     const executionDocument = await this.content.resolveArticleImages(input.projectId, document);
 
     const taskId = crypto.randomUUID();
@@ -212,6 +214,7 @@ export class DistributionService {
     if (rawInput.platform === 'wechat' && rawInput.mode === 'publish') throw new Error('WECHAT_DRAFT_ONLY: 微信公众号目前仅支持保存草稿');
     const document = articleDocumentSchema.parse(rawInput.document);
     this.executor.ensureProject(rawInput.projectId);
+    assertDistributionInput([rawInput.platform], document.tags, rawInput.coverPath);
     const executionDocument = await this.content.resolveArticleImages(rawInput.projectId, document);
     const contentHash = documentHash(document);
     const articles = await this.content.list(rawInput.projectId, 'article');

@@ -1,11 +1,12 @@
 import type { WebContents } from 'electron';
 import { contentMatchesExpected } from './content-verification.js';
+import { fillArticleCover, type ArticleCoverResult } from './article-cover.js';
 
 const PUBLISH_URL = 'https://om.qq.com/main/creation/article';
 const TITLE_SELECTORS = ['input[placeholder*="标题"]', 'textarea[placeholder*="标题"]', '.article-title input', '.title input', '[contenteditable="true"][data-placeholder*="标题"]'];
 const BODY_SELECTORS = ['.ql-editor', '.ProseMirror', '.DraftEditor-editorContainer [contenteditable="true"]', '.article-editor [contenteditable="true"]', '[role="textbox"]', '[contenteditable="true"]', 'textarea[placeholder*="正文"]', 'iframe'];
 
-export interface PenguinDraftFillResult {
+export interface PenguinDraftFillResult extends ArticleCoverResult {
   titleFilled: boolean;
   bodyFilled: boolean;
   bodyVerificationSource: 'editor' | 'draft_cache' | 'page' | 'none';
@@ -341,13 +342,14 @@ async function ensurePenguinDeclaration(webContents: WebContents): Promise<{ aiD
   throw new Error('PENGUIN_DECLARATION_NOT_APPLIED: AI辅助创作和无需标注均未能选择');
 }
 
-export async function fillPenguinDraft(webContents: WebContents, title: string, html: string, tags: string[]): Promise<PenguinDraftFillResult> {
+export async function fillPenguinDraft(webContents: WebContents, title: string, html: string, tags: string[], coverPath = ''): Promise<PenguinDraftFillResult> {
   await ensurePenguinEditor(webContents);
   const content = await fillContent(webContents, title, html);
   if (!content.titleFilled || !content.bodyFilled) throw new Error(`PENGUIN_CONTENT_FILL_FAILED: title=${content.titleFilled}, body=${content.bodyFilled}`);
   if (!content.formatVerification.preserved) throw new Error(`PENGUIN_FORMAT_DEGRADED: 企鹅号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`);
   const tagState = await applyTags(webContents, tags);
   const declaration = await ensurePenguinDeclaration(webContents);
+  const cover = await fillArticleCover(webContents, 'penguin', coverPath);
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (element) => element instanceof HTMLElement && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0;
@@ -357,5 +359,5 @@ export async function fillPenguinDraft(webContents: WebContents, title: string, 
     return { publishButtonDetected, url: location.href };
   })()`);
   await delay(500);
-  return { ...content, tagsRequested: tagState.requested, tagsApplied: tagState.applied, recommendedTagsDetected: tagState.recommended, ...declaration, ...finalState };
+  return { ...content, ...cover, tagsRequested: tagState.requested, tagsApplied: tagState.applied, recommendedTagsDetected: tagState.recommended, ...declaration, ...finalState };
 }

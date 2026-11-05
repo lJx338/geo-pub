@@ -1,10 +1,11 @@
 import type { WebContents } from 'electron';
 import { contentMatchesExpected } from './content-verification.js';
 import { resumeVisibleDraft } from './editor-draft.js';
+import { fillArticleCover, type ArticleCoverResult } from './article-cover.js';
 
 const PUBLISH_URL = 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1';
 
-export interface SohuDraftFillResult {
+export interface SohuDraftFillResult extends ArticleCoverResult {
   titleFilled: boolean;
   bodyFilled: boolean;
   bodyVerificationSource: 'editor' | 'page' | 'none';
@@ -317,7 +318,7 @@ async function applyOptionalSettings(webContents: WebContents): Promise<{ summar
   return { summaryClicked: false, summaryGenerated: false, summaryUnavailable: false, aiContentFound: ai.found, aiContentSelected: ai.selected };
 }
 
-export async function fillSohuDraft(webContents: WebContents, title: string, html: string): Promise<SohuDraftFillResult> {
+export async function fillSohuDraft(webContents: WebContents, title: string, html: string, coverPath = ''): Promise<SohuDraftFillResult> {
   try {
     await ensureSohuEditor(webContents);
   } catch (error) {
@@ -343,6 +344,7 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
   if (!beforeSettings.titleFilled || !beforeSettings.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE_BEFORE_SETTINGS: title=${beforeSettings.titleFilled}, body=${beforeSettings.bodyFilled}`);
   if (!beforeSettings.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${beforeSettings.formatVerification.degradedBlocks.join('、')}`);
   const optional = await applyOptionalSettings(webContents);
+  const cover = await fillArticleCover(webContents, 'sohu', coverPath);
   const stableContent = await webContents.executeJavaScript(contentScript(title, html, false));
   if (!stableContent.titleFilled || !stableContent.bodyFilled) throw new Error(`SOHU_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}`);
   if (!stableContent.formatVerification.preserved) throw new Error(`SOHU_FORMAT_DEGRADED: 搜狐号编辑器未保留${stableContent.formatVerification.degradedBlocks.join('、')}`);
@@ -353,5 +355,5 @@ export async function fillSohuDraft(webContents: WebContents, title: string, htm
     return { publishButtonDetected, url: location.href };
   })()`);
   await delay(500);
-  return { ...content, ...stableContent, ...optional, ...finalState };
+  return { ...content, ...stableContent, ...optional, ...cover, ...finalState };
 }

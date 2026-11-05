@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -28,7 +29,7 @@ const (
 	maxResponseSize = 5 * 1024 * 1024
 )
 
-var version = "1.0.18"
+var version = "1.0.20"
 var buildMode = "production"
 
 var platforms = map[string]bool{
@@ -270,6 +271,7 @@ func run(args []string) (string, json.RawMessage, error) {
 			return command, mustJSON(map[string]any{
 				"valid": true, "projectId": input.ProjectID, "platform": input.Platform, "title": effectiveTitle(input),
 				"titleLength": len([]rune(effectiveTitle(input))), "blockCount": len(input.Document.Blocks),
+				"topicsRequired":   input.Platform == "zhihu",
 				"coverRequired":    requiresCover(input.Platform),
 				"draftOnly":        input.Platform == "wechat",
 				"manualSubmitOnly": input.Platform == "lieju",
@@ -687,7 +689,7 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 projectId、platform、document、coverPath（可选）、confirmPublish（publish 必须为 true）、platformOptions（仅明确覆盖单次发布时使用）"}
+		return fillInput{}, &cliError{code: "INVALID_INPUT_JSON", message: err.Error(), suggestion: "字段应为 projectId、platform、document、coverPath（除列举网外必填）、confirmPublish（publish 必须为 true）、platformOptions（仅明确覆盖单次发布时使用）"}
 	}
 	if input.Document.Tags == nil {
 		input.Document.Tags = []string{}
@@ -696,7 +698,7 @@ func readFillInput(args []string, stdin io.Reader) (fillInput, error) {
 }
 
 func requiresCover(platform string) bool {
-	return platform == "baijia" || platform == "toutiao" || platform == "netease" || platform == "wechat"
+	return platform != "lieju"
 }
 
 func effectiveTitle(input fillInput) string {
@@ -800,6 +802,9 @@ func validateFill(input fillInput) error {
 	if input.Platform == "netease" && (titleLength < 5 || titleLength > 64) {
 		return usageError("网易号 document.title 必须为 5-64 个字符")
 	}
+	if requiresCover(input.Platform) && strings.TrimSpace(input.CoverPath) == "" {
+		return &cliError{code: "COVER_REQUIRED", message: "除列举网外，所有平台必须通过 coverPath 提供封面图片", suggestion: "在 coverPath 中填写现有封面图片的绝对路径"}
+	}
 	if requiresCover(input.Platform) && !filepath.IsAbs(input.CoverPath) {
 		return usageError("coverPath 必须是绝对路径")
 	}
@@ -807,6 +812,15 @@ func validateFill(input fillInput) error {
 		info, err := os.Stat(input.CoverPath)
 		if err != nil || info.IsDir() {
 			return &cliError{code: "COVER_NOT_FOUND", message: "找不到封面文件：" + input.CoverPath, suggestion: "传入当前电脑上的封面绝对路径"}
+		}
+	}
+	if input.Platform == "zhihu" {
+		hasTopic := false
+		for _, tag := range input.Document.Tags {
+			hasTopic = hasTopic || strings.TrimFunc(tag, func(r rune) bool { return unicode.IsSpace(r) || r == '#' || r == '＃' }) != ""
+		}
+		if !hasTopic {
+			return &cliError{code: "ZHIHU_TOPICS_REQUIRED", message: "知乎必须提供至少一个有效话题，并确认在文章话题栏选中", suggestion: "填写 document.tags，正文中的 #话题不能代替原生话题选择"}
 		}
 	}
 	return nil
@@ -1117,9 +1131,9 @@ func commandSchema() json.RawMessage {
 					{"type": "image", "materialId": "current project's material id; required for wechat and lieju", "src": "optional http(s) image URL for other platforms", "alt": "optional string, max 200", "caption": "optional string, max 200"},
 				},
 				"summary": "optional string, maximum 120 characters",
-				"tags":    "optional array, maximum 9",
+				"tags":    "array, maximum 9; at least one non-empty topic required for zhihu; at least one native topic must be confirmed selected",
 			},
-			"coverPath":      "absolute local path; required for baijia, toutiao, netease, wechat; WeChat requires PNG/JPEG under 10 MB and body images under 1 MB",
+			"coverPath":      "absolute local path to an existing image; required for all platforms except lieju; WeChat requires PNG/JPEG under 10 MB and body images under 1 MB",
 			"confirmPublish": "must be true for publish",
 			"platformOptions": map[string]any{
 				"lieju": map[string]any{"defaults": "uses current project publishingDefaults.lieju", "price": "positive integer string, defaults to 1", "manualSubmitOnly": true},

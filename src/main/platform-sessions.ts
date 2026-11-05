@@ -1,3 +1,4 @@
+import { assertDistributionInput, assertRequiredFillFields } from '../shared/distribution-requirements.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BrowserWindow, session, WebContents, WebContentsView } from 'electron';
@@ -457,6 +458,7 @@ export class PlatformSessions {
   }
 
   private async fillDraftInternal(platform: Exclude<Platform, 'wechat'>, document: ArticleDocument, coverPath: string, options: PlatformOptions = {}): Promise<unknown> {
+    assertDistributionInput([platform], document.tags, coverPath);
     // The previous implementation deliberately kept minimized jobs in the
     // hidden BackgroundExecutionHost. That prevents coordinate, clipboard and
     // file-input operations from reaching several Windows editors. Restore the
@@ -489,11 +491,11 @@ export class PlatformSessions {
         : platform === 'toutiao'
           ? await fillToutiaoDraft(managed.view.webContents, document.title, rendered.html, coverPath)
           : platform === 'zhihu'
-            ? await fillZhihuDraft(managed.view.webContents, document.title, rendered.html)
+            ? await fillZhihuDraft(managed.view.webContents, document.title, rendered.html, document.tags, coverPath)
             : platform === 'penguin'
-              ? await fillPenguinDraft(managed.view.webContents, document.title, rendered.html, normalizeArticleTags(document.tags))
+              ? await fillPenguinDraft(managed.view.webContents, document.title, rendered.html, normalizeArticleTags(document.tags), coverPath)
               : platform === 'sohu'
-                ? await fillSohuDraft(managed.view.webContents, document.title, rendered.html)
+                ? await fillSohuDraft(managed.view.webContents, document.title, rendered.html, coverPath)
                 : await fillNeteaseDraft(managed.view.webContents, document.title, rendered.html, coverPath);
       if (platform === 'lieju') {
         // Retain the exact page (including the captcha and in-memory files) for
@@ -501,6 +503,7 @@ export class PlatformSessions {
         await this.promoteBackground(platform);
         this.recordAttention({ platform, code: 'MANUAL_SUBMISSION_REQUIRED', message: result.message, url: managed.view.webContents.getURL() });
       }
+      assertRequiredFillFields(platform, result);
       return await this.captureFillEvidence(managed, { ...result, structure: rendered.structuralExpectations });
     } catch (error) {
       const details = await this.captureFailureDetails(managed, 'fill-failure');
@@ -522,6 +525,7 @@ export class PlatformSessions {
     if (platform === 'wechat') throw new Error('WECHAT_DRAFT_ONLY: 微信公众号目前仅支持保存草稿');
     return await this.runExclusive(async () => {
       const fill = await this.fillDraftInternal(platform, document, coverPath, options);
+      assertRequiredFillFields(platform, fill);
       const managed = this.background || this.views.get(platform);
       if (!managed || managed.platform !== platform) throw new Error(`PUBLISH_VIEW_MISSING: ${platform} 发布页面不存在`);
       try {
@@ -569,6 +573,7 @@ export class PlatformSessions {
         }),
         buttons: [...document.querySelectorAll('button,[role="button"]')].filter(visible).slice(0, 100).map((element) => ({ text: normalize(element.textContent).slice(0, 80), className: String(element.className || '').slice(0, 180), ariaLabel: element.getAttribute('aria-label'), title: element.getAttribute('title'), dataAttrs: [...element.attributes].filter((attribute) => attribute.name.startsWith('data-')).slice(0, 8).map((attribute) => [attribute.name, attribute.value]), outerHTML: element.outerHTML.slice(0, 1200), disabled: element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true' })),
         dialogs: [...document.querySelectorAll('[role="dialog"],[class*="message"],[class*="Message"],[class*="modal"],[class*="Modal"]')].filter(visible).slice(0, 20).map((element) => ({ text: normalize(element.textContent).slice(0, 300), className: String(element.className || '').slice(0, 200), outerHTML: element.outerHTML.slice(0, 2000) })),
+        coverControls: [...document.querySelectorAll('label,span,p,div')].filter(visible).filter((element) => /^(?:添加封面|封面|本地上传)$/.test(normalize([...element.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('')))).slice(0, 10).map((element) => ({ text: normalize(element.textContent), outerHTML: element.parentElement?.outerHTML.slice(0, 5000) || '', ancestorHTML: element.parentElement?.parentElement?.outerHTML.slice(0, 8000) || '' })),
         // Diagnostics must never return cookie-like or session data to a CLI/agent log.
         // Storage count preserves a basic page-health signal without exposing names or values.
         storageEntryCount: Object.keys(localStorage).length,
