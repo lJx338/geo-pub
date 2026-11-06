@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   mas:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       MAS_BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
