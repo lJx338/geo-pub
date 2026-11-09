@@ -222,6 +222,7 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
     },
     {
       number: '3', title: '先登录各个平台', badge: '先完成', description: '进入“平台账号”，依次打开准备使用的平台并完成登录。遇到扫码、验证码或安全验证时，请先在平台页面处理完成。',
+      note: '使用微信公众号或列举网前，请先进入「平台账号」中对应平台的「设置」，填写并保存相关配置。',
       action: 'accounts',
     },
     {
@@ -286,7 +287,7 @@ function GuideView({ project, workBuddy, setView, openContent, connect, notify }
           <article className={index === workBuddyPrompts.length - 1 ? 'workbuddy-prompt automation' : 'workbuddy-prompt'} key={item.number}>
             <header>
               <span className="guide-step-number">{item.number}</span>
-              <div><h4>{item.title}</h4><p>{item.description}</p></div>
+              <div><h4>{item.title}</h4><p>{item.description}</p>{item.note && <small className="workbuddy-step-note">{item.note}</small>}</div>
               <Badge tone={index === workBuddyPrompts.length - 1 ? 'warning' : item.badge === '不会发布' ? 'success' : 'neutral'}>{item.badge}</Badge>
               {item.action === 'accounts' && <Button variant="outline" icon={LogIn} onClick={() => setView('accounts')}>前往平台账号</Button>}
               {item.action === 'materials' && <Button variant="outline" icon={ImagePlus} onClick={() => openContent('material')}>前往上传图片</Button>}

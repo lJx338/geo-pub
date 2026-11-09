@@ -2,7 +2,7 @@ import type { WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
 import type { Platform as AnyPlatform } from '../shared/protocol.js';
 import { clickZhihuPublishControl, type ZhihuPublishClick } from './zhihu-publish-controls.js';
-import { clickToutiaoPublishControl, inspectToutiaoPublishControls } from './toutiao-publish-controls.js';
+import { clickToutiaoPublishControl, inspectToutiaoPublishControls, type ToutiaoPublishControls } from './toutiao-publish-controls.js';
 
 // WeChat uses the official draft API and never enters browser publication.
 type Platform = Exclude<AnyPlatform, 'wechat' | 'lieju'>;
@@ -23,6 +23,7 @@ export interface PublishResult {
   adConfirmationClicked?: boolean;
   adDialogClosed?: boolean;
   previewObserved?: boolean;
+  toutiaoChecks?: Array<Omit<ToutiaoPublishControls, 'point'> & { phase: 'inspect' | 'ad' | 'confirmation'; clicked?: boolean }>;
 }
 
 /** Screenshot capture is independent of the platform's publishing result. */
@@ -234,11 +235,17 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
   let adDialogClosed = false;
   let previewObserved = false;
   let confirmationClicked = false;
-  let adAttempts = 0;
+  let adClickPending = false;
   let previewSamples = 0;
+  const toutiaoChecks: NonNullable<PublishResult['toutiaoChecks']> = [];
+  const remember = (phase: 'inspect' | 'ad' | 'confirmation', controls: ToutiaoPublishControls & { clicked?: boolean }) => {
+    const { point: _point, ...check } = controls;
+    toutiaoChecks.push({ ...check, phase });
+    if (toutiaoChecks.length > 64) toutiaoChecks.shift();
+  };
   const result = (status: PublishResult['status'], stage: string, message: string): PublishResult => ({
     status, platform: 'toutiao', title, stage, message, url: state.url, pageText: state.text.slice(0, 1000),
-    primaryClicked: true, confirmationClicked, adDialogObserved, adConfirmationClicked, adDialogClosed, previewObserved,
+    primaryClicked: true, confirmationClicked, adDialogObserved, adConfirmationClicked, adDialogClosed, previewObserved, toutiaoChecks,
   });
 
   for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -246,19 +253,24 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
     state = await pageStateWithRetry(webContents);
     if (isPublishSuccess('toutiao', state, title)) return result('success', 'success', '文章已提交并在作品管理页确认');
     const controls = await inspectToutiaoPublishControls(webContents, sessionId);
+    remember('inspect', controls);
     if (controls.adDialogVisible) {
       adDialogObserved = true;
       adDialogClosed = false;
       previewSamples = 0;
-      if (adAttempts >= 3) {
-        return result('action_required', 'toutiao_ad_confirm', 'TOUTIAO_AD_CONFIRM_FAILED: “不投放广告”弹窗仍未关闭，已停止发布并保留当前页面');
+      if (!adClickPending && controls.adReadyButtonCount === 1 && controls.adButtonCount === 1) {
+        const click = await clickToutiaoPublishControl(webContents, 'ad', sessionId);
+        remember('ad', click);
+        adClickPending = click.clicked;
+        adConfirmationClicked ||= click.clicked;
       }
-      adAttempts++;
-      adConfirmationClicked = await clickToutiaoPublishControl(webContents, 'ad', sessionId) || adConfirmationClicked;
-      // Never use the old snapshot to click a confirmation behind this dialog.
+      // Wait through disabled/loading buttons and slow closure. Once native
+      // input was sent, do not keep clicking the same confirmation episode.
       continue;
     }
-    adDialogClosed = true;
+    adClickPending = false;
+    // Failure to find a dialog alone is not evidence that the flow advanced.
+    adDialogClosed = controls.previewVisible;
     previewObserved ||= controls.previewVisible;
     if (!controls.previewVisible || !controls.confirmationAvailable) {
       previewSamples = 0;
@@ -270,7 +282,9 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
     // The click helper checks this again immediately before native dispatch.
     if (++previewSamples < 2) continue;
     try {
-      confirmationClicked = await clickToutiaoPublishControl(webContents, 'confirmation', sessionId);
+      const click = await clickToutiaoPublishControl(webContents, 'confirmation', sessionId);
+      remember('confirmation', click);
+      confirmationClicked = click.clicked;
     } catch {
       // Dispatch may have reached Chromium even when its acknowledgement was
       // lost. Do not repeat a potentially successful final submission.
@@ -282,6 +296,13 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
 
   if (!confirmationClicked) {
     state = await pageStateWithRetry(webContents);
+    const controls = await inspectToutiaoPublishControls(webContents, sessionId);
+    remember('inspect', controls);
+    if (controls.adDialogVisible) {
+      adDialogObserved = true;
+      adDialogClosed = false;
+      return result('action_required', 'toutiao_ad_confirm', 'TOUTIAO_AD_CONFIRM_FAILED: “不投放广告”弹窗未能完成确认，已停止发布并保留当前页面');
+    }
     return result('action_required', 'toutiao_preview', 'TOUTIAO_PREVIEW_NOT_READY: 未确认预览面板已显示且“确认发布”按钮可点击，已停止发布并保留当前页面');
   }
 
@@ -292,6 +313,7 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
     state = await pageStateWithRetry(webContents);
     if (isPublishSuccess('toutiao', state, title)) return result('success', 'success', '文章已提交并在作品管理页确认');
     const controls = await inspectToutiaoPublishControls(webContents, sessionId);
+    remember('inspect', controls);
     if (controls.adDialogVisible) {
       adDialogObserved = true;
       adDialogClosed = false;
@@ -301,6 +323,7 @@ async function publishToutiaoAfterPrimary(webContents: WebContents, title: strin
     if (blocked) return result('action_required', 'publish_blocked', `平台阻止发布：${blocked}`);
   }
   const remaining = await inspectToutiaoPublishControls(webContents, sessionId);
+  remember('inspect', remaining);
   if (remaining.adDialogVisible || remaining.previewVisible) {
     adDialogClosed = !remaining.adDialogVisible;
     return result('result_uncertain', 'toutiao_confirm_publish', 'TOUTIAO_CONFIRM_PUBLISH_PENDING: 点击确认发布后仍停留在弹窗或预览面板，已保留当前页面，禁止自动重发');

@@ -70,6 +70,16 @@ describe('desktop distribution service', () => {
     expect(calls.every((call) => call.mode === 'fill')).toBe(true);
   });
 
+  it('retains Toutiao control checks in the distribution record', async () => {
+    const { article, executor, content } = await setup();
+    const toutiaoChecks = [{ phase: 'inspect', adDetection: 'semantic', adDialogVisible: true,
+      adButtonCount: 1, adReadyButtonCount: 0, reason: 'ad_button_unavailable' }];
+    executor.publishDraft = async () => ({ status: 'action_required', stage: 'toutiao_ad_confirm', toutiaoChecks });
+    const result = await new DistributionService(content, executor).run({ projectId, articleId: article.id,
+      platforms: ['toutiao'], mode: 'publish', coverPath: '/tmp/cover.jpg', confirmPublish: true });
+    expect(result.records[0]).toMatchObject({ status: 'action_required', payload: { evidence: { toutiaoChecks } } });
+  });
+
   it('retries one transient fill failure without starting any publish action', async () => {
     const { article, executor, content, calls } = await setup();
     let attempts = 0;

@@ -33,7 +33,10 @@ function failedDistribution(projectId: string, screenshotPath: string): ContentI
       startedAt: timestamp,
       completedAt: timestamp,
       evidence: { stage: 'toutiao_preview', url: 'https://mp.toutiao.com/profile_v4/graphic/publish', screenshotPath,
-        adDialogObserved: true, adConfirmationClicked: true, adDialogClosed: true, previewObserved: false, confirmationClicked: false },
+        adDialogObserved: true, adConfirmationClicked: true, adDialogClosed: true, previewObserved: false, confirmationClicked: false,
+        toutiaoChecks: [{ phase: 'inspect', adDetection: 'semantic', adDialogVisible: true, adDialogCount: 1,
+          adButtonCount: 1, adReadyButtonCount: 0, reason: 'ad_button_unavailable',
+          html: 'private-dom', token: 'private-token' }, { reason: 'private-reason' }] },
       error: {
         code: 'TOUTIAO_RESULT_UNCERTAIN',
         message: '页面失败 token=secret-token，正文：不应进入诊断包',
@@ -71,6 +74,13 @@ describe('distribution diagnostic bundles', () => {
       const steps = { adDialogObserved: true, adConfirmationClicked: true, adDialogClosed: true, previewObserved: false, confirmationClicked: false };
       expect(diagnostic.result).toMatchObject(steps);
       expect(JSON.parse(zip.readAsText('record.json')).payload.evidence).toMatchObject(steps);
+      const checks = [{ phase: 'inspect', adDetection: 'semantic', adDialogVisible: true, adDialogCount: 1,
+        adButtonCount: 1, adReadyButtonCount: 0, reason: 'ad_button_unavailable' }, {}];
+      for (const name of ['diagnostic.json', 'record.json', 'task.json']) {
+        const exported = JSON.parse(zip.readAsText(name));
+        expect((exported.result || exported.payload.evidence).toutiaoChecks).toEqual(checks);
+        expect(zip.readAsText(name)).not.toMatch(/private-(dom|token|reason)/);
+      }
       expect(JSON.stringify(diagnostic)).not.toContain('secret-token');
       expect(JSON.stringify(diagnostic)).not.toContain('不应进入诊断包');
       expect(zip.readFile('evidence/failure.png')?.toString()).toBe('png-test');

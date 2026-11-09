@@ -49,6 +49,31 @@ function safeUrl(value: unknown): string | null {
   return typeof value === 'string' && value ? (value.split('?')[0] || value) : null;
 }
 
+function safeToutiaoChecks(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-64).filter(item => item && typeof item === 'object').map(item => {
+    const check = item as Record<string, unknown>;
+    const safe: Record<string, unknown> = {};
+    for (const key of ['adDialogVisible', 'previewVisible', 'confirmationAvailable', 'clicked']) {
+      if (typeof check[key] === 'boolean') safe[key] = check[key];
+    }
+    for (const key of ['adDialogCount', 'adButtonCount', 'adReadyButtonCount']) {
+      if (Number.isSafeInteger(check[key]) && (check[key] as number) >= 0) safe[key] = check[key];
+    }
+    const enums: Record<string, string[]> = {
+      phase: ['inspect', 'ad', 'confirmation'],
+      adDetection: ['none', 'marked', 'semantic', 'tracked'],
+      reason: ['ad_button_missing', 'ad_button_ambiguous', 'ad_button_unavailable', 'ad_ready',
+        'preview_not_ready', 'confirmation_unavailable', 'preview_ready', 'ad_dialog_open',
+        'ambiguous', 'missing', 'dialog_changed', 'covered', 'ready'],
+    };
+    for (const [key, allowed] of Object.entries(enums)) {
+      if (typeof check[key] === 'string' && allowed.includes(check[key] as string)) safe[key] = check[key];
+    }
+    return safe;
+  });
+}
+
 function safeEvidence(record: ContentItem): Record<string, unknown> {
   const payload = payloadRecord(record);
   const evidence = payload.evidence && typeof payload.evidence === 'object' ? payload.evidence as Record<string, unknown> : {};
@@ -63,6 +88,7 @@ function safeEvidence(record: ContentItem): Record<string, unknown> {
     adConfirmationClicked: typeof evidence.adConfirmationClicked === 'boolean' ? evidence.adConfirmationClicked : null,
     adDialogClosed: typeof evidence.adDialogClosed === 'boolean' ? evidence.adDialogClosed : null,
     previewObserved: typeof evidence.previewObserved === 'boolean' ? evidence.previewObserved : null,
+    toutiaoChecks: safeToutiaoChecks(evidence.toutiaoChecks),
     screenshotFile: typeof evidence.screenshotPath === 'string' ? basename(evidence.screenshotPath) : null,
     settingsScreenshotFile: typeof evidence.settingsScreenshotPath === 'string' ? basename(evidence.settingsScreenshotPath) : null,
     coverScreenshotFile: typeof evidence.coverScreenshotPath === 'string' ? basename(evidence.coverScreenshotPath) : null,
@@ -141,6 +167,7 @@ function diagnosticData(record: ContentItem, version: string): Record<string, un
       adConfirmationClicked: typeof evidence.adConfirmationClicked === 'boolean' ? evidence.adConfirmationClicked : null,
       adDialogClosed: typeof evidence.adDialogClosed === 'boolean' ? evidence.adDialogClosed : null,
       previewObserved: typeof evidence.previewObserved === 'boolean' ? evidence.previewObserved : null,
+      toutiaoChecks: safeToutiaoChecks(evidence.toutiaoChecks),
     },
     failure: { code, message: sanitizeDiagnosticMessage(message) },
     evidenceFiles: evidencePaths(record).map((path) => basename(path)),

@@ -34,11 +34,12 @@ try {
     await page.goto(editorUrl);
     await app.evaluate(() => { global.requests = []; });
     await page.setContent(`<!doctype html><html><head><style>
-      body { margin:0; font:16px sans-serif; } button { padding:12px 20px; }
+      body { margin:0; font:16px sans-serif; } button, .custom-control { padding:12px 20px; }
+      .custom-control { display:inline-block; cursor:pointer; border:1px solid #999; }
       #article { height:1400px; }
       #primary { position:fixed; bottom:10px; right:10px; }
       #ad { position:fixed; inset:0; z-index:30; background:#0008; display:none; align-items:center; justify-content:center; }
-      .byte-modal { padding:30px; background:white; }
+      .byte-modal, .byte-popup { padding:30px; background:white; }
       #preview { position:fixed; inset:0; z-index:20; background:#ddd; display:none; }
       #phone { margin:30px; padding:20px; background:white; }
       #footer { position:absolute; bottom:0; right:0; background:white; padding:10px; }
@@ -75,11 +76,49 @@ try {
           preview.style.display = 'block'; preview.style.opacity = '0';
         }
         if (options.missingAdButton) document.querySelector('#adConfirm').remove();
+        if (options.unmarkedAd) {
+          const panel = document.querySelector('.byte-modal');
+          panel.className = 'byte-popup';
+          panel.removeAttribute('role');
+        }
+        if (options.absoluteAd) ad.style.position = 'absolute';
+        if (options.ariaHiddenAd) ad.setAttribute('aria-hidden', 'true');
+        for (const id of [
+          ...(options.customAdButtons ? ['adConfirm', 'cancel'] : []),
+          ...(options.customPreviewButtons ? ['back', 'confirm'] : []),
+        ]) {
+          const original = document.getElementById(id);
+          const custom = document.createElement('div');
+          custom.id = id; custom.className = 'custom-control';
+          const label = document.createElement('span');
+          label.textContent = original.textContent.split('').join(' ');
+          custom.append(label); original.replaceWith(custom);
+        }
+        if (options.duplicateAdButton) document.querySelector('#cancel').insertAdjacentHTML('afterend', '<button>确定</button>');
+        if (options.splitAdText) document.querySelector('#adText').innerHTML = '该文章选择了“<span>不投放广告</span>”，将不会产生<span>广告收益</span>。';
+        if (options.inlineNotice) document.body.insertAdjacentHTML('beforeend', '<section>不投放广告，不会产生广告收益。<button>取消</button><button>确定</button></section>');
         if (options.quoteVariant) document.querySelector('#adText').textContent = '该文章选择了「不投放广告」，将不会产生广告收益。';
+        const showAd = () => {
+          ad.style.display = 'flex'; window.steps.push('ad');
+          if (options.adButtonDelay) {
+            document.querySelector('#adConfirm').disabled = true;
+            setTimeout(() => { document.querySelector('#adConfirm').disabled = false; }, options.adButtonDelay);
+          }
+          if (options.adCoverDelay) {
+            document.querySelector('#cover').style.display = 'block';
+            setTimeout(() => { document.querySelector('#cover').style.display = 'none'; }, options.adCoverDelay);
+          }
+          if (options.inertAdDelay) {
+            ad.inert = true;
+            setTimeout(() => { ad.inert = false; }, options.inertAdDelay);
+          }
+        };
         document.querySelector('#primary').onclick = () => {
           window.primaryClicks++;
-          if (options.directPreview) showPreview();
-          else { ad.style.display = 'flex'; window.steps.push('ad'); }
+          if (options.lateAd) { showPreview(); setTimeout(showAd, 50); }
+          else if (options.directPreview) showPreview();
+          else if (options.adDelay) setTimeout(showAd, options.adDelay);
+          else showAd();
         };
         document.querySelector('#adConfirm')?.addEventListener('click', event => {
           window.trusted.push(event.isTrusted);
@@ -87,9 +126,15 @@ try {
           window.adClicks++; window.steps.push('ad-click');
           if (options.changedAdText) { document.querySelector('#adText').textContent = '正在处理，请稍候'; return; }
           if (options.stuckAd) return;
-          ad.style.display = 'none'; window.steps.push('ad-closed');
-          preview.style.opacity = '1';
-          setTimeout(showPreview, options.previewDelay || 0);
+          const closeAd = () => {
+            ad.style.display = 'none'; window.steps.push('ad-closed');
+            preview.style.opacity = '1';
+            setTimeout(showPreview, options.previewDelay || 0);
+          };
+          if (options.adCloseDelay) {
+            document.querySelector('#adText').textContent = '正在处理，请稍候';
+            setTimeout(closeAd, options.adCloseDelay);
+          } else closeAd();
         });
         document.querySelector('#confirm').onclick = event => {
           window.trusted.push(event.isTrusted);
@@ -127,16 +172,41 @@ try {
   }
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
 
-  for (const options of [{ quoteVariant: true }, { directPreview: true }, { previewDelay: 180 }, { earlyButton: true }]) {
+  for (const options of [
+    { quoteVariant: true }, { directPreview: true }, { previewDelay: 180 }, { earlyButton: true },
+    { unmarkedAd: true }, { unmarkedAd: true, splitAdText: true },
+    { unmarkedAd: true, directPreview: true },
+    { directPreview: true, inlineNotice: true },
+    { unmarkedAd: true, absoluteAd: true },
+    { unmarkedAd: true, customAdButtons: true, customPreviewButtons: true },
+    { directPreview: true, customPreviewButtons: true },
+    { unmarkedAd: true, adDelay: 180 },
+    { unmarkedAd: true, adButtonDelay: 260 },
+    { unmarkedAd: true, adCloseDelay: 260 },
+    { unmarkedAd: true, adCoverDelay: 260 },
+    { unmarkedAd: true, lateAd: true },
+    { unmarkedAd: true, ariaHiddenAd: true },
+    { unmarkedAd: true, inertAdDelay: 260 },
+  ]) {
     await setup(options);
     const result = await run();
     assert.equal(result.status, 'success', JSON.stringify({ options, result }));
     assert.equal((await counts()).confirmation, 1);
+    assert.equal((await counts()).ad, options.directPreview ? 0 : 1);
+    assert.equal(result.adDialogObserved, !options.directPreview);
+    assert.equal(result.adDialogClosed, true);
+    assert.ok(result.toutiaoChecks.some(check => check.phase === 'confirmation' && check.clicked));
+    if (options.unmarkedAd && !options.directPreview) assert.ok(result.toutiaoChecks.some(check => check.adDetection === 'semantic'));
+    if (!options.directPreview) assert.ok((await counts()).steps.indexOf('confirm') > (await counts()).steps.indexOf('ad-closed'));
     assert.ok((await counts()).steps.indexOf('confirm') > (await counts()).steps.indexOf('preview'));
     check(`preview gating succeeds: ${JSON.stringify(options)}`);
   }
 
-  for (const options of [{ stuckAd: true }, { missingAdButton: true }, { changedAdText: true }]) {
+  for (const options of [
+    { stuckAd: true }, { missingAdButton: true }, { changedAdText: true },
+    { unmarkedAd: true, stuckAd: true }, { unmarkedAd: true, changedAdText: true },
+    { unmarkedAd: true, missingAdButton: true }, { unmarkedAd: true, duplicateAdButton: true },
+  ]) {
     await setup(options);
     const result = await run();
     assert.equal(result.status, 'action_required');
@@ -144,7 +214,7 @@ try {
     assert.equal(result.adDialogClosed, false);
     assert.equal(result.confirmationClicked, false);
     assert.equal((await counts()).confirmation, 0);
-    assert.ok((await counts()).ad <= 3);
+    assert.equal((await counts()).ad, options.missingAdButton || options.duplicateAdButton ? 0 : 1);
     await noReconcileNavigation();
     assert.equal(await page.locator('#ad').isVisible(), true);
     check(`unclosed ad dialog stops in place: ${JSON.stringify(options)}`);
@@ -161,6 +231,7 @@ try {
     assert.equal(result.stage, 'toutiao_preview');
     assert.equal(result.confirmationClicked, false);
     assert.equal((await counts()).confirmation, 0);
+    if (options.noPreview || options.noLabels) assert.equal(result.adDialogClosed, false);
     await noReconcileNavigation();
     check(`incomplete or inaccessible preview cannot submit: ${JSON.stringify(options)}`);
   }
