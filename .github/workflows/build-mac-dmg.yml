@@ -59,6 +59,8 @@ jobs:
       - run: npm run build
       - run: npm run build:cli
       - run: npm test
+      - name: Verify Toutiao ad confirmation and publish flow without contacting the platform
+        run: npm run test:toutiao-publish
       - name: Build signed and notarized Apple Silicon DMG
         env:
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}

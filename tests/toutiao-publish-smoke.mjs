@@ -58,9 +58,34 @@ try {
       <script>
         const options = ${JSON.stringify(options)};
         window.steps = []; window.adClicks = 0; window.confirmClicks = 0;
-        window.trusted = []; window.primaryClicks = 0;
+        window.trusted = []; window.primaryClicks = 0; window.unrelatedClicks = 0;
         const ad = document.querySelector('#ad');
         const preview = document.querySelector('#preview');
+        if (options.nestedAd) {
+          const prefix = options.nestedAd;
+          const panel = document.querySelector('.byte-modal');
+          ad.className = prefix + '-modal-wrapper';
+          panel.className = prefix + '-modal';
+          panel.style.cssText = 'padding:30px;background:white';
+          const header = document.createElement('div');
+          header.className = prefix + '-modal-header';
+          header.append(panel.querySelector('h2'));
+          const content = document.createElement('div');
+          content.className = prefix + '-modal-content';
+          content.append(document.querySelector('#adText'));
+          const footer = document.createElement('div');
+          footer.className = prefix + '-modal-footer';
+          footer.append(document.querySelector('#cancel'), document.querySelector('#adConfirm'));
+          panel.append(header, content, footer);
+          if (options.noDialogRole) panel.removeAttribute('role');
+          if (options.unrelatedAdButton) {
+            const other = document.createElement('div');
+            other.setAttribute('role', 'dialog');
+            other.innerHTML = '<button>确定</button>';
+            other.querySelector('button').onclick = () => { window.unrelatedClicks++; };
+            ad.append(other);
+          }
+        }
         const showPreview = () => {
           if (options.noPreview) return;
           preview.style.display = 'block';
@@ -76,6 +101,11 @@ try {
           preview.style.display = 'block'; preview.style.opacity = '0';
         }
         if (options.missingAdButton) document.querySelector('#adConfirm').remove();
+        if (options.missingAdControls) {
+          document.querySelector('#adConfirm').remove();
+          document.querySelector('#cancel').remove();
+        }
+        if (options.disabledAdButton) document.querySelector('#adConfirm').disabled = true;
         if (options.unmarkedAd) {
           const panel = document.querySelector('.byte-modal');
           panel.className = 'byte-popup';
@@ -100,6 +130,12 @@ try {
         if (options.quoteVariant) document.querySelector('#adText').textContent = '该文章选择了「不投放广告」，将不会产生广告收益。';
         const showAd = () => {
           ad.style.display = 'flex'; window.steps.push('ad');
+          if (options.coveredAd) document.querySelector('#cover').style.display = 'block';
+          if (options.adFooterDelay) {
+            const footer = document.querySelector('.' + options.nestedAd + '-modal-footer');
+            footer.style.display = 'none';
+            setTimeout(() => { footer.style.display = 'block'; }, options.adFooterDelay);
+          }
           if (options.adButtonDelay) {
             document.querySelector('#adConfirm').disabled = true;
             setTimeout(() => { document.querySelector('#adConfirm').disabled = false; }, options.adButtonDelay);
@@ -153,9 +189,58 @@ try {
     try { return await global.adapter.publishFilledDraft(BrowserWindow.getAllWindows()[0].webContents, 'toutiao', title); }
     finally { global.setTimeout = original; }
   }, title);
-  const counts = () => page.evaluate(() => ({ ad: window.adClicks, confirmation: window.confirmClicks, steps: window.steps, trusted: window.trusted }));
+  const counts = () => page.evaluate(() => ({ ad: window.adClicks, confirmation: window.confirmClicks, unrelated: window.unrelatedClicks, steps: window.steps, trusted: window.trusted }));
   const noReconcileNavigation = async () => assert.deepEqual(await app.evaluate(() => global.requests), []);
   const check = name => { passed++; console.log(`PASS ${name}`); };
+
+  // The real popup separates its message and footer into siblings whose
+  // class names all match the broad modal selector. A wrapper may also host
+  // unrelated dialogs, so selecting the outermost match is not sufficient.
+  for (const options of [
+    { nestedAd: 'byte' },
+    { nestedAd: 'arco', noDialogRole: true },
+    { nestedAd: 'byte', noDialogRole: true, unrelatedAdButton: true },
+    { nestedAd: 'byte', customAdButtons: true, splitAdText: true },
+    { nestedAd: 'byte', adCloseDelay: 260 },
+    { nestedAd: 'custom', noDialogRole: true, unrelatedAdButton: true },
+    { nestedAd: 'custom', noDialogRole: true, adFooterDelay: 260 },
+  ]) {
+    await setup(options);
+    const result = await run();
+    assert.equal(result.status, 'success', JSON.stringify({ options, result }));
+    const observed = await counts();
+    assert.equal(observed.ad, 1);
+    assert.equal(observed.confirmation, 1);
+    assert.equal(observed.unrelated, 0);
+    assert.deepEqual(observed.steps, ['ad', 'ad-click', 'ad-closed', 'preview', 'confirm']);
+    assert.deepEqual(observed.trusted, [true, true]);
+    assert.ok(result.toutiaoChecks.some(item => item.phase === 'ad' && item.clicked && item.adDialogCount === 1));
+    if (options.adFooterDelay) {
+      assert.ok(result.toutiaoChecks.some(item => item.reason === 'ad_button_missing'));
+    }
+    check(`nested ad popup confirms before preview: ${JSON.stringify(options)}`);
+  }
+
+  for (const [options, reason] of [
+    [{ missingAdButton: true }, 'ad_button_missing'],
+    [{ missingAdControls: true }, 'ad_button_missing'],
+    [{ duplicateAdButton: true }, 'ad_button_ambiguous'],
+    [{ disabledAdButton: true }, 'ad_button_unavailable'],
+    [{ coveredAd: true }, 'ad_button_unavailable'],
+  ]) {
+    await setup({ nestedAd: 'byte', noDialogRole: true, unrelatedAdButton: true, ...options });
+    const result = await run();
+    assert.equal(result.status, 'action_required', JSON.stringify({ options, result }));
+    assert.equal(result.stage, 'toutiao_ad_confirm');
+    assert.ok(result.toutiaoChecks.every(item => item.phase === 'inspect' && item.reason === reason));
+    const observed = await counts();
+    assert.equal(observed.ad, 0);
+    assert.equal(observed.confirmation, 0);
+    assert.equal(observed.unrelated, 0);
+    await noReconcileNavigation();
+    assert.equal(await page.locator('#ad').isVisible(), true);
+    check(`nested ad popup safely stops: ${JSON.stringify(options)}`);
+  }
 
   for (const zoom of [0.8, 1, 1.25, 1.5]) {
     await setup();

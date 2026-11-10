@@ -1,6 +1,6 @@
 {
   "name": "geo-publisher-desktop",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "description": "Lingxi Workspace desktop application with a built-in persistent browser",

@@ -52,6 +52,8 @@ jobs:
         run: node tests/material-diagnostics-smoke.mjs
       - name: Verify Zhihu publish interactions without contacting the platform
         run: npm run test:zhihu-publish
+      - name: Verify Toutiao ad confirmation and publish flow without contacting the platform
+        run: npm run test:toutiao-publish
       - run: node scripts/prepare-release-output.mjs release/win-smoke
       - run: npx electron-builder --config scripts/windows-config.mjs --win --x64 --publish never --config.directories.output=release/win-smoke
       - shell: pwsh

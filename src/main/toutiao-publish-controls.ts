@@ -88,12 +88,35 @@ export async function readToutiaoPublishControls(
         return false;
       });
     const roots = [...new Set([...matchedAds, ...semanticDialogs])];
+    // Broad modal class matching also finds the message body. Resolve each
+    // innermost notice to its actual panel, not to the outermost wrapper,
+    // which may contain unrelated dialogs. Known panels remain boundaries
+    // even while their footer/buttons are missing or still loading.
+    const panelSelector = 'dialog[open],[aria-modal="true"],[role="dialog"],[role="alertdialog"],.byte-modal,.arco-modal';
     roots.filter(root => !roots.some(other => other !== root && root.contains(other)))
+      .map(notice => {
+        const panel = notice.closest<HTMLElement>(panelSelector);
+        if (panel && roots.includes(panel)) return panel;
+        // Unmarked variants use the nearest observed container with the
+        // notice and an action. Cancel is sufficient: a missing confirm
+        // must not make us widen the scope to another dialog's button.
+        for (let node: HTMLElement | null = notice; node; node = node.parentElement) {
+          const container = node;
+          if (roots.includes(container) && buttons.some(button => container.contains(button)
+            && ['取消', '确定'].includes(normalize(button.textContent)))) return node;
+        }
+        return notice;
+      })
       .forEach(element => session.adRoots.add(element));
     // A changed message is not proof of closure. Keep tracking the actual
     // observed dialog until its DOM is removed or hidden, including ancestors.
     // Removed/hidden roots no longer describe the active confirmation episode.
     for (const root of session.adRoots) if (!root.isConnected || !rendered(root)) session.adRoots.delete(root);
+    // A footer can appear after the notice. Once its containing panel is
+    // known, replace any previously tracked message-only descendant.
+    for (const root of session.adRoots) {
+      if ([...session.adRoots].some(other => other !== root && other.contains(root))) session.adRoots.delete(root);
+    }
     const adDialogs = [...session.adRoots];
     const adButtons = buttons.filter(button => normalize(button.textContent) === '确定'
       && adDialogs.some(dialog => dialog.contains(button)));
