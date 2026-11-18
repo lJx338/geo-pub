@@ -56,6 +56,20 @@ if (!zip.getEntries().some((entry) => decodeURIComponent(entry.entryName).replac
 }
 
 const displayName = getElementText(properties, 'DisplayName');
+const namespace = getAttribute(getElement(manifest, 'Package'), 'IgnorableNamespaces').split(/\s+/);
+if (!namespace.includes('desktop7')) throw new Error('包中缺少 desktop7 兼容性声明');
+const desktopExtension = application.match(/<desktop7:Extension\b(?=[^>]*\bCategory=["']windows\.shortcut["'])[^>]*>[\s\S]*?<\/desktop7:Extension>/)?.[0];
+if (!desktopExtension) throw new Error('包中缺少桌面快捷方式声明');
+const desktopShortcut = getElement(desktopExtension, 'desktop7:Shortcut');
+assertEqual(getAttribute(desktopShortcut, 'File'), `[{Desktop}]\\${displayName}.lnk`, 'Shortcut.File');
+assertEqual(getAttribute(desktopShortcut, 'Icon'), `[{Package}]\\${getAttribute(application, 'Executable')}`, 'Shortcut.Icon');
+const shortcutEntry = zip.getEntries().find((entry) =>
+  decodeURIComponent(entry.entryName).replace(/\\/g, '/').toLowerCase() === `vfs/desktop/${displayName.toLowerCase()}.lnk`);
+const shortcutData = shortcutEntry?.getData();
+const shellLinkHeader = Buffer.from('4c0000000114020000000000c000000000000046', 'hex');
+if (!shortcutData || shortcutData.length < 76 || !shortcutData.subarray(0, shellLinkHeader.length).equals(shellLinkHeader)) {
+  throw new Error('商店包缺少有效的桌面快捷方式文件');
+}
 
 // Manifest/icon checks cannot detect a Store build that opens an empty window.
 // Inspect the ASAR in the actual package, not the local dist/ directory.
@@ -92,6 +106,7 @@ console.log(`MSIX 验证通过：${packagePath}`);
 console.log(`身份：${expectedIdentity}`);
 console.log(`版本：${expectedVersion}`);
 console.log('开机启动：Lingxi Workspace（由 Windows 设置管理，默认关闭）');
+console.log(`桌面快捷方式：${displayName}.lnk`);
 console.log('商店图标：StoreLogo、Square150x150Logo、Square44x44Logo、Wide310x150Logo');
 
 function normalizeVersion(value) {

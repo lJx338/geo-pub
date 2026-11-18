@@ -9,6 +9,7 @@ on:
       - 'build/icon.png'
       - 'build/appx/**'
       - 'build/AppxManifest.xml'
+      - 'build/appx-desktop-shortcut.xml'
       - 'build/appx-startup.xml'
       - 'build/store-version.json'
       - 'src/**'
@@ -25,6 +26,7 @@ on:
       - 'build/icon.png'
       - 'build/appx/**'
       - 'build/AppxManifest.xml'
+      - 'build/appx-desktop-shortcut.xml'
       - 'build/appx-startup.xml'
       - 'build/store-version.json'
       - 'src/**'
@@ -86,7 +88,7 @@ jobs:
       - name: Verify startup failure recovery
         run: node tests/startup-smoke.mjs
 
-      - name: Install and launch a signed test copy of the MSIX
+      - name: Install a signed test MSIX and launch it from the desktop shortcut
         shell: pwsh
         run: ./tests/windows-store-startup-smoke.ps1 -ReleaseDirectory release/store
 

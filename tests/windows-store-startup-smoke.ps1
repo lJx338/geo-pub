@@ -9,6 +9,10 @@ $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Run this test only on a disposable GitHub Actions Windows runner.' }
 $identity = '78707CBF.LingxiWorkspace'
 if (Get-AppxPackage -Name $identity) { throw 'A Lingxi Store package is already installed; refusing to replace it.' }
+$desktop = [Environment]::GetFolderPath('DesktopDirectory')
+if (-not $desktop) { throw 'The test account must have a desktop directory.' }
+$shortcutPath = Join-Path $desktop 'Lingxi Workspace.lnk'
+if (Test-Path -LiteralPath $shortcutPath) { throw 'A Lingxi Workspace desktop shortcut already exists.' }
 $package = Get-ChildItem $ReleaseDirectory -File | Where-Object { $_.Extension -in '.appx', '.msix' } | Select-Object -First 1
 if (-not $package) { throw 'MSIX/AppX package not found.' }
 $testDirectory = Join-Path $env:RUNNER_TEMP ('lingxi-msix-test-' + [guid]::NewGuid())
@@ -34,9 +38,14 @@ try {
   Add-AppxPackage -Path $signedPackage
   $installed = Get-AppxPackage -Name $identity
   if (-not $installed) { throw 'MSIX installation failed.' }
+  for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path -LiteralPath $shortcutPath -PathType Leaf); $attempt++) {
+    Start-Sleep -Seconds 1
+  }
+  if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+    throw 'MSIX installation did not create the desktop shortcut before first launch.'
+  }
   $launchedAt = [datetime]::UtcNow
-  # Exercise package activation, without --disable-gpu or a development profile.
-  Start-Process explorer.exe -ArgumentList "shell:AppsFolder\$($installed.PackageFamilyName)!LingxiWorkspace"
+  Invoke-Item -LiteralPath $shortcutPath
   $logPaths = @(
     (Join-Path $env:LOCALAPPDATA "Packages\$($installed.PackageFamilyName)\LocalCache\Local\GEO Publisher Desktop\diagnostics\startup.log"),
     (Join-Path $env:LOCALAPPDATA 'GEO Publisher Desktop\diagnostics\startup.log'),
