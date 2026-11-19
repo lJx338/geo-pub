@@ -1,126 +1,30 @@
-name: Validate MSIX for Microsoft Store
+name: Probe install-time APPX shortcuts
 
 on:
-  push:
-    paths:
-      - 'package.json'
-      - 'package-lock.json'
-      - 'scripts/**'
-      - 'build/icon.png'
-      - 'build/appx/**'
-      - 'build/AppxManifest.xml'
-      - 'build/appx-startup.xml'
-      - 'build/store-version.json'
-      - 'src/**'
-      - 'cli/**'
-      - 'integrations/**'
-      - 'tests/startup-smoke.mjs'
-      - 'tests/windows-store-startup-smoke.ps1'
-      - '.github/workflows/validate-msix.yml'
-  pull_request:
-    paths:
-      - 'package.json'
-      - 'package-lock.json'
-      - 'scripts/**'
-      - 'build/icon.png'
-      - 'build/appx/**'
-      - 'build/AppxManifest.xml'
-      - 'build/appx-startup.xml'
-      - 'build/store-version.json'
-      - 'src/**'
-      - 'cli/**'
-      - 'integrations/**'
-      - 'tests/startup-smoke.mjs'
-      - 'tests/windows-store-startup-smoke.ps1'
-      - '.github/workflows/validate-msix.yml'
   workflow_dispatch:
-    inputs:
-      store_version:
-        description: '留空使用 build/store-version.json，与苹果商店版本保持一致；第四段固定为 0'
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  build-validate-msix:
-    runs-on: windows-latest
-    timeout-minutes: 15
+  probe:
+    runs-on: windows-2025
+    timeout-minutes: 12
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
-
-      - name: Set up Go for the bundled CLI
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: cli/go.mod
-          cache-dependency-path: cli/go.sum
-
-      - name: Resolve store version
-        env:
-          STORE_VERSION_OVERRIDE: ${{ inputs.store_version }}
-        run: node scripts/store-version.mjs
-
-      - name: Install dependencies from lockfile
-        run: npm ci
-
-      - name: Run typecheck and tests
-        run: |
-          npm run typecheck
-          npm test
-
-      - name: Build the unsigned Store MSIX
-        run: npm run package:store
-
-      - name: Validate manifest and Store assets
-        run: npm run validate:appx -- $env:STORE_PACKAGE_VERSION
-
-      - name: Verify startup failure recovery
-        run: node tests/startup-smoke.mjs
-
-      - name: Verify desktop shortcut creation, upgrade, and legacy repair
+          name: lingxi-workspace-msix-1.0.24
+          run-id: 44469686524
+          github-token: ${{ github.token }}
+          path: probe-input
+      - name: Inspect actual desktop items immediately after APPX deployment
         shell: pwsh
-        run: ./tests/windows-store-startup-smoke.ps1 -ReleaseDirectory release/store
-
-      - name: Upload Store startup diagnostics
-        uses: actions/upload-artifact@v4
+        run: ./tests/probe-appx-install-shortcut.ps1
+      - name: Preserve installed shortcut evidence
         if: always()
-        with:
-          name: lingxi-msix-startup-diagnostics
-          path: |
-            release/store/startup-test-logs/*.log
-            release/store/startup-test-logs/*.json
-            release/test-evidence/startup-*.png
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Run Windows App Certification Kit when available
-        shell: pwsh
-        run: |
-          $appcert = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Application Certification Kit\appcert.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $appcert) {
-            Write-Warning 'Windows App Certification Kit is not installed on this runner; local WACK testing is still required before Store submission.'
-            exit 0
-          }
-          $package = Get-ChildItem -Path release/store -File | Where-Object { $_.Extension -in '.appx', '.msix' } | Select-Object -First 1
-          & $appcert.FullName test -appxpackagepath $package.FullName -reportoutputpath "$env:GITHUB_WORKSPACE\release\store\appcert-report"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Upload the unsigned MSIX as a workflow artifact
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: lingxi-workspace-msix-${{ env.STORE_PACKAGE_VERSION }}
-          path: |
-            release/store/*.appx
-            release/store/*.msix
-          if-no-files-found: error
-          retention-days: 14
+          name: appx-install-shortcut-evidence
+          path: probe-evidence
