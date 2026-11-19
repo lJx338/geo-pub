@@ -121,7 +121,8 @@ try {
   $upgradeManifest.DocumentElement.Identity.SetAttribute('Version', $upgradeVersion.ToString())
   $upgradeManifest.Save($upgradeManifestPath)
   foreach ($file in @('AppxBlockMap.xml', '[Content_Types].xml')) {
-    Remove-Item -LiteralPath (Join-Path $upgradeContents $file)
+    $footprint = Join-Path $upgradeContents $file
+    if (Test-Path -LiteralPath $footprint) { Remove-Item -LiteralPath $footprint }
   }
   $upgradePackage = Join-Path $testDirectory 'upgrade.appx'
   & $makeAppx pack /d $upgradeContents /p $upgradePackage
