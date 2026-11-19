@@ -48,10 +48,31 @@ try {
     await page.waitForLoadState('load');
   };
   const run = async (timeout = 3000) => app.evaluate(async ({ BrowserWindow }, timeout) => {
+    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    const mouseEvents = [];
+    const types = { mouseMove: 'mouseMoved', mouseDown: 'mousePressed', mouseUp: 'mouseReleased' };
+    let attached = false;
+    // Deliver real, hit-tested Chromium input without relying on OS window focus.
+    const testContents = {
+      getURL: () => contents.getURL(),
+      loadURL: url => contents.loadURL(url),
+      sendInputEvent: event => { mouseEvents.push(event); },
+      async executeJavaScript(script) {
+        for (const { type, x, y, button, clickCount } of mouseEvents.splice(0)) {
+          if (!contents.debugger.isAttached()) {
+            contents.debugger.attach('1.3');
+            attached = true;
+          }
+          await contents.debugger.sendCommand('Input.dispatchMouseEvent', { type: types[type], x, y, button, clickCount });
+        }
+        return contents.executeJavaScript(script);
+      },
+    };
     try {
-      await global.adapter.ensureToutiaoEditor(BrowserWindow.getAllWindows()[0].webContents, timeout);
+      await global.adapter.ensureToutiaoEditor(testContents, timeout);
       return { status: 'ready' };
     } catch (error) { return { status: 'stopped', message: error.message }; }
+    finally { if (attached && contents.debugger.isAttached()) contents.debugger.detach(); }
   }, timeout);
   const requests = () => app.evaluate(() => global.requests);
   const check = name => { passed++; console.log(`PASS ${name}`); };
@@ -85,7 +106,8 @@ try {
   for (const label of ['继续编辑', '编辑草稿']) {
     const prompt = html(`${fields()}<button id="resume">${label}</button><script>
       window.resumeClicks = 0;
-      document.querySelector('#resume').onclick = () => {
+      document.querySelector('#resume').onclick = event => {
+        if (!event.isTrusted) return;
         window.resumeClicks++;
         document.querySelector('textarea').value = '已恢复的草稿';
         document.querySelector('.ProseMirror').textContent = '已恢复的正文';
@@ -96,7 +118,8 @@ try {
     for (const start of [`${origin}/profile_v4/graphic/articles`, existingDraft]) {
       await setup(start, prompt, start === existingDraft ? prompt : works);
       if (start === existingDraft) await page.locator('#resume').waitFor();
-      assert.equal((await run()).status, 'ready');
+      const result = await run();
+      assert.equal(result.status, 'ready', result.message);
       await page.locator('#resume').waitFor({ state: 'detached', timeout: 3000 });
       assert.equal(await page.evaluate(() => window.resumeClicks), 1);
       assert.equal(await page.locator('textarea').inputValue(), '已恢复的草稿');
