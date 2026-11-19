@@ -31,7 +31,7 @@ try {
       await session.defaultSession.protocol.handle('https', request => {
         const url = new URL(request.url); const key = url.pathname + url.search;
         global.requests.push(url.href);
-        return new Response(global.pages[key] || '<html><body>Unknown fixture</body></html>', { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        return new Response(global.pages[key] || '<html><body>Unknown fixture</body></html>', { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
       });
       const window = new BrowserWindow({ width: 1000, height: 700, show: false, webPreferences: { backgroundThrottling: false } });
       await window.loadURL('https://mp.toutiao.com/start');
@@ -48,13 +48,10 @@ try {
     await page.waitForLoadState('load');
   };
   const run = async (timeout = 3000) => app.evaluate(async ({ BrowserWindow }, timeout) => {
-    const original = global.setTimeout;
-    global.setTimeout = (fn, ms, ...args) => original(fn, Math.min(ms, 30), ...args);
     try {
       await global.adapter.ensureToutiaoEditor(BrowserWindow.getAllWindows()[0].webContents, timeout);
       return { status: 'ready' };
     } catch (error) { return { status: 'stopped', message: error.message }; }
-    finally { global.setTimeout = original; }
   }, timeout);
   const requests = () => app.evaluate(() => global.requests);
   const check = name => { passed++; console.log(`PASS ${name}`); };
@@ -95,9 +92,12 @@ try {
         document.querySelector('#resume').remove();
       };
     </script>`);
-    for (const start of [`${origin}/profile_v4/graphic/articles`, `${origin}${editor}`]) {
-      await setup(start, prompt);
+    const existingDraft = `${origin}${editor}?article_id=${label === '继续编辑' ? '100' : '200'}`;
+    for (const start of [`${origin}/profile_v4/graphic/articles`, existingDraft]) {
+      await setup(start, prompt, start === existingDraft ? prompt : works);
+      if (start === existingDraft) await page.locator('#resume').waitFor();
       assert.equal((await run()).status, 'ready');
+      await page.locator('#resume').waitFor({ state: 'detached', timeout: 3000 });
       assert.equal(await page.evaluate(() => window.resumeClicks), 1);
       assert.equal(await page.locator('textarea').inputValue(), '已恢复的草稿');
       assert.equal(await page.locator('.ProseMirror').innerText(), '已恢复的正文');
