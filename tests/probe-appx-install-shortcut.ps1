@@ -108,7 +108,7 @@ try {
   $desktopNs = 'http://schemas.microsoft.com/appx/manifest/desktop/windows10/7'
   $uapNs = 'http://schemas.microsoft.com/appx/manifest/uap/windows10'
   $revision = 30
-  foreach ($variant in @('manifest-only','native-link','payload-only','protocol-url','system-launcher','win32-runtime')) {
+  foreach ($variant in @('system-launcher','win32-runtime','documented-desktop','data-shortcut')) {
     $revision++
     $record = [ordered]@{ Variant = $variant; Packed = $false; Installed = $false; Items = @(); FirstLaunch = $false; Error = $null }
     $candidate = Join-Path $temp "$variant.appx"
@@ -120,15 +120,19 @@ try {
       $root.Identity.SetAttribute('Version', "1.0.24.$revision")
       $app = $root.Applications.Application
       $name = 'Lingxi Workspace.lnk'
-      if ($variant -in @('native-link','payload-only','win32-runtime')) {
+      if ($variant -in @('win32-runtime','documented-desktop')) {
         Copy-Item -LiteralPath $native -Destination (Join-Path $vfsDesktop $name)
       }
       if ($variant -eq 'win32-runtime') {
+        $app.RemoveAttribute('EntryPoint')
         $runtime = $xml.CreateAttribute('uap10','RuntimeBehavior',"$uapNs/10")
         $runtime.Value = 'win32App'
         [void]$app.Attributes.Append($runtime)
+        $trust = $xml.CreateAttribute('uap10','TrustLevel',"$uapNs/10")
+        $trust.Value = 'mediumIL'
+        [void]$app.Attributes.Append($trust)
       }
-      if ($variant -eq 'protocol-url') {
+      if ($variant -eq 'data-shortcut') {
         $name = 'Lingxi Workspace.url'
         Set-Content -LiteralPath (Join-Path $vfsDesktop $name) -Encoding ascii -Value @('[InternetShortcut]','URL=lingxi-workspace-shortcut-probe:open')
         $protocol = $xml.CreateElement('uap','Extension',$uapNs)
@@ -137,8 +141,23 @@ try {
         $scheme.SetAttribute('Name','lingxi-workspace-shortcut-probe')
         [void]$protocol.AppendChild($scheme)
         [void]$app.Extensions.AppendChild($protocol)
+        $dataNs = 'http://schemas.microsoft.com/appx/manifest/desktop/windows10/10'
+        $root.SetAttribute('xmlns:desktop10', $dataNs)
+        $root.SetAttribute('IgnorableNamespaces', "$($root.IgnorableNamespaces) desktop10")
+        $dataExtension = $xml.CreateElement('desktop10','Extension',$dataNs)
+        $dataExtension.SetAttribute('Category','windows.dataShortcuts')
+        $dataShortcuts = $xml.CreateElement('desktop10','DataShortcuts',$dataNs)
+        $dataShortcut = $xml.CreateElement('desktop10','DataShortcut',$dataNs)
+        $dataShortcut.SetAttribute('Path', "VFS\Desktop\$name")
+        $dataShortcut.SetAttribute('DisplayName', 'Lingxi Workspace')
+        $dataShortcut.SetAttribute('AUMID', $aumid)
+        [void]$dataShortcuts.AppendChild($dataShortcut)
+        [void]$dataExtension.AppendChild($dataShortcuts)
+        $extensions = $xml.CreateElement('Extensions', $root.NamespaceURI)
+        [void]$extensions.AppendChild($dataExtension)
+        [void]$root.AppendChild($extensions)
       }
-      if ($variant -ne 'payload-only') {
+      if ($variant -ne 'data-shortcut') {
         $extension = $xml.CreateElement('desktop7','Extension',$desktopNs)
         $extension.SetAttribute('Category','windows.shortcut')
         $shortcut = $xml.CreateElement('desktop7','Shortcut',$desktopNs)
@@ -146,7 +165,11 @@ try {
         $shortcut.SetAttribute('Icon', '[{Package}]\app\Lingxi Workspace.exe')
         if ($variant -eq 'system-launcher') {
           $extension.SetAttribute('Executable','[{Windows}]\explorer.exe')
+          $extension.SetAttribute('EntryPoint','Windows.FullTrustApplication')
           $shortcut.SetAttribute('Arguments',"shell:AppsFolder\$aumid")
+        }
+        if ($variant -eq 'documented-desktop') {
+          $shortcut.SetAttribute('File', ('$(Desktop)\' + $name))
         }
         [void]$extension.AppendChild($shortcut)
         [void]$app.Extensions.AppendChild($extension)
@@ -212,3 +235,4 @@ try {
   }
   Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
+exit 0
