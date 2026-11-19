@@ -512,8 +512,7 @@ export class PlatformSessions {
         ? null : await this.promoteForAttention(managed, error);
       if (attention) {
         const wrapped = new AttentionRequiredError(attention, originalErrorCode(enrichedError));
-        Object.assign(wrapped.details as unknown as Record<string, unknown>, details);
-        throw wrapped;
+        throw this.attachErrorDetails(wrapped, enrichedError.details);
       }
       throw enrichedError;
     }
@@ -1301,12 +1300,11 @@ export class PlatformSessions {
     };
   }
 
-  private attachErrorDetails(error: unknown, details: Record<string, unknown>): Error {
+  private attachErrorDetails(error: unknown, details: Record<string, unknown>): Error & { details: Record<string, unknown> } {
     const target = error instanceof Error ? error : new Error(String(error));
     const current = target as Error & { details?: unknown };
     const existing = current.details && typeof current.details === 'object' ? current.details as Record<string, unknown> : {};
-    current.details = { ...existing, ...details };
-    return target;
+    return Object.assign(target, { details: { ...existing, ...details } });
   }
 
   private async runExclusive<T>(operation: () => Promise<T>, browserDeadline = true): Promise<T> {

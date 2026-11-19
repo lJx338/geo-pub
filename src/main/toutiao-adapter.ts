@@ -3,10 +3,53 @@ import { tmpdir } from 'node:os';
 import { basename, extname, join, resolve } from 'node:path';
 import type { WebContents } from 'electron';
 import { resumeVisibleDraft } from './editor-draft.js';
+import type { ToutiaoContentCheck, ToutiaoContentDiagnostic } from './toutiao-content-diagnostics.js';
 
 const PUBLISH_URL = 'https://mp.toutiao.com/profile_v4/graphic/publish';
 const TITLE_SELECTOR = 'textarea[placeholder*="标题"],input[placeholder*="标题"]';
 const BODY_SELECTOR = '.ProseMirror[contenteditable="true"],.ql-editor[contenteditable="true"],[data-editor="content"] [contenteditable="true"]';
+const editorLookup = `
+  const visible = (element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0
+      && element.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+  };
+  const findVisible = (selector) => [...document.querySelectorAll(selector)].find(visible);
+  const title = findVisible(${JSON.stringify(TITLE_SELECTOR)});
+  const body = findVisible(${JSON.stringify(BODY_SELECTOR)});
+`;
+
+// Read source characters from rendered editor nodes. innerText can apply CSS
+// text-transform, while textContent includes hidden text and editor widgets.
+const bodyInspection = `
+  const normalize = (value) => value.replace(/\\s+/g, ' ').trim();
+  const compact = (value) => value.normalize('NFC').replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
+  const readBody = (root) => {
+    const structure = { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
+    const blockTypes = { H1: 'headings', H2: 'headings', H3: 'headings', UL: 'lists', OL: 'lists', BLOCKQUOTE: 'quotes', HR: 'dividers', IMG: 'images' };
+    const rendered = Boolean(root?.isConnected);
+    const parts = [];
+    if (root) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const element = node instanceof Element ? node : node.parentElement;
+          if (node instanceof Element && node.matches('.ProseMirror-widget,script,style,template')) return NodeFilter.FILTER_REJECT;
+          if (!rendered) return NodeFilter.FILTER_ACCEPT;
+          const style = getComputedStyle(element);
+          if (style.display === 'none' || style.contentVisibility === 'hidden' || style.opacity === '0') return NodeFilter.FILTER_REJECT;
+          return style.visibility === 'visible' ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+        },
+      });
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.nodeType === Node.TEXT_NODE) parts.push(node.data);
+        else if (Object.hasOwn(blockTypes, node.tagName)) structure[blockTypes[node.tagName]]++;
+      }
+    }
+    const text = parts.join('');
+    return { structure, compactText: compact(text), length: normalize(text).length };
+  };
+`;
 // Keep large covers responsive in Toutiao's upload drawer. This is an
 // operational limit for the desktop adapter; the platform may accept larger
 // files, but they are much more likely to outlive the upload confirmation
@@ -612,16 +655,7 @@ export async function ensureToutiaoEditor(webContents: WebContents, timeoutMs = 
         continue;
       }
     }
-    const ready = await webContents.executeJavaScript(`(() => {
-      const visible = (element) => {
-        if (!(element instanceof HTMLElement)) return false;
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-      };
-      return visible(document.querySelector(${JSON.stringify(TITLE_SELECTOR)}))
-        && visible(document.querySelector(${JSON.stringify(BODY_SELECTOR)}));
-    })()`);
+    const ready = await webContents.executeJavaScript(`(() => { ${editorLookup} return Boolean(title && body); })()`);
     if (ready) return;
     await delay(500);
   }
@@ -632,24 +666,14 @@ async function writeToutiaoContent(
   webContents: WebContents,
   title: string,
   html: string,
-): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'formatVerification' | 'url'>> {
+  method: 'insert' | 'paste',
+): Promise<NonNullable<ToutiaoContentCheck['writePath']>> {
   return await webContents.executeJavaScript(`(() => {
-    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
-    const title = [...document.querySelectorAll(${JSON.stringify(TITLE_SELECTOR)})].find(visible);
-    const body = [...document.querySelectorAll(${JSON.stringify(BODY_SELECTOR)})].find(visible);
-    if (!(title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement) || !(body instanceof HTMLElement)) {
-      return { titleFilled: false, bodyFilled: false, title: '', bodyTextLength: 0, formatVerification: { expected: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, actual: { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 }, preserved: false, degradedBlocks: ['编辑器'] }, url: location.href };
-    }
-    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
-    const compact = (value) => normalize(value).replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
+    ${editorLookup}
+    ${bodyInspection}
+    if (!(title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement) || !(body instanceof HTMLElement)) return 'editor_missing';
     const requestedTitle = ${JSON.stringify(title)};
     const requestedHtml = ${JSON.stringify(html)};
-    const parser = document.createElement('div');
-    parser.innerHTML = requestedHtml;
-    // Toutiao's editor normalizes imported h2/h3 blocks to its own h1 heading node.
-    const countStructure = (root) => ({ headings: root.querySelectorAll('h1,h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
-    const expectedStructure = countStructure(parser);
-    const expectedBody = normalize(parser.innerText || parser.textContent);
     const descriptor = Object.getOwnPropertyDescriptor(
       title instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
       'value',
@@ -664,60 +688,121 @@ async function writeToutiaoContent(
     range.selectNodeContents(body);
     selection?.removeAllRanges();
     selection?.addRange(range);
+    if (${JSON.stringify(method)} === 'paste') {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/html', requestedHtml);
+      const handled = !body.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+      if (handled) return 'editor_paste';
+    }
+
+    const parser = document.createElement('div');
+    parser.innerHTML = requestedHtml;
     let inserted = false;
     try { inserted = document.execCommand('insertHTML', false, requestedHtml); } catch { inserted = false; }
-    if (!inserted || compact(body.innerText || body.textContent) !== compact(expectedBody)) {
+    const replacedDom = !inserted || readBody(body).compactText !== readBody(parser).compactText;
+    if (replacedDom) {
       body.replaceChildren();
       body.insertAdjacentHTML('afterbegin', requestedHtml);
     }
     body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: null }));
     body.dispatchEvent(new Event('change', { bubbles: true }));
     body.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
-    const actualTitle = normalize(title.value);
-    const actualBody = normalize(body.innerText || body.textContent);
-    const actualStructure = countStructure(body);
+    return replacedDom ? 'replace_dom' : 'insert_html';
+  })()`);
+}
+
+type ToutiaoContentVerification = Pick<DraftFillResult, 'title' | 'bodyTextLength' | 'formatVerification' | 'url'> & {
+  check: Omit<ToutiaoContentCheck, 'method' | 'writePath'>;
+};
+
+export async function verifyToutiaoContent(
+  webContents: WebContents,
+  title: string,
+  html: string,
+): Promise<ToutiaoContentVerification> {
+  return await webContents.executeJavaScript(`(() => {
+    ${editorLookup}
+    ${bodyInspection}
+    const parser = document.createElement('div');
+    parser.innerHTML = ${JSON.stringify(html)};
+    const expected = readBody(parser);
+    const actual = readBody(body);
+    const actualTitle = title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement ? normalize(title.value) : '';
     const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
-    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
+    const degradedBlocks = Object.keys(expected.structure).filter((key) => actual.structure[key] < expected.structure[key]).map((key) => labels[key]);
+    const expectedText = expected.compactText;
+    const actualText = actual.compactText;
+    let mismatchAt = null;
+    let expectedSpanLength = 0;
+    let actualSpanLength = 0;
+    if (expectedText !== actualText) {
+      let offset = 0;
+      while (expectedText[offset] === actualText[offset]) offset++;
+      let expectedEnd = expectedText.length;
+      let actualEnd = actualText.length;
+      while (expectedEnd > offset && actualEnd > offset && expectedText[expectedEnd - 1] === actualText[actualEnd - 1]) {
+        expectedEnd--;
+        actualEnd--;
+      }
+      mismatchAt = offset + 1;
+      expectedSpanLength = expectedEnd - offset;
+      actualSpanLength = actualEnd - offset;
+    }
+    let difference = 'match';
+    if (!body) difference = 'editor_missing';
+    else if (!expectedText.length) difference = 'empty_source';
+    else if (mismatchAt !== null) {
+      difference = expectedSpanLength === 0 ? 'extra_text' : actualSpanLength === 0 ? 'missing_text' : 'changed_text';
+    }
     return {
-      titleFilled: actualTitle === normalize(requestedTitle),
-      bodyFilled: compact(expectedBody).length > 0 && compact(actualBody) === compact(expectedBody),
       title: actualTitle,
-      bodyTextLength: actualBody.length,
-      formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks },
+      bodyTextLength: actual.length,
+      check: {
+        titleFound: Boolean(title), editorFound: Boolean(body),
+        titleFilled: Boolean(title) && actualTitle === normalize(${JSON.stringify(title)}),
+        bodyFilled: difference === 'match', difference,
+        expectedLength: expectedText.length, actualLength: actualText.length,
+        mismatchAt, expectedSpanLength, actualSpanLength,
+        expectedBlocks: expected.structure, actualBlocks: actual.structure,
+      },
+      formatVerification: { expected: expected.structure, actual: actual.structure, preserved: degradedBlocks.length === 0, degradedBlocks },
       url: location.href,
     };
   })()`);
 }
 
-async function verifyToutiaoContent(
+export function describeToutiaoContentMismatch(content: ToutiaoContentVerification): string {
+  const { titleFilled, bodyFilled, expectedLength, actualLength, mismatchAt, difference } = content.check;
+  const location = mismatchAt === null ? '' : `, mismatchAt=${mismatchAt}`;
+  const format = content.formatVerification.preserved ? '' : `, 未保留${content.formatVerification.degradedBlocks.join('、')}`;
+  return `title=${titleFilled}, body=${bodyFilled}, expectedLength=${expectedLength}, actualLength=${actualLength}${location}, difference=${difference}${format}`;
+}
+
+async function recoverToutiaoContent(
   webContents: WebContents,
   title: string,
   html: string,
-): Promise<Pick<DraftFillResult, 'titleFilled' | 'bodyFilled' | 'title' | 'bodyTextLength' | 'formatVerification' | 'url'>> {
-  return await webContents.executeJavaScript(`(() => {
-    const normalize = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
-    const compact = (value) => normalize(value).replace(/[\\s\\u200b-\\u200d\\ufeff]/g, '');
-    const parser = document.createElement('div'); parser.innerHTML = ${JSON.stringify(html)};
-    const expectedBody = normalize(parser.innerText || parser.textContent);
-    const countStructure = (root) => ({ headings: root.querySelectorAll('h1,h2,h3').length, lists: root.querySelectorAll('ul,ol').length, quotes: root.querySelectorAll('blockquote').length, dividers: root.querySelectorAll('hr').length, images: root.querySelectorAll('img').length });
-    const expectedStructure = countStructure(parser);
-    const visible = (element) => element instanceof HTMLElement && (() => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; })();
-    const title = [...document.querySelectorAll(${JSON.stringify(TITLE_SELECTOR)})].find(visible);
-    const body = [...document.querySelectorAll(${JSON.stringify(BODY_SELECTOR)})].find(visible);
-    const actualTitle = title instanceof HTMLInputElement || title instanceof HTMLTextAreaElement ? normalize(title.value) : '';
-    const actualBody = body instanceof HTMLElement ? normalize(body.innerText || body.textContent) : '';
-    const actualStructure = body instanceof HTMLElement ? countStructure(body) : { headings: 0, lists: 0, quotes: 0, dividers: 0, images: 0 };
-    const labels = { headings: '小标题', lists: '列表', quotes: '引用', dividers: '分隔线', images: '正文图片' };
-    const degradedBlocks = Object.keys(expectedStructure).filter((key) => actualStructure[key] < expectedStructure[key]).map((key) => labels[key]);
-    return {
-      titleFilled: actualTitle === normalize(${JSON.stringify(title)}),
-      bodyFilled: compact(expectedBody).length > 0 && compact(actualBody) === compact(expectedBody),
-      title: actualTitle,
-      bodyTextLength: actualBody.length,
-      formatVerification: { expected: expectedStructure, actual: actualStructure, preserved: degradedBlocks.length === 0, degradedBlocks },
-      url: location.href,
-    };
-  })()`);
+  stage: Exclude<ToutiaoContentDiagnostic['stage'], 'before_publish'>,
+  initialWrite: ToutiaoContentCheck['writePath'] = null,
+): Promise<ToutiaoContentVerification> {
+  let content = await verifyToutiaoContent(webContents, title, html);
+  const checks: ToutiaoContentCheck[] = [{ method: initialWrite ? 'insert' : 'read', writePath: initialWrite, ...content.check }];
+  for (const method of ['paste', 'insert'] as const) {
+    if (content.check.titleFilled && content.check.bodyFilled && content.formatVerification.preserved) break;
+    const writePath = await writeToutiaoContent(webContents, title, html, method);
+    await delay(method === 'paste' ? 1_500 : 2_000);
+    content = await verifyToutiaoContent(webContents, title, html);
+    checks.push({ method, writePath, ...content.check });
+  }
+  const diagnostic: ToutiaoContentDiagnostic = { stage, checks };
+  if (!content.check.titleFilled || !content.check.bodyFilled) {
+    const code = stage === 'initial_fill' ? 'TOUTIAO_CONTENT_FILL_FAILED' : 'TOUTIAO_CONTENT_NOT_STABLE';
+    throw Object.assign(new Error(`${code}: ${describeToutiaoContentMismatch(content)}`), { details: { toutiaoContent: diagnostic } });
+  }
+  if (!content.formatVerification.preserved) {
+    throw Object.assign(new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${content.formatVerification.degradedBlocks.join('、')}`), { details: { toutiaoContent: diagnostic } });
+  }
+  return content;
 }
 
 export async function fillToutiaoDraft(
@@ -727,13 +812,9 @@ export async function fillToutiaoDraft(
   coverPath: string,
 ): Promise<DraftFillResult> {
   await ensureToutiaoEditor(webContents);
-  let result = await writeToutiaoContent(webContents, title, html);
+  const initialWrite = await writeToutiaoContent(webContents, title, html, 'insert');
   await delay(1_200);
-  result = await verifyToutiaoContent(webContents, title, html);
-  if (!result.titleFilled || !result.bodyFilled) {
-    throw new Error(`TOUTIAO_CONTENT_FILL_FAILED: title=${result.titleFilled}, body=${result.bodyFilled}, actualLength=${result.bodyTextLength}`);
-  }
-  if (!result.formatVerification.preserved) throw new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${result.formatVerification.degradedBlocks.join('、')}`);
+  await recoverToutiaoContent(webContents, title, html, 'initial_fill', initialWrite);
   let noAdsSelected: boolean | null;
   try {
     noAdsSelected = await ensureNoAds(webContents);
@@ -762,16 +843,7 @@ export async function fillToutiaoDraft(
     if (draftSaveState === 'saved' || draftSaveState === 'failed') break;
     await delay(500);
   }
-  let stableContent = await verifyToutiaoContent(webContents, title, html);
-  for (let attempt = 0; (!stableContent.titleFilled || !stableContent.bodyFilled || !stableContent.formatVerification.preserved) && attempt < 2; attempt += 1) {
-    await writeToutiaoContent(webContents, title, html);
-    await delay(1_500 + attempt * 500);
-    stableContent = await verifyToutiaoContent(webContents, title, html);
-  }
-  if (!stableContent.titleFilled || !stableContent.bodyFilled) {
-    throw new Error(`TOUTIAO_CONTENT_NOT_STABLE: title=${stableContent.titleFilled}, body=${stableContent.bodyFilled}, actualLength=${stableContent.bodyTextLength}`);
-  }
-  if (!stableContent.formatVerification.preserved) throw new Error(`TOUTIAO_FORMAT_DEGRADED: 头条号编辑器未保留${stableContent.formatVerification.degradedBlocks.join('、')}`);
+  const { check, ...stableContent } = await recoverToutiaoContent(webContents, title, html, 'after_save_check');
   const finalState = await webContents.executeJavaScript(`(() => {
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     return {
@@ -790,6 +862,8 @@ export async function fillToutiaoDraft(
   await delay(500);
   return {
     ...stableContent,
+    titleFilled: check.titleFilled,
+    bodyFilled: check.bodyFilled,
     coverUploaded,
     noAdsSelected: finalNoAdsSelected ?? noAdsSelected,
     aiDeclarationSelected: finalAiDeclarationSelected || aiDeclarationSelected,

@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import type { Platform as AnyPlatform } from '../shared/protocol.js';
 import { clickZhihuPublishControl, type ZhihuPublishClick } from './zhihu-publish-controls.js';
 import { clickToutiaoPublishControl, inspectToutiaoPublishControls, type ToutiaoPublishControls } from './toutiao-publish-controls.js';
+import { describeToutiaoContentMismatch, verifyToutiaoContent } from './toutiao-adapter.js';
+import type { ToutiaoContentDiagnostic } from './toutiao-content-diagnostics.js';
 
 // WeChat uses the official draft API and never enters browser publication.
 type Platform = Exclude<AnyPlatform, 'wechat' | 'lieju'>;
@@ -14,6 +16,7 @@ export interface PublishResult {
   platform: Platform;
   title: string;
   stage: string;
+  errorCode?: string;
   message: string;
   url: string;
   pageText: string;
@@ -24,6 +27,7 @@ export interface PublishResult {
   adDialogClosed?: boolean;
   previewObserved?: boolean;
   toutiaoChecks?: Array<Omit<ToutiaoPublishControls, 'point'> & { phase: 'inspect' | 'ad' | 'confirmation'; clicked?: boolean }>;
+  toutiaoContent?: ToutiaoContentDiagnostic;
 }
 
 /** Screenshot capture is independent of the platform's publishing result. */
@@ -126,7 +130,7 @@ async function pageStateWithRetry(webContents: WebContents): Promise<PageState> 
 
 async function verifyDraftContent(
   webContents: WebContents,
-  platform: Platform,
+  platform: 'baijia' | 'netease' | 'zhihu',
   title: string,
   html: string,
 ): Promise<{ matches: boolean; actual: DraftContentState; expectedBodyLength: number }> {
@@ -137,12 +141,7 @@ async function verifyDraftContent(
     const platform = ${JSON.stringify(platform)};
     let title = '';
     let body = '';
-    if (platform === 'toutiao') {
-      const titleElement = document.querySelector('textarea[placeholder*="标题"],input[placeholder*="标题"]');
-      const bodyElement = document.querySelector('.ProseMirror[contenteditable="true"],.ql-editor[contenteditable="true"],[data-editor="content"] [contenteditable="true"]');
-      title = titleElement instanceof HTMLInputElement || titleElement instanceof HTMLTextAreaElement ? titleElement.value : '';
-      body = bodyElement instanceof HTMLElement ? bodyElement.innerText || bodyElement.textContent || '' : '';
-    } else if (platform === 'netease' || platform === 'zhihu') {
+    if (platform === 'netease' || platform === 'zhihu') {
       const titleElement = document.querySelector('textarea.netease-textarea,textarea[placeholder*="标题"]');
       const bodyElement = document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
       title = titleElement instanceof HTMLTextAreaElement ? titleElement.value : '';
@@ -460,16 +459,26 @@ async function blocker(webContents: WebContents, state: PageState): Promise<stri
 }
 
 export async function publishFilledDraft(webContents: WebContents, platform: Platform, title: string, html = ''): Promise<PublishResult> {
-  if (html && ['baijia', 'toutiao', 'netease', 'zhihu'].includes(platform)) {
-    const verification = await verifyDraftContent(webContents, platform, title, html);
-    if (!verification.matches) {
-      const state = await pageStateWithRetry(webContents);
-      return {
-        status: 'action_required', platform, title, stage: 'draft_verify',
-        message: `DRAFT_CONTENT_NOT_STABLE: 发布前页面内容校验失败（标题=${normalizeContent(verification.actual.title) === normalizeContent(title)}，正文长度=${verification.actual.body.length}/${verification.expectedBodyLength}），已停止发布`,
-        url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: false, confirmationClicked: false,
-      };
+  let contentMismatch: string | undefined;
+  let toutiaoContent: ToutiaoContentDiagnostic | undefined;
+  if (html && platform === 'toutiao') {
+    const verification = await verifyToutiaoContent(webContents, title, html);
+    if (!verification.check.titleFilled || !verification.check.bodyFilled || !verification.formatVerification.preserved) {
+      contentMismatch = describeToutiaoContentMismatch(verification);
+      toutiaoContent = { stage: 'before_publish', checks: [{ method: 'read', writePath: null, ...verification.check }] };
     }
+  } else if (html && (platform === 'baijia' || platform === 'netease' || platform === 'zhihu')) {
+    const verification = await verifyDraftContent(webContents, platform, title, html);
+    if (!verification.matches) contentMismatch = `标题=${normalizeContent(verification.actual.title) === normalizeContent(title)}，正文长度=${verification.actual.body.length}/${verification.expectedBodyLength}`;
+  }
+  if (contentMismatch) {
+    const state = await pageStateWithRetry(webContents);
+    return {
+      status: 'action_required', platform, title, stage: 'draft_verify',
+      message: `DRAFT_CONTENT_NOT_STABLE: 发布前页面内容校验失败（${contentMismatch}），已停止发布`,
+      ...(toutiaoContent ? { toutiaoContent, errorCode: 'DRAFT_CONTENT_NOT_STABLE' } : {}),
+      url: state.url, pageText: state.text.slice(0, 1000), primaryClicked: false, confirmationClicked: false,
+    };
   }
   if (platform === 'zhihu') return await publishZhihuDraft(webContents, title);
   const config = primaryConfig[platform];

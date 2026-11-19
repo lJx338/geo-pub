@@ -183,15 +183,58 @@ try {
         };
       </script></body></html>`);
   };
-  const run = () => app.evaluate(async ({ BrowserWindow }, title) => {
+  const run = (html = '') => app.evaluate(async ({ BrowserWindow }, { title, html }) => {
     const original = global.setTimeout;
     global.setTimeout = (fn, ms, ...args) => original(fn, Math.min(ms, 20), ...args);
-    try { return await global.adapter.publishFilledDraft(BrowserWindow.getAllWindows()[0].webContents, 'toutiao', title); }
+    try { return await global.adapter.publishFilledDraft(BrowserWindow.getAllWindows()[0].webContents, 'toutiao', title, html); }
     finally { global.setTimeout = original; }
-  }, title);
+  }, { title, html });
   const counts = () => page.evaluate(() => ({ ad: window.adClicks, confirmation: window.confirmClicks, unrelated: window.unrelatedClicks, steps: window.steps, trusted: window.trusted }));
   const noReconcileNavigation = async () => assert.deepEqual(await app.evaluate(() => global.requests), []);
   const check = name => { passed++; console.log(`PASS ${name}`); };
+
+  const expectedBody = '<h2>印刷 café</h2><ul><li>末段保留。</li></ul>';
+  const editorBody = async (body) => page.locator('#article').evaluate((editor, { title, body }) => {
+    editor.insertAdjacentHTML('beforebegin', '<textarea placeholder="旧标题" style="display:none"></textarea>');
+    const titleField = document.createElement('textarea');
+    titleField.placeholder = '输入标题';
+    titleField.value = title;
+    editor.before(titleField);
+    editor.className = 'ProseMirror';
+    editor.style.textTransform = 'uppercase';
+    editor.innerHTML = body;
+  }, { title, body });
+  await setup();
+  await editorBody('<h1>印刷 cafe\u0301</h1><ul><li>末段保留。</li></ul><span class="ProseMirror-widget">编辑器工具</span>');
+  assert.equal((await run(expectedBody)).status, 'success');
+  check('publish verifies visible editor content with CSS, Unicode and widget differences');
+
+  for (const [body, mismatch, difference, expectedSpanLength, actualSpanLength] of [
+    ['<h2>印刷 café</h2><ul><li>末段保留！</li></ul>', /mismatchAt=11/, 'changed_text', 1, 1],
+    ['<h2>印刷 café</h2><ul><li>额外末段保留。</li></ul>', /mismatchAt=7/, 'extra_text', 0, 2],
+    ['<h2>印刷 café</h2><ul><li style="display:none">末段保留。</li></ul>', /actualLength=6, mismatchAt=7/, 'missing_text', 5, 0],
+    ['<h2>印刷 café</h2><p>末段保留。</p>', /未保留列表/, 'match', 0, 0],
+  ]) {
+    await setup();
+    await editorBody(body);
+    const result = await run(expectedBody);
+    assert.equal(result.stage, 'draft_verify');
+    assert.equal(result.primaryClicked, false);
+    assert.equal(await page.evaluate(() => window.primaryClicks), 0);
+    assert.match(result.message, mismatch);
+    assert.equal(result.errorCode, 'DRAFT_CONTENT_NOT_STABLE');
+    assert.equal(result.toutiaoContent.stage, 'before_publish');
+    assert.equal(result.toutiaoContent.checks.length, 1);
+    const [check] = result.toutiaoContent.checks;
+    assert.equal(check.method, 'read');
+    assert.equal(check.writePath, null);
+    assert.equal(check.difference, difference);
+    assert.equal(check.expectedSpanLength, expectedSpanLength);
+    assert.equal(check.actualSpanLength, actualSpanLength);
+    assert.equal(check.expectedBlocks.lists, 1);
+    assert.equal(check.actualBlocks.lists, Number(difference !== 'match'));
+  }
+  check('publish stops before clicking if text changed, is hidden, or lost list formatting');
 
   // The real popup separates its message and footer into siblings whose
   // class names all match the broad modal selector. A wrapper may also host

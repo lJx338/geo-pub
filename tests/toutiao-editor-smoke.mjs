@@ -69,7 +69,7 @@ try {
   ]) {
     await setup(start);
     assert.equal((await run()).status, 'ready');
-    assert.equal(page.url(), `${origin}${editor}`);
+    await page.waitForURL(`${origin}${editor}`);
     assert.deepEqual(await requests(), [start, `${origin}${editor}`]);
     check(`non-editor goes directly to writing page: ${new URL(start).pathname}`);
   }
@@ -119,6 +119,67 @@ try {
   assert.doesNotMatch(failed.message, /验证码|TOUTIAO_RECOVERY_UNCERTAIN/);
   assert.deepEqual(await requests(), [`${origin}/profile_v4/graphic/articles`, `${origin}${editor}`]);
   check('missing editor times out without scanning lists or inventing a captcha');
+
+  const coverPath = join(directory, 'cover.png');
+  await writeFile(coverPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64'));
+  const originalBody = '<h2>印刷 logo</h2><ul><li>每批检查</li><li>末段保留</li></ul>';
+  const fill = () => app.evaluate(async ({ BrowserWindow }, args) => {
+    const original = global.setTimeout;
+    global.setTimeout = (fn, ms, ...rest) => original(fn, Math.min(ms, 25), ...rest);
+    try {
+      return await global.adapter.fillToutiaoDraft(BrowserWindow.getAllWindows()[0].webContents, '正文兼容测试', args.body, args.coverPath);
+    } catch (error) { return { error: error.message, diagnostic: error.details?.toutiaoContent }; }
+    finally { global.setTimeout = original; }
+  }, { body: originalBody, coverPath });
+
+  for (const { pasteSupported, corruptAfterSave } of [
+    { pasteSupported: true, corruptAfterSave: false },
+    { pasteSupported: false, corruptAfterSave: false },
+    { pasteSupported: false, corruptAfterSave: true },
+  ]) {
+    await setup(`${origin}/profile_v4/graphic/articles`, html(`
+      <textarea style="display:none" placeholder="旧标题"></textarea>
+      ${fields()}
+      <label><input type="checkbox" ${corruptAfterSave ? '' : 'checked'}>引用AI</label>
+      <section>展示封面<label>单图</label><label>无封面</label><button>编辑</button><button>替换</button></section>
+      <p>草稿已保存</p><button>预览并发布</button>
+      <script>
+        const body = document.querySelector('.ProseMirror');
+        body.style.textTransform = 'uppercase';
+        window.pastes = 0;
+        let corrupt = !${corruptAfterSave};
+        const truncate = () => { body.innerHTML = '<h2>印刷 logo</h2><ul><li>每批检查</li></ul>'; };
+        body.addEventListener('input', () => { if (corrupt) truncate(); });
+        if (${corruptAfterSave}) document.querySelector('input[type="checkbox"]').addEventListener('change', () => {
+          corrupt = true;
+          truncate();
+        });
+        body.addEventListener('paste', event => {
+          window.pastes++;
+          if (!${pasteSupported}) return;
+          event.preventDefault();
+          body.innerHTML = event.clipboardData.getData('text/html') + '<span class="ProseMirror-widget">编辑器工具</span>';
+        });
+      </script>`));
+    const result = await fill();
+    assert.equal(await page.evaluate(() => window.pastes), 1);
+    if (pasteSupported) {
+      assert.equal(result.bodyFilled, true, JSON.stringify(result));
+      assert.equal(result.formatVerification.preserved, true);
+      assert.equal(await page.locator('.ProseMirror li').count(), 2);
+      check('rich paste recovers editor content when normal insertion loses a list item');
+    } else {
+      const code = corruptAfterSave ? 'TOUTIAO_CONTENT_NOT_STABLE' : 'TOUTIAO_CONTENT_FILL_FAILED';
+      assert.match(result.error, new RegExp(`^${code}:.*expectedLength=14, actualLength=10, mismatchAt=11, difference=missing_text$`));
+      assert.doesNotMatch(result.error, /印刷|每批|末段/);
+      assert.equal(result.diagnostic.stage, corruptAfterSave ? 'after_save_check' : 'initial_fill');
+      assert.deepEqual(result.diagnostic.checks.map(check => check.method), [corruptAfterSave ? 'read' : 'insert', 'paste', 'insert']);
+      assert.ok(result.diagnostic.checks.every(check => check.writePath !== 'editor_paste'
+        && check.difference === 'missing_text' && check.expectedSpanLength === 4 && check.actualSpanLength === 0));
+      assert.doesNotMatch(JSON.stringify(result.diagnostic), /印刷|每批|末段/);
+      check(`persistent truncation records the ${result.diagnostic.stage} stage, write attempts, and missing range`);
+    }
+  }
 
   console.log(`Toutiao editor smoke passed: ${passed} scenarios.`);
 } finally {

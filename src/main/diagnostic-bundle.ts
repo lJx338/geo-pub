@@ -5,6 +5,7 @@ import { basename, join, resolve, sep } from 'node:path';
 import AdmZip from 'adm-zip';
 import type { ContentItem } from './content-store.js';
 import { diagnosticsDirectory, evidenceDirectory } from './runtime-paths.js';
+import { toutiaoContentDiagnosticSchema } from './toutiao-content-diagnostics.js';
 
 const diagnosticExportDirectory = join(tmpdir(), 'geo-publisher-diagnostic-exports');
 
@@ -77,6 +78,7 @@ function safeToutiaoChecks(value: unknown): Record<string, unknown>[] {
 function safeEvidence(record: ContentItem): Record<string, unknown> {
   const payload = payloadRecord(record);
   const evidence = payload.evidence && typeof payload.evidence === 'object' ? payload.evidence as Record<string, unknown> : {};
+  const { data: toutiaoContent } = toutiaoContentDiagnosticSchema.safeParse(evidence.toutiaoContent);
   return {
     stage: typeof evidence.stage === 'string' ? evidence.stage : null,
     message: typeof evidence.message === 'string' ? sanitizeDiagnosticMessage(evidence.message) : null,
@@ -89,6 +91,7 @@ function safeEvidence(record: ContentItem): Record<string, unknown> {
     adDialogClosed: typeof evidence.adDialogClosed === 'boolean' ? evidence.adDialogClosed : null,
     previewObserved: typeof evidence.previewObserved === 'boolean' ? evidence.previewObserved : null,
     toutiaoChecks: safeToutiaoChecks(evidence.toutiaoChecks),
+    ...(toutiaoContent ? { toutiaoContent } : {}),
     screenshotFile: typeof evidence.screenshotPath === 'string' ? basename(evidence.screenshotPath) : null,
     settingsScreenshotFile: typeof evidence.settingsScreenshotPath === 'string' ? basename(evidence.settingsScreenshotPath) : null,
     coverScreenshotFile: typeof evidence.coverScreenshotPath === 'string' ? basename(evidence.coverScreenshotPath) : null,
@@ -99,6 +102,7 @@ function safeError(record: ContentItem): Record<string, unknown> {
   const payload = payloadRecord(record);
   const error = payload.error && typeof payload.error === 'object' ? payload.error as Record<string, unknown> : {};
   const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {};
+  const { data: toutiaoContent } = toutiaoContentDiagnosticSchema.safeParse(details.toutiaoContent);
   return {
     code: typeof error.code === 'string' ? error.code : null,
     message: typeof error.message === 'string' ? sanitizeDiagnosticMessage(error.message) : null,
@@ -107,11 +111,14 @@ function safeError(record: ContentItem): Record<string, unknown> {
       pageTitle: typeof details.pageTitle === 'string' ? sanitizeDiagnosticMessage(details.pageTitle) : null,
       url: safeUrl(details.url),
       screenshotFile: typeof details.screenshotPath === 'string' ? basename(details.screenshotPath) : null,
+      ...(typeof details.originalCode === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(details.originalCode)
+        ? { originalCode: details.originalCode } : {}),
+      ...(toutiaoContent ? { toutiaoContent } : {}),
     },
   };
 }
 
-function safeRecord(record: ContentItem): Record<string, unknown> {
+function safeRecord(record: ContentItem) {
   const payload = payloadRecord(record);
   return {
     id: record.id,
@@ -136,6 +143,7 @@ function diagnosticData(record: ContentItem, version: string): Record<string, un
   const evidence = payload.evidence && typeof payload.evidence === 'object' ? payload.evidence as Record<string, unknown> : {};
   const error = payload.error && typeof payload.error === 'object' ? payload.error as Record<string, unknown> : {};
   const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {};
+  const { data: toutiaoContent } = toutiaoContentDiagnosticSchema.safeParse(details.toutiaoContent ?? evidence.toutiaoContent);
   const message = typeof error.message === 'string'
     ? error.message
     : typeof evidence.message === 'string' ? evidence.message : '';
@@ -169,7 +177,7 @@ function diagnosticData(record: ContentItem, version: string): Record<string, un
       previewObserved: typeof evidence.previewObserved === 'boolean' ? evidence.previewObserved : null,
       toutiaoChecks: safeToutiaoChecks(evidence.toutiaoChecks),
     },
-    failure: { code, message: sanitizeDiagnosticMessage(message) },
+    failure: { code, message: sanitizeDiagnosticMessage(message), ...(toutiaoContent ? { toutiaoContent } : {}) },
     evidenceFiles: evidencePaths(record).map((path) => basename(path)),
     privacy: '诊断包不包含 Cookie、Token、localStorage、sessionStorage 或文章正文；页面截图可能显示当前可见平台页面。',
   };
@@ -198,7 +206,7 @@ export async function exportDistributionDiagnosticBundle(record: ContentItem, ve
     taskId: payload.taskId || record.id,
     platform: record.platform,
     status: record.status,
-    errorCode: (safe.payload as Record<string, unknown>).error && ((safe.payload as Record<string, unknown>).error as Record<string, unknown>).code,
+    errorCode: safe.payload.error.code ?? safe.payload.evidence.errorCode,
     titleFingerprint: safe.titleFingerprint,
     payload: safe.payload,
   }, null, 2)));

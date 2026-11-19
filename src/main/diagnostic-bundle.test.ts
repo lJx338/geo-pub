@@ -6,6 +6,7 @@ import AdmZip from 'adm-zip';
 import type { ContentItem } from './content-store.js';
 import { evidenceDirectory } from './runtime-paths.js';
 import { exportDistributionDiagnosticBundle, sanitizeDiagnosticMessage } from './diagnostic-bundle.js';
+import type { ToutiaoContentDiagnostic } from './toutiao-content-diagnostics.js';
 
 function failedDistribution(projectId: string, screenshotPath: string): ContentItem {
   const timestamp = new Date().toISOString();
@@ -89,6 +90,53 @@ describe('distribution diagnostic bundles', () => {
     } finally {
       if (previousRoot === undefined) delete process.env.GEO_PUBLISHER_USER_DATA_DIR;
       else process.env.GEO_PUBLISHER_USER_DATA_DIR = previousRoot;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['initial_fill', 'before_publish'] as const)('exports structured Toutiao checks for %s without the compared text', async stage => {
+    const root = await mkdtemp(join(tmpdir(), 'geo-toutiao-content-diagnostics-'));
+    const previousRoot = process.env.GEO_PUBLISHER_USER_DATA_DIR;
+    process.env.GEO_PUBLISHER_USER_DATA_DIR = root;
+    let zipPath: string | undefined;
+    try {
+      const record = failedDistribution('11111111-1111-4111-8111-111111111111', 'failure.png');
+      const blocks = { headings: 0, lists: 1, quotes: 0, dividers: 0, images: 0 };
+      const diagnostic: ToutiaoContentDiagnostic = { stage, checks: [{
+        method: stage === 'initial_fill' ? 'paste' : 'read', writePath: stage === 'initial_fill' ? 'editor_paste' : null,
+        titleFound: true, editorFound: true, titleFilled: true, bodyFilled: false, difference: 'missing_text',
+        expectedLength: 40, actualLength: 35, mismatchAt: 8, expectedSpanLength: 5, actualSpanLength: 0,
+        expectedBlocks: blocks, actualBlocks: blocks,
+      }] };
+      const input = { ...diagnostic, checks: diagnostic.checks.map(check => ({
+        ...check, expectedText: 'private-source', actualText: 'private-readback',
+        actualBlocks: { ...check.actualBlocks, rawHtml: 'private-html' },
+      })) };
+      const code = stage === 'initial_fill' ? 'TOUTIAO_CONTENT_FILL_FAILED' : 'DRAFT_CONTENT_NOT_STABLE';
+      if (stage === 'initial_fill') {
+        record.payload.error = { code, message: '正文校验失败', details: { toutiaoContent: input } };
+        delete record.payload.evidence;
+      } else {
+        record.status = 'action_required';
+        record.payload.evidence = { stage: 'draft_verify', errorCode: code, message: '发布前校验失败', primaryClicked: false, toutiaoContent: input };
+        delete record.payload.error;
+      }
+      zipPath = (await exportDistributionDiagnosticBundle(record, '1.0.23-test')).path;
+      const zip = new AdmZip(zipPath);
+      expect(JSON.parse(zip.readAsText('diagnostic.json')).failure).toMatchObject({ code, toutiaoContent: diagnostic });
+      expect(JSON.parse(zip.readAsText('task.json')).errorCode).toBe(code);
+      for (const name of ['record.json', 'task.json']) {
+        const { payload } = JSON.parse(zip.readAsText(name));
+        const info = stage === 'initial_fill' ? payload.error.details : payload.evidence;
+        expect(info.toutiaoContent).toEqual(diagnostic);
+      }
+      for (const name of ['diagnostic.json', 'record.json', 'task.json']) {
+        expect(zip.readAsText(name)).not.toMatch(/private-(source|readback|html)/);
+      }
+    } finally {
+      if (previousRoot === undefined) delete process.env.GEO_PUBLISHER_USER_DATA_DIR;
+      else process.env.GEO_PUBLISHER_USER_DATA_DIR = previousRoot;
+      if (zipPath) await rm(zipPath, { force: true });
       await rm(root, { recursive: true, force: true });
     }
   });
