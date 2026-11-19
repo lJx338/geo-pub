@@ -29,6 +29,7 @@ import { softwareRenderingRequested, StartupSupport } from './startup.js';
 import { exportDistributionDiagnosticBundle } from './diagnostic-bundle.js';
 import { writeMaterialDiagnosticReport } from './material-diagnostics.js';
 import { getLaunchAtLoginStatus, openWindowsStartupSettings, setLaunchAtLogin } from './launch-at-login.js';
+import { installWindowsStoreShortcut } from './windows-store-shortcut.js';
 import { createElectronWechatAdapter } from './wechat/index.js';
 import { registerWechatDesktopHandlers } from './wechat/desktop.js';
 import { loadLiejuFormOptions } from './lieju-form.js';
@@ -81,6 +82,13 @@ async function runDesktop(): Promise<void> {
   });
   await app.whenReady();
   startup.start();
+  if (app.isPackaged && isWindowsStoreRuntime()) {
+    void installWindowsStoreShortcut(dataDirectory(), join(__dirname, '..', 'renderer', 'logo.png')).then((result) => {
+      startupLog?.record('desktop-shortcut.setup', { result });
+    }).catch((error) => {
+      startupLog?.record('desktop-shortcut.failed', { message: error instanceof Error ? error.message : String(error) });
+    });
+  }
   startupLog.record('startup.projects');
   const projects = new ProjectStore();
   await projects.load();

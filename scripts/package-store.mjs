@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
-import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { storeVersion as resolveStoreVersion } from './store-version.mjs';
 
 const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -26,34 +25,14 @@ if (process.platform !== 'win32') {
   throw new Error('请在安装了 Windows SDK 的 Windows 环境中构建微软商店包。');
 }
 
-const output = path.resolve('release/store');
-await mkdir(output, { recursive: true });
-const staging = await mkdtemp(path.join(output, '.msix-'));
-try {
-  await run(process.execPath, [
-    'node_modules/electron-builder/cli.js',
-    '--config', 'scripts/windows-config.mjs',
-    '--win', 'appx',
-    '--x64',
-    '--publish', 'never',
-    `--config.directories.output=${staging}`,
-    `--config.extraMetadata.version=${storeVersion}`,
-  ]);
-
-  const packages = (await readdir(staging)).filter((file) => /\.(?:appx|msix)$/i.test(file));
-  if (packages.length !== 1) throw new Error(`应当生成一个商店包，实际生成 ${packages.length} 个。`);
-  const [file] = packages;
-  await run('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-File', 'scripts/finalize-store-package.ps1',
-    '-InputPackage', path.join(staging, file),
-    '-OutputPackage', path.join(output, file),
-  ]);
-} finally {
-  await rm(staging, { recursive: true, force: true });
-}
-
-async function run(command, args) {
-  const [code, signal] = await once(spawn(command, args, { stdio: 'inherit' }), 'exit');
-  if (code !== 0) throw new Error(`${command} 执行失败（${signal || code}）。`);
-}
+const builder = spawn(process.execPath, [
+  'node_modules/electron-builder/cli.js',
+  '--config', 'scripts/windows-config.mjs',
+  '--win', 'appx',
+  '--x64',
+  '--publish', 'never',
+  '--config.directories.output=release/store',
+  `--config.extraMetadata.version=${storeVersion}`,
+], { stdio: 'inherit' });
+const [code, signal] = await once(builder, 'exit');
+if (code !== 0) throw new Error(`electron-builder 执行失败（${signal || code}）。`);

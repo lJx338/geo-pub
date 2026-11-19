@@ -12,7 +12,6 @@ const expectedIdentity = '78707CBF.LingxiWorkspace';
 const expectedPublisher = 'CN=5C62BC82-3986-4D37-81C4-0EAF060A1A5D';
 const expectedPublisherDisplayName = '灵犀科技';
 const expectedApplicationId = 'LingxiWorkspace';
-const expectedActivation = `shell:AppsFolder\\${expectedIdentity}_00tbjt2yye0b2!${expectedApplicationId}`;
 const requiredAssets = new Map([
   ['storelogo.png', [50, 50]],
   ['square150x150logo.png', [150, 150]],
@@ -57,23 +56,10 @@ if (!zip.getEntries().some((entry) => decodeURIComponent(entry.entryName).replac
 }
 
 const displayName = getElementText(properties, 'DisplayName');
-const namespace = getAttribute(getElement(manifest, 'Package'), 'IgnorableNamespaces').split(/\s+/);
-if (!namespace.includes('desktop7')) throw new Error('包中缺少 desktop7 兼容性声明');
-const desktopExtension = application.match(/<desktop7:Extension\b(?=[^>]*\bCategory=["']windows\.shortcut["'])[^>]*>[\s\S]*?<\/desktop7:Extension>/)?.[0];
-if (!desktopExtension) throw new Error('包中缺少桌面快捷方式声明');
-const desktopShortcut = getElement(desktopExtension, 'desktop7:Shortcut');
-assertEqual(getAttribute(desktopShortcut, 'File'), `[{Desktop}]\\${displayName}.lnk`, 'Shortcut.File');
-assertEqual(getAttribute(desktopShortcut, 'Icon'), '[{Package}]\\app\\LingxiWorkspace.ico', 'Shortcut.Icon');
-assertEqual(getAttribute(desktopShortcut, 'Arguments'), expectedActivation, 'Shortcut.Arguments');
-const shortcutIcon = zip.getEntry('app/LingxiWorkspace.ico')?.getData();
-if (!shortcutIcon || shortcutIcon.length < 22 || shortcutIcon.readUInt32LE(0) !== 0x00010000
-  || shortcutIcon.readUInt32LE(18) !== 22 || shortcutIcon.readUInt32LE(14) !== shortcutIcon.length - 22) {
-  throw new Error('商店包缺少有效的桌面快捷方式图标');
+if (/\bCategory\s*=\s*["']windows\.shortcut["']/i.test(manifest) || zip.getEntries().some((entry) =>
+  /^vfs\/desktop\/.*\.lnk$/i.test(decodeURIComponent(entry.entryName).replace(/\\/g, '/')))) {
+  throw new Error('商店包不得部署指向版本目录的 desktop7 桌面快捷方式');
 }
-const shortcutEntry = zip.getEntries().find((entry) =>
-  decodeURIComponent(entry.entryName).replace(/\\/g, '/').toLowerCase() === `vfs/desktop/${displayName.toLowerCase()}.lnk`);
-const shortcutData = shortcutEntry?.getData();
-validateDesktopShortcut(shortcutData);
 
 // Manifest/icon checks cannot detect a Store build that opens an empty window.
 // Inspect the ASAR in the actual package, not the local dist/ directory.
@@ -110,31 +96,7 @@ console.log(`MSIX 验证通过：${packagePath}`);
 console.log(`身份：${expectedIdentity}`);
 console.log(`版本：${expectedVersion}`);
 console.log('开机启动：Lingxi Workspace（由 Windows 设置管理，默认关闭）');
-console.log(`桌面快捷方式：${displayName}.lnk`);
 console.log('商店图标：StoreLogo、Square150x150Logo、Square44x44Logo、Wide310x150Logo');
-
-function validateDesktopShortcut(data) {
-  const headerSize = 76;
-  const environmentSize = 0x314;
-  const header = Buffer.from('4c0000000114020000000000c000000000000046', 'hex');
-  if (!data || data.length < headerSize + 2 || !data.subarray(0, header.length).equals(header)) {
-    throw new Error('商店包缺少有效的桌面快捷方式文件');
-  }
-
-  // No target ID list or LinkInfo may contain a machine-specific path.
-  const portableFlags = 0x020002a0;
-  const environmentOffset = headerSize + 2 + data.readUInt16LE(headerSize) * 2;
-  if (data.readUInt32LE(20) !== portableFlags || data.length !== environmentOffset + environmentSize + 4
-    || data.readUInt32LE(environmentOffset) !== environmentSize
-    || data.readUInt32LE(environmentOffset + 4) !== 0xa0000001
-    || data.readUInt32LE(environmentOffset + environmentSize) !== 0) {
-    throw new Error('桌面快捷方式必须通过可展开的系统路径启动');
-  }
-  assertEqual(data.toString('utf16le', headerSize + 2, environmentOffset), expectedActivation, '桌面快捷方式参数');
-  const target = '%SystemRoot%\\explorer.exe';
-  assertEqual(data.toString('ascii', environmentOffset + 8, environmentOffset + 268).split('\0')[0], target, '桌面快捷方式 ANSI 目标');
-  assertEqual(data.toString('utf16le', environmentOffset + 268, environmentOffset + environmentSize).split('\0')[0], target, '桌面快捷方式 Unicode 目标');
-}
 
 function normalizeVersion(value) {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:\.0)?$/.exec(String(value));

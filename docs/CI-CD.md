@@ -6,13 +6,13 @@ Mac App Store 使用独立的 `Build Mac App Store` 工作流；普通 macOS DMG
 
 微软商店版通过 `build/appx-startup.xml` 声明 Windows 启动任务，默认关闭。安装并启动应用至少一次后，在应用「设置 → 开机启动 → 打开 Windows 启动设置」中开启 `Lingxi Workspace`；也可以在 Windows「设置 → 应用 → 启动」中修改。支持启动参数的 Windows 版本会以 `--background` 启动。普通 EXE 安装版继续使用应用内开关。
 
-微软商店包通过 `build/appx-desktop-shortcut.xml` 声明 `Lingxi Workspace` 桌面快捷方式，供支持 `desktop7:Shortcut` 的 Windows 在安装时创建。快捷方式用 `%SystemRoot%\explorer.exe` 按应用标识启动，图标使用独立的 ICO。真实商店验收在 Windows 11 上分别验证全新安装和从商店旧版升级。两种场景都在从开始菜单启动之前检查桌面图标并双击打开工作区，记录实际快捷方式目标和包版本。
+1.0.23 的桌面快捷方式来自 `windows.shortcut` 声明。Windows 安装时会根据应用清单生成实际快捷方式，启动目标是受保护的版本目录内的 EXE。商店版改为首次从「开始」菜单或商店「打开」启动时自动创建桌面快捷方式，并修复 1.0.23 留下的同名版本路径快捷方式。新快捷方式由 Explorer 按商店应用标识启动，并使用数据目录内的 ICO。普通 Windows EXE 安装包在安装期间创建桌面快捷方式。
 
 微软商店版的 WorkBuddy 连接会解析 CLI、Skill 文件及连接数据的真实路径，兼容 MSIX 对 AppData 的重定向。内部目录仍为 `GEO Publisher Desktop`，CLI 和发布 Skill 标识仍为 `geo-publisher`；不搬移客户数据。每条 Windows Store CLI 调用须保留连接指令中的 `GEO_PUBLISHER_USER_DATA_DIR` 设置，包括备用的 `cmd.exe` 调用。升级后重新点击“连接 WorkBuddy”刷新本机路径和已安装 Skill。普通 EXE、DMG 和 MAS 使用各自原有的连接方式。
 
 Windows CI 在构建 CLI 后验证路径解析、普通安装包隔离，以及从外部 PowerShell 调用 production CLI 读取实际连接数据；测试使用 junction 模拟目录重定向。真实 MSIX 包发布前仍需在 Windows 上从包外验证连接指令，不能把该模拟测试当作商店安装验收。
 
-`Validate MSIX` 还会检查包内 ASAR 的主程序、preload、界面脚本和独立启动提示页。它在临时 Windows Runner 中签署测试包副本，全新安装后从桌面图标启动，再原地升级到较高的测试版本并从桌面图标重新启动。两次都保存安装后的快捷方式属性，验证当前包中的进程记录了 `windowsStore: true`、`packaged: true` 和 `renderer.ready`，并使用默认的硬件加速设置。真实商店签名和测试渠道升级仍以 Windows 11 验收为准。
+`Validate MSIX` 检查包内 ASAR 的主程序和启动资源，并在临时 Windows Runner 中签署测试包副本。它验证首次打开时自动创建的桌面快捷方式能启动、换包目录升级后原图标仍能启动，以及 1.0.23 的旧目标能被修复后重新启动。测试保存快捷方式属性，要求实际启动当前包、界面就绪并使用默认的硬件加速设置。真实商店验收分别走全新安装和从 1.0.23 升级两条路径，检查首次从「开始」菜单打开后桌面图标能双击启动。
 
 Electron 固定为 `43.8.3`，包含上游从 `43.5.0` 发布的 [MSIX WebGPU/SwiftShader 进程终止修复](https://releases.electronjs.org/pr/53197)。旧版 `43.1.1` 不包含该修复；相关已知问题可能使包进入 `Modified, NeedsRemediation`，但这个包状态本身不能确定具体 DLL 或触发原因。2026-10-26 收到的受影响机器日志进一步确认了 CodeIntegrity 事件 3033：`Lingxi Workspace.exe` 加载 `vk_swiftshader.dll` 被签名级别要求拒绝，安装包仍为 `1.0.17.0`。这与上游缺陷吻合，不能把这种故障归因于文章数据库损坏，也不能把同版本的商店恢复误认为正常版本升级。
 
