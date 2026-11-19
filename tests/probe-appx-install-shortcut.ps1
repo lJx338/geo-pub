@@ -108,7 +108,7 @@ try {
   $desktopNs = 'http://schemas.microsoft.com/appx/manifest/desktop/windows10/7'
   $uapNs = 'http://schemas.microsoft.com/appx/manifest/uap/windows10'
   $revision = 30
-  foreach ($variant in @('system-launcher','win32-runtime','documented-desktop','data-shortcut')) {
+  foreach ($variant in @('win32-runtime','explicit-classic')) {
     $revision++
     $record = [ordered]@{ Variant = $variant; Packed = $false; Installed = $false; Items = @(); FirstLaunch = $false; Error = $null }
     $candidate = Join-Path $temp "$variant.appx"
@@ -120,13 +120,14 @@ try {
       $root.Identity.SetAttribute('Version', "1.0.24.$revision")
       $app = $root.Applications.Application
       $name = 'Lingxi Workspace.lnk'
-      if ($variant -in @('win32-runtime','documented-desktop')) {
+      if ($variant -in @('win32-runtime','explicit-classic')) {
         Copy-Item -LiteralPath $native -Destination (Join-Path $vfsDesktop $name)
       }
-      if ($variant -eq 'win32-runtime') {
+      if ($variant -in @('win32-runtime','explicit-classic')) {
+        $root.Dependencies.TargetDeviceFamily.SetAttribute('MinVersion','10.0.19041.0')
         $app.RemoveAttribute('EntryPoint')
         $runtime = $xml.CreateAttribute('uap10','RuntimeBehavior',"$uapNs/10")
-        $runtime.Value = 'win32App'
+        $runtime.Value = if ($variant -eq 'win32-runtime') { 'win32App' } else { 'packagedClassicApp' }
         [void]$app.Attributes.Append($runtime)
         $trust = $xml.CreateAttribute('uap10','TrustLevel',"$uapNs/10")
         $trust.Value = 'mediumIL'
