@@ -44,12 +44,35 @@ $alphabet = '0123456789abcdefghjkmnpqrstvwxyz'
 $publisherId = -join (0..12 | ForEach-Object { $alphabet[[Convert]::ToInt32($bits.Substring($_ * 5, 5), 2)] })
 $appUserModelId = "$($package.Identity.Name)_$publisherId!$($application.Id)"
 
-# AppsFolder activation works with the package identity across Store updates.
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut((Join-Path $shortcutDirectory $linkName))
-$shortcut.TargetPath = "$env:WINDIR\explorer.exe"
-$shortcut.Arguments = "shell:AppsFolder\$appUserModelId"
-$shortcut.Save()
+# Use an image for the manifest icon so it never doubles as an executable
+# target. ICO supports a PNG image inside the icon directory entry.
+$iconPath = Join-Path $contents $extension.Shortcut.Icon.Substring('[{Package}]\'.Length)
+$logo = [IO.File]::ReadAllBytes((Join-Path $contents 'assets\Square150x150Logo.png'))
+$iconHeader = [byte[]]@(0, 0, 1, 0, 1, 0, 150, 150, 0, 0, 1, 0, 32, 0)
+[IO.File]::WriteAllBytes($iconPath, ($iconHeader + [BitConverter]::GetBytes([int]$logo.Length) + [BitConverter]::GetBytes(22) + $logo))
+
+$arguments = "shell:AppsFolder\$appUserModelId"
+$extension.Shortcut.SetAttribute('Arguments', $arguments)
+
+# MS-SHLLINK: store only an expandable target and Unicode arguments. An
+# ordinary WScript link records the build machine's paths and target ID list.
+# The deployed link resolves Explorer on the user's system and activates the
+# registered application independently of the package's install directory.
+$target = '%SystemRoot%\explorer.exe'
+$header = [byte[]]::new(76)
+[BitConverter]::GetBytes(76).CopyTo($header, 0)
+([guid]'00021401-0000-0000-c000-000000000046').ToByteArray().CopyTo($header, 4)
+# PreferEnvironmentPath | HasExpString | IsUnicode | HasArguments.
+[BitConverter]::GetBytes(0x020002A0).CopyTo($header, 20)
+[BitConverter]::GetBytes(1).CopyTo($header, 60) # SW_SHOWNORMAL
+$argumentBytes = [Text.Encoding]::Unicode.GetBytes($arguments)
+$environmentBlock = [byte[]]::new(0x314)
+[BitConverter]::GetBytes(0x314).CopyTo($environmentBlock, 0)
+[BitConverter]::GetBytes([uint32]2684354561).CopyTo($environmentBlock, 4) # 0xA0000001
+[Text.Encoding]::ASCII.GetBytes($target).CopyTo($environmentBlock, 8)
+[Text.Encoding]::Unicode.GetBytes($target).CopyTo($environmentBlock, 268)
+$link = $header + [BitConverter]::GetBytes([uint16]$arguments.Length) + $argumentBytes + $environmentBlock + [byte[]]::new(4)
+[IO.File]::WriteAllBytes((Join-Path $shortcutDirectory $linkName), $link)
 
 $application.Extensions.AppendChild($manifest.ImportNode($extension, $true)) | Out-Null
 $manifest.Save($manifestPath)

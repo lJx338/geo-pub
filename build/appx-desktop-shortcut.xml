@@ -1,4 +1,4 @@
 <desktop7:Extension xmlns:desktop7="http://schemas.microsoft.com/appx/manifest/desktop/windows10/7"
   Category="windows.shortcut">
-  <desktop7:Shortcut File="[{Desktop}]\Lingxi Workspace.lnk" Icon="[{Package}]\app\Lingxi Workspace.exe" />
+  <desktop7:Shortcut File="[{Desktop}]\Lingxi Workspace.lnk" Icon="[{Package}]\app\LingxiWorkspace.ico" />
 </desktop7:Extension>

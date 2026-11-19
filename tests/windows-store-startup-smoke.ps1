@@ -15,13 +15,61 @@ $shortcutPath = Join-Path $desktop 'Lingxi Workspace.lnk'
 if (Test-Path -LiteralPath $shortcutPath) { throw 'A Lingxi Workspace desktop shortcut already exists.' }
 $package = Get-ChildItem $ReleaseDirectory -File | Where-Object { $_.Extension -in '.appx', '.msix' } | Select-Object -First 1
 if (-not $package) { throw 'MSIX/AppX package not found.' }
+$evidence = Join-Path $ReleaseDirectory 'startup-test-logs'
+New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+
+function Start-FromDesktopShortcut($InstalledPackage, $Stage, $LogPaths) {
+  for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path -LiteralPath $shortcutPath -PathType Leaf); $attempt++) {
+    Start-Sleep -Seconds 1
+  }
+  if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+    throw "$Stage installation did not place a shortcut on the desktop before launch."
+  }
+
+  $shell = New-Object -ComObject WScript.Shell
+  $link = $shell.CreateShortcut($shortcutPath)
+  @{
+    PackageFullName = $InstalledPackage.PackageFullName
+    ShortcutPath = $shortcutPath
+    Target = $link.TargetPath
+    Arguments = $link.Arguments
+    IconLocation = $link.IconLocation
+  } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence "$Stage-shortcut.json") -Encoding UTF8
+  if ($link.TargetPath -match '(?i)[\\/]WindowsApps[\\/]78707CBF\.LingxiWorkspace_') {
+    throw "$Stage desktop shortcut targets a versioned WindowsApps path: $($link.TargetPath)"
+  }
+
+  $launchedAt = [datetime]::UtcNow
+  Invoke-Item -LiteralPath $shortcutPath
+  for ($attempt = 0; $attempt -lt 90; $attempt++) {
+    foreach ($logPath in $LogPaths) {
+      if (-not (Test-Path $logPath)) { continue }
+      $records = @(Get-Content $logPath | ForEach-Object {
+        try { $entry = $_ | ConvertFrom-Json; if ([datetime]$entry.time -ge $launchedAt) { $entry } } catch { }
+      })
+      $begin = $records | Where-Object { $_.event -eq 'startup.begin' -and $_.details.windowsStore -and $_.details.packaged } | Select-Object -Last 1
+      if ($begin -and ($records | Where-Object { $_.event -eq 'renderer.ready' -and $_.pid -eq $begin.pid })) {
+        if ($begin.details.softwareRendering) { throw 'Store smoke unexpectedly bypassed hardware acceleration.' }
+        $process = Get-Process -Id $begin.pid -ErrorAction Stop
+        if ($process.Path -ne (Join-Path $InstalledPackage.InstallLocation 'app\Lingxi Workspace.exe')) {
+          throw "$Stage desktop shortcut started the wrong executable: $($process.Path)"
+        }
+        Write-Host "$Stage desktop shortcut opened $($InstalledPackage.Version)."
+        return $begin
+      }
+    }
+    Start-Sleep -Seconds 1
+  }
+  throw "$Stage desktop shortcut did not open the workspace under its Store identity within 90 seconds."
+}
+
 $testDirectory = Join-Path $env:RUNNER_TEMP ('lingxi-msix-test-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $testDirectory | Out-Null
 $certificate = $null
 $installed = $null
 $trustedCertificate = $null
 $logPaths = @()
-$launchedAt = $null
+$testStartedAt = $null
 try {
   $signedPackage = Join-Path $testDirectory $package.Name
   Copy-Item $package.FullName $signedPackage
@@ -33,42 +81,46 @@ try {
   $trustedCertificate = Import-Certificate -FilePath $certificatePath -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople'
   $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
   if (-not $signTool) { throw 'Windows SDK signtool.exe not found.' }
+  $makeAppx = Join-Path $signTool.DirectoryName 'makeappx.exe'
   & $signTool.FullName sign /fd SHA256 /sha1 $certificate.Thumbprint $signedPackage
   if ($LASTEXITCODE -ne 0) { throw 'Could not sign the test copy of the MSIX.' }
+  $testStartedAt = [datetime]::UtcNow
   Add-AppxPackage -Path $signedPackage
   $installed = Get-AppxPackage -Name $identity
   if (-not $installed) { throw 'MSIX installation failed.' }
-  for ($attempt = 0; $attempt -lt 15 -and -not (Test-Path -LiteralPath $shortcutPath -PathType Leaf); $attempt++) {
-    Start-Sleep -Seconds 1
-  }
-  if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
-    throw 'MSIX installation did not create the desktop shortcut before first launch.'
-  }
-  $launchedAt = [datetime]::UtcNow
-  Invoke-Item -LiteralPath $shortcutPath
   $logPaths = @(
     (Join-Path $env:LOCALAPPDATA "Packages\$($installed.PackageFamilyName)\LocalCache\Local\GEO Publisher Desktop\diagnostics\startup.log"),
     (Join-Path $env:LOCALAPPDATA 'GEO Publisher Desktop\diagnostics\startup.log'),
     (Join-Path $env:TEMP 'lingxi-startup\startup.log')
   )
-  $ready = $false
-  for ($attempt = 0; $attempt -lt 90; $attempt++) {
-    foreach ($logPath in $logPaths) {
-      if (-not (Test-Path $logPath)) { continue }
-      $records = @(Get-Content $logPath | ForEach-Object {
-        try { $entry = $_ | ConvertFrom-Json; if ([datetime]$entry.time -ge $launchedAt) { $entry } } catch { }
-      })
-      $begin = $records | Where-Object { $_.event -eq 'startup.begin' -and $_.details.windowsStore -and $_.details.packaged } | Select-Object -Last 1
-      if ($begin -and ($records | Where-Object { $_.event -eq 'renderer.ready' -and $_.pid -eq $begin.pid })) {
-        if ($begin.details.softwareRendering) { throw 'Store smoke unexpectedly bypassed hardware acceleration.' }
-        $ready = $true
-        break
-      }
-    }
-    if ($ready) { break }
-    Start-Sleep -Seconds 1
+  $begin = Start-FromDesktopShortcut $installed 'fresh' $logPaths
+
+  # Keep the package family and shortcut in place while moving the app to a
+  # new WindowsApps directory. The fourth version segment is for this CI copy only.
+  $upgradeContents = Join-Path $testDirectory 'upgrade-contents'
+  & $makeAppx unpack /p $package.FullName /d $upgradeContents
+  if ($LASTEXITCODE -ne 0) { throw 'Could not unpack the MSIX for update testing.' }
+  $upgradeManifestPath = Join-Path $upgradeContents 'AppxManifest.xml'
+  $upgradeManifest = [System.Xml.XmlDocument]::new()
+  $upgradeManifest.Load($upgradeManifestPath)
+  $upgradeVersion = [version]::new($installed.Version.Major, $installed.Version.Minor, $installed.Version.Build, ($installed.Version.Revision + 1))
+  $upgradeManifest.DocumentElement.Identity.SetAttribute('Version', $upgradeVersion.ToString())
+  $upgradeManifest.Save($upgradeManifestPath)
+  foreach ($file in @('AppxBlockMap.xml', '[Content_Types].xml')) {
+    Remove-Item -LiteralPath (Join-Path $upgradeContents $file)
   }
-  if (-not $ready) { throw 'Installed MSIX did not render the workspace under its Store identity within 90 seconds.' }
+  $upgradePackage = Join-Path $testDirectory 'upgrade.appx'
+  & $makeAppx pack /d $upgradeContents /p $upgradePackage
+  if ($LASTEXITCODE -ne 0) { throw 'Could not repack the MSIX for update testing.' }
+  & $signTool.FullName sign /fd SHA256 /sha1 $certificate.Thumbprint $upgradePackage
+  if ($LASTEXITCODE -ne 0) { throw 'Could not sign the MSIX update for testing.' }
+  Add-AppxPackage -Path $upgradePackage -ForceTargetApplicationShutdown
+  $updatedPackage = Get-AppxPackage -Name $identity
+  if (-not $updatedPackage -or $updatedPackage.Version -ne $upgradeVersion -or $updatedPackage.InstallLocation -eq $installed.InstallLocation) {
+    throw "MSIX update did not register version $upgradeVersion in a new directory."
+  }
+  $installed = $updatedPackage
+  $begin = Start-FromDesktopShortcut $installed 'updated' $logPaths
   $expectedElectron = (Get-Content (Join-Path $PSScriptRoot '../package.json') -Raw | ConvertFrom-Json).devDependencies.electron
   if ($begin.details.electron -ne $expectedElectron) {
     throw "MSIX contains Electron $($begin.details.electron), expected the pinned runtime $expectedElectron."
@@ -88,17 +140,15 @@ try {
   }
   Write-Host "MSIX startup smoke passed: $($installed.Version), Electron $expectedElectron, renderer ready and package remains Ok."
 } finally {
-  $evidence = Join-Path $ReleaseDirectory 'startup-test-logs'
-  New-Item -ItemType Directory -Force -Path $evidence | Out-Null
   $index = 0
   foreach ($logPath in $logPaths) {
     if (Test-Path $logPath) { Copy-Item $logPath (Join-Path $evidence "startup-$index.log"); $index++ }
   }
-  if ($launchedAt) {
+  if ($testStartedAt) {
     foreach ($channel in @('Microsoft-Windows-CodeIntegrity/Operational', 'Microsoft-Windows-AppModel-Runtime/Admin')) {
       $name = ($channel -replace '[/\\]', '-') + '.json'
       try {
-        $events = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = $launchedAt } -MaxEvents 300 -ErrorAction Stop |
+        $events = @(Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = $testStartedAt } -MaxEvents 300 -ErrorAction Stop |
           Where-Object { $_.Message -match [regex]::Escape($identity) } |
           Select-Object TimeCreated, Id, ProviderName, Message)
         ConvertTo-Json -InputObject $events -Depth 4 | Set-Content (Join-Path $evidence $name) -Encoding UTF8
