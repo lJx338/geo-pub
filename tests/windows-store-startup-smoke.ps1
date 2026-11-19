@@ -117,7 +117,8 @@ try {
   $upgradeManifestPath = Join-Path $upgradeContents 'AppxManifest.xml'
   $upgradeManifest = [System.Xml.XmlDocument]::new()
   $upgradeManifest.Load($upgradeManifestPath)
-  $upgradeVersion = [version]::new($installed.Version.Major, $installed.Version.Minor, $installed.Version.Build, ($installed.Version.Revision + 1))
+  $installedVersion = [version]$installed.Version
+  $upgradeVersion = [version]::new($installedVersion.Major, $installedVersion.Minor, $installedVersion.Build, ($installedVersion.Revision + 1))
   $upgradeManifest.DocumentElement.Identity.SetAttribute('Version', $upgradeVersion.ToString())
   $upgradeManifest.Save($upgradeManifestPath)
   foreach ($file in @('AppxBlockMap.xml', '[Content_Types].xml')) {
@@ -131,7 +132,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Could not sign the MSIX update for testing.' }
   Add-AppxPackage -Path $upgradePackage -ForceTargetApplicationShutdown
   $updatedPackage = Get-AppxPackage -Name $identity
-  if (-not $updatedPackage -or $updatedPackage.Version -ne $upgradeVersion -or $updatedPackage.InstallLocation -eq $installed.InstallLocation) {
+  if (-not $updatedPackage -or [version]$updatedPackage.Version -ne $upgradeVersion -or $updatedPackage.InstallLocation -eq $installed.InstallLocation) {
     throw "MSIX update did not register version $upgradeVersion in a new directory."
   }
   $installed = $updatedPackage
