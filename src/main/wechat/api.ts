@@ -124,10 +124,8 @@ export class WechatApiClient {
   }
 }
 
-export function isWechatImageUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password
-      && (url.hostname === 'mmbiz.qpic.cn' || url.hostname.endsWith('.qpic.cn') || url.hostname === 'mmbiz.qlogo.cn');
-  } catch { return false; }
+export function isWechatImageUrl(value: string | URL): boolean {
+  const url = typeof value === 'string' ? URL.parse(value) : value;
+  return !!url && ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password
+    && (url.hostname.endsWith('.qpic.cn') || url.hostname === 'mmbiz.qlogo.cn');
 }

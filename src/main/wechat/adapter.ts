@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { WechatApiClient } from './api.js';
-import { loadBodyImages, makeWechatArticle, prepareDocument, readLocalImage, verifyWechatDraft, type WechatMaterialResolver } from './document.js';
+import { loadBodyImages, makeWechatArticle, prepareDocument, readLocalImage, verifyWechatDraft, type WechatBodyImageCompressor, type WechatMaterialResolver } from './document.js';
 import { WechatError, safeWechatError } from './errors.js';
 import { requireWechatProjectId, WechatStore, type WechatOperation } from './storage.js';
 import { WECHAT_BACKEND_URL, type WechatCredentials, type WechatDraftInput, type WechatDraftResult } from './types.js';
@@ -8,6 +8,7 @@ import { WECHAT_BACKEND_URL, type WechatCredentials, type WechatDraftInput, type
 export interface WechatAdapterDependencies {
   store: WechatStore;
   resolveMaterial?: WechatMaterialResolver;
+  compressBodyImage?: WechatBodyImageCompressor;
   createClient?: (credentials: WechatCredentials) => WechatApiClient;
 }
 
@@ -71,7 +72,7 @@ export class WechatAdapter {
       const { document, options } = prepareDocument(input.document, input.options);
       // Finish all local validation before any remote material or draft write.
       const cover = await readLocalImage(input.coverPath, true);
-      const images = await loadBodyImages(projectId, document, this.dependencies.resolveMaterial);
+      const images = await loadBodyImages(projectId, document, this.dependencies);
       const imageHashes = [...images].map(([index, image]) => [index, createHash('sha256').update(image.bytes).digest('hex')]);
       const identityDocument = { ...document, blocks: document.blocks.map((block) => block.type === 'image'
         ? { type: block.type, alt: block.alt ?? '', caption: block.caption ?? '' } : block) };

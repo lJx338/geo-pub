@@ -247,6 +247,29 @@ describe('WeChat draft workflow', () => {
 });
 
 describe('WeChat content compatibility', () => {
+  it.each([
+    ['https://mmbiz.qpic.cn/mmbiz_jpg/test-image/0?from=appmsg', '<img data-src="https://mmbiz.qpic.cn/mmbiz_jpg/test-image/640?from=appmsg">'],
+    ['https://mmbiz.qpic.cn/sz_mmbiz_jpg/test-image/0?from=appmsg', '<img data-src="https://mmbiz.qpic.cn/sz_mmbiz_jpg/test-image/640?from=appmsg">'],
+    ['http://mmbiz.qlogo.cn/mmbiz/test-image/0?wx_fmt=png', '<img SRC="about:blank" DATA-SRC="//mmbiz.qpic.cn/sz_mmbiz_webp/test-image/300?wx_lazy=1&amp;wx_fmt=webp">'],
+    ['https://mmbiz.qpic.cn/sz_mmbiz_png/test-image/0', '<img src=https://mmbiz.qpic.cn/mmbiz_png/test-image?from=appmsg>'],
+    ['https://mmbiz.qpic.cn/sz_mmbiz_png/test-image/0', '<img src="https://mmbiz.qpic.cn/sz_mmbiz_png/test-image/640" data-src="https://mmbiz.qpic.cn/mmbiz_png/test-image/300">'],
+  ])('matches WeChat variants of %s by image ID', (original, readbackTag) => {
+    const article = makeWechatArticle(document, {}, 'cover-1', new Map([[2, original]]));
+    const content = article.content.replace(/<img[^>]*>/, readbackTag);
+    expect(() => verifyWechatDraft(article, [{ ...article, content }])).not.toThrow();
+  });
+
+  it.each([
+    '<img src="https://mmbiz.qpic.cn/sz_mmbiz_jpg/different-image/640">',
+    '<img src="https://mmbiz.qpic.cn.example.com/sz_mmbiz_jpg/test-image/640">',
+    '<img src="https://mmbiz.qpic.cn/sz_mmbiz_jpg/different-image/640" data-src="https://mmbiz.qpic.cn/sz_mmbiz_jpg/test-image/640">',
+    `<img alt='text data-src="https://mmbiz.qpic.cn/sz_mmbiz_jpg/test-image/640"' src="https://mmbiz.qpic.cn/sz_mmbiz_jpg/different-image/640">`,
+  ])('rejects an image tag without a matching WeChat asset: %s', (readbackTag) => {
+    const article = makeWechatArticle(document, {}, 'cover-1', new Map([[2, 'https://mmbiz.qpic.cn/sz_mmbiz_jpg/test-image/0']]));
+    const content = article.content.replace(/<img[^>]*>/, readbackTag);
+    expect(() => verifyWechatDraft(article, [{ ...article, content }])).toThrow('WECHAT_DRAFT_MISMATCH');
+  });
+
   it('accepts harmless WeChat wrappers but detects text, image, cover and structure loss', () => {
     const article = makeWechatArticle(document, {}, 'cover-1', new Map([[2, 'https://mmbiz.qpic.cn/test.png']]));
     expect(() => verifyWechatDraft(article, [{ ...article, content: `<section>${article.content.replace('<p>', '<p style="color:#333">')}</section>` }])).not.toThrow();

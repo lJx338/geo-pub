@@ -10,6 +10,7 @@ import { _electron as electron } from 'playwright';
 // Runs the actual desktop entry, with an isolated customer store and mocked API.
 const root = await mkdtemp(join(tmpdir(), 'geo-wechat-desktop-'));
 const imagePath = join(root, 'cover.png');
+const bodyImagePath = join(root, 'oversized-body.png');
 await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));
 const env = { ...process.env, GEO_PUBLISHER_USER_DATA_DIR: root, GEO_DISABLE_OPEN_WORKBUDDY: '1',
   GEO_PUBLISHER_CONTROL_ENDPOINT: process.platform === 'win32' ? `\\\\.\\pipe\\geo-publisher-wechat-test-${process.pid}` : join(root, 'control.sock'),
@@ -37,7 +38,7 @@ try {
   assert.equal(await window.title(), 'Lingxi Workspace');
   await app.evaluate(({ dialog }, imagePath) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [imagePath] });
-    globalThis.__wechatDesktopTest = { calls: [], drafts: {}, nextId: 1, hold: false, release: null, readFails: false, timeout: false };
+    globalThis.__wechatDesktopTest = { calls: [], bodyUploads: [], drafts: {}, nextId: 1, hold: false, release: null, readFails: false, timeout: false };
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input)); const state = globalThis.__wechatDesktopTest;
       if (url.origin !== 'https://api.weixin.qq.com') throw new Error('Unexpected network endpoint');
@@ -45,7 +46,11 @@ try {
       if (url.pathname.endsWith('/stable_token')) return Response.json({ access_token: 'test-token', expires_in: 7200 });
       if (url.pathname.endsWith('/draft/count')) return Response.json({ total_count: 2 });
       if (url.pathname.endsWith('/material/add_material')) return Response.json({ media_id: 'test-cover' });
-      if (url.pathname.endsWith('/media/uploadimg')) return Response.json({ url: 'https://mmbiz.qpic.cn/test.png' });
+      if (url.pathname.endsWith('/media/uploadimg')) {
+        const file = init.body.get('media');
+        state.bodyUploads.push({ size: file.size, type: file.type });
+        return Response.json({ url: 'https://mmbiz.qpic.cn/test.png' });
+      }
       if (url.pathname.endsWith('/draft/add')) {
         const id = `test-draft-${state.nextId++}`; state.drafts[id] = JSON.parse(init.body).articles[0];
         if (state.hold) await new Promise((resolve) => { state.release = resolve; });
@@ -59,6 +64,19 @@ try {
       throw new Error(`Unexpected WeChat API ${url.pathname}`);
     };
   }, imagePath);
+  const oversizedPng = Buffer.from(await app.evaluate(({ nativeImage }) => {
+    const width = 1024;
+    const height = 768;
+    const pixels = Buffer.alloc(width * height * 4);
+    let random = 1;
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
+      pixels.writeUInt32LE((random >>> 8) + 0xff000000, offset);
+    }
+    return nativeImage.createFromBitmap(pixels, { width, height }).toPNG().toString('base64');
+  }), 'base64');
+  assert.ok(oversizedPng.length >= 1_000_000);
+  await writeFile(bodyImagePath, oversizedPng);
   const projectA = await window.evaluate(async () => (await window.geoPublisher.createProject({ name: '公众号客户 A' })).project.id);
   const projectB = await window.evaluate(async () => (await window.geoPublisher.createProject({ name: '公众号客户 B' })).project.id);
   await window.evaluate((id) => window.geoPublisher.selectProject(id), projectA);
@@ -92,11 +110,11 @@ try {
     { type: 'paragraph', text: '先在内容中心确认文章，再将正文与图片一起保存到公众号草稿箱。修改正文后，卡片与配色也应保留下来。' },
     { type: 'quote', text: '草稿保存后再读回核对，避免把请求完成当作内容正确。', card: { kind: 'takeaway', label: '保存后看一眼' }, emphasis: [{ text: '读回核对', style: 'bold' }] },
   ] };
-  let article = await window.evaluate(async ({ projectId, imagePath, originalDocument }) => {
-    const material = (await window.geoPublisher.contentImportMaterial(projectId, imagePath)).item;
+  let article = await window.evaluate(async ({ projectId, imagePath, bodyImagePath, originalDocument }) => {
+    const material = (await window.geoPublisher.contentImportMaterial(projectId, bodyImagePath)).item;
     const document = { ...originalDocument, blocks: [...originalDocument.blocks, { type: 'image', materialId: material.id, caption: '项目素材库图片' }] };
     return (await window.geoPublisher.contentSave(projectId, { kind: 'article', title: document.title, platform: 'wechat', status: 'ready', payload: { document, coverPath: imagePath } })).item;
-  }, { projectId: projectA, imagePath, originalDocument });
+  }, { projectId: projectA, imagePath, bodyImagePath, originalDocument });
   await window.locator('.nav-item').filter({ hasText: '内容中心' }).click();
   await window.locator('.content-tabs button').filter({ hasText: '文章' }).click();
   await window.locator('.article-preview-trigger').filter({ hasText: originalDocument.title }).click();
@@ -140,7 +158,13 @@ try {
   await app.evaluate(() => { globalThis.__wechatDesktopTest.hold = true; });
   await window.locator('#distribution-run').click();
   await window.waitForFunction(async () => { const status = await window.geoPublisher.status(); return status.busy && status.executingPlatform === 'wechat'; });
-  await app.evaluate(async () => { while (!globalThis.__wechatDesktopTest.release) await new Promise((resolve) => setTimeout(resolve, 20)); });
+  await app.evaluate(async () => {
+    const deadline = Date.now() + 10_000;
+    while (!globalThis.__wechatDesktopTest.release) {
+      if (Date.now() >= deadline) throw new Error('WeChat draft creation did not start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  });
   const blocked = await window.evaluate(async (id) => { try { await window.geoPublisher.selectProject(id); return false; } catch (error) { return error.message.includes('PUBLISHER_BUSY'); } }, projectB);
   assert.equal(blocked, true);
   assert.equal((await window.evaluate(() => window.geoPublisher.status())).activePlatform, null);
@@ -154,6 +178,10 @@ try {
   const uploadedArticle = await app.evaluate(() => globalThis.__wechatDesktopTest.drafts['test-draft-1']);
   assert.equal(uploadedArticle.title, '公众号专用短标题'); assert.equal(uploadedArticle.author, '测试作者');
   assert.ok(uploadedArticle.content.includes('https://mmbiz.qpic.cn/test.png')); assert.ok(!uploadedArticle.content.includes('data:image'));
+  const [bodyUpload] = await app.evaluate(() => globalThis.__wechatDesktopTest.bodyUploads);
+  assert.equal(bodyUpload.type, 'image/jpeg');
+  assert.ok(bodyUpload.size > 0 && bodyUpload.size < 1_000_000);
+  assert.deepEqual(await readFile(bodyImagePath), oversizedPng);
   assert.ok(uploadedArticle.content.includes('font-size:17px;line-height:1.9;'));
   assert.ok(uploadedArticle.content.includes('账号与项目对应'));
   assert.ok(uploadedArticle.content.includes('background-color:#ECFDF5;'));
